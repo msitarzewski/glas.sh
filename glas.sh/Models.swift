@@ -129,6 +129,9 @@ class TerminalSession: Identifiable, Hashable {
     var output: [TerminalLine] = []
     var screenRows: [String] = []
     var screenStyledRows: [[TerminalStyledCell]] = []
+    var terminalInputChunk: Data = Data()
+    var terminalInputNonce: UInt64 = 0
+    var closeWindowNonce: UInt64 = 0
     var currentDirectory: String = "~"
     var systemInfo: SystemInfo?
     var portForwards: [PortForward] = []
@@ -204,6 +207,21 @@ class TerminalSession: Identifiable, Hashable {
             }
         }
     }
+
+    func sendTerminalData(_ data: Data) {
+        Task {
+            do {
+                try await sshConnection?.sendBytes(data)
+            } catch {
+                print("Error sending terminal data: \(error)")
+            }
+        }
+    }
+
+    func handleCleanRemoteExit() {
+        state = .disconnected
+        closeWindowNonce &+= 1
+    }
     
     private func appendLine(_ line: TerminalLine) {
         output.append(line)
@@ -217,7 +235,12 @@ class TerminalSession: Identifiable, Hashable {
     }
     
     func clearScreen() {
-        emulator.feed(text: "\u{1b}[2J\u{1b}[H")
+        let clearSequence = "\u{1b}[2J\u{1b}[H"
+        emulator.feed(text: clearSequence)
+        if let clearData = clearSequence.data(using: .utf8) {
+            terminalInputChunk = clearData
+            terminalInputNonce &+= 1
+        }
         syncEmulatorSnapshot()
         output.removeAll()
     }
@@ -230,6 +253,8 @@ class TerminalSession: Identifiable, Hashable {
     
     func feedTerminalData(_ data: Data) {
         emulator.feed(data: data)
+        terminalInputChunk = data
+        terminalInputNonce &+= 1
         syncEmulatorSnapshot()
     }
     
@@ -650,9 +675,22 @@ class SSHConnection {
                     }
                 }
             }
+            await MainActor.run {
+                self.session?.handleCleanRemoteExit()
+            }
+        } catch let channelError as ChannelError where channelError == .inputClosed || channelError == .outputClosed || channelError == .eof || channelError == .alreadyClosed {
+            await MainActor.run {
+                self.session?.handleCleanRemoteExit()
+            }
         } catch is CancellationError {
             // Task cancelled during disconnect.
         } catch {
+            if String(describing: error).contains("ChannelError error 6") {
+                await MainActor.run {
+                    self.session?.handleCleanRemoteExit()
+                }
+                return
+            }
             await MainActor.run {
                 if case .connected = self.session?.state {
                     self.session?.state = .error("Connection lost: \(error.localizedDescription)")
@@ -676,6 +714,15 @@ class SSHConnection {
             throw SSHError.notConnected
         }
         try await writer.write(ByteBuffer(string: input))
+    }
+
+    func sendBytes(_ data: Data) async throws {
+        guard let writer = ttyWriter else {
+            throw SSHError.notConnected
+        }
+        var buffer = ByteBuffer()
+        buffer.writeBytes(data)
+        try await writer.write(buffer)
     }
     
     /// Disconnect from SSH server

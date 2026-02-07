@@ -20,8 +20,12 @@ class SessionManager {
     
     private let serverManager: ServerManager
     
-    init() {
-        self.serverManager = ServerManager()
+    init(loadImmediately: Bool = true) {
+        self.serverManager = ServerManager(loadImmediately: loadImmediately)
+    }
+
+    func preloadPersistentStateIfNeeded() {
+        serverManager.loadServersIfNeeded()
     }
     
     func createSession(for server: ServerConfiguration, password: String? = nil) async -> TerminalSession {
@@ -67,8 +71,17 @@ class ServerManager {
     var servers: [ServerConfiguration] = []
     
     private let serversKey = "servers"
+    private var hasLoadedServers = false
     
-    init() {
+    init(loadImmediately: Bool = true) {
+        if loadImmediately {
+            loadServersIfNeeded()
+        }
+    }
+
+    func loadServersIfNeeded() {
+        guard !hasLoadedServers else { return }
+        hasLoadedServers = true
         loadServers()
     }
     
@@ -154,8 +167,18 @@ class SettingsManager {
     var maxScrollbackLines: Int = 10000
     var bellEnabled: Bool = false
     var visualBell: Bool = true
+    private var hasLoadedPersistentState = false
     
-    init() {
+    init(loadImmediately: Bool = true) {
+        if loadImmediately {
+            loadPersistentStateIfNeeded()
+        }
+    }
+
+    func loadPersistentStateIfNeeded() {
+        guard !hasLoadedPersistentState else { return }
+        hasLoadedPersistentState = true
+
         // Load from UserDefaults without triggering didSet
         if UserDefaults.standard.object(forKey: "autoReconnect") != nil {
             autoReconnect = UserDefaults.standard.bool(forKey: "autoReconnect")

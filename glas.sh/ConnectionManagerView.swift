@@ -10,7 +10,7 @@ import SwiftUI
 struct ConnectionManagerView: View {
     @Environment(SessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
-    @State private var serverManager = ServerManager()
+    @State private var serverManager = ServerManager(loadImmediately: false)
     
     @State private var selectedSection: ConnectionSection = .favorites
     @State private var showingAddServer = false
@@ -31,6 +31,9 @@ struct ConnectionManagerView: View {
         }
         .sheet(item: $editingServer) { server in
             EditServerView(server: server, serverManager: serverManager)
+        }
+        .task {
+            serverManager.loadServersIfNeeded()
         }
     }
     

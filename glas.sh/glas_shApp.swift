@@ -9,13 +9,13 @@ import SwiftUI
 
 @main
 struct glas_shApp: App {
-    @State private var sessionManager = SessionManager()
-    @State private var settingsManager = SettingsManager()
+    @State private var sessionManager = SessionManager(loadImmediately: false)
+    @State private var settingsManager = SettingsManager(loadImmediately: false)
     
     var body: some Scene {
         // Connection manager - PRIMARY WINDOW (opens on launch)
         WindowGroup(id: "main") {
-            ConnectionManagerView()
+            MainBootstrapView()
                 .environment(sessionManager)
                 .environment(settingsManager)
         }
@@ -63,6 +63,53 @@ struct glas_shApp: App {
         }
         .windowStyle(.plain)
         .defaultSize(width: 700, height: 600)
+    }
+}
+
+struct MainBootstrapView: View {
+    @Environment(SessionManager.self) private var sessionManager
+    @Environment(SettingsManager.self) private var settingsManager
+    @State private var bootMessage: String = "Starting glas.sh"
+    @State private var isReady = false
+    @State private var didBootstrap = false
+
+    var body: some View {
+        Group {
+            if isReady {
+                ConnectionManagerView()
+            } else {
+                VStack(spacing: 14) {
+                    ProgressView()
+                        .controlSize(.large)
+                    Text("glas.sh")
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                    Text(bootMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(28)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            }
+        }
+        .task {
+            guard !didBootstrap else { return }
+            didBootstrap = true
+            await bootstrap()
+        }
+    }
+
+    private func bootstrap() async {
+        bootMessage = "Loading preferences"
+        settingsManager.loadPersistentStateIfNeeded()
+        await Task.yield()
+
+        bootMessage = "Preparing sessions"
+        sessionManager.preloadPersistentStateIfNeeded()
+        try? await Task.sleep(for: .milliseconds(120))
+
+        bootMessage = "Ready"
+        isReady = true
     }
 }
 
