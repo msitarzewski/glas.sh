@@ -9,7 +9,7 @@ This README documents the **current implementation** in this repository.
 - Website: [glas.sh](https://glas.sh)
 - GitHub Sponsors / donations: [github.com/sponsors/msitarzewski](https://github.com/sponsors/msitarzewski)
 
-## What Is Implemented
+## Live Now
 
 - Native SSH connection flow using Citadel (`SSHClient.withPTY`)
 - PTY interactive terminal sessions (not command-by-command exec)
@@ -64,27 +64,19 @@ Primary files:
 3. Select a visionOS Simulator destination
 4. Build and run
 
-## App Store Connect Metadata (Recommended)
-
-Use these URLs in App Store Connect so distribution metadata matches the project branding:
-
-- Support URL: [glas.sh/support](https://glas.sh/support)
-- Marketing URL: [glas.sh](https://glas.sh)
-- Privacy Policy URL: [glas.sh/privacy](https://glas.sh/privacy)
-
-If those pages do not exist yet, publish simple placeholder pages before submitting for review.
-
 ## Notable Behavior
 
 - Typing `exit` in remote shell is treated as clean session termination.
 - Terminal background defaults to transparent so the glass scene shows through unless host output explicitly paints backgrounds.
 - Left tools rail supports compact/expanded interaction and ornament placement separate from the terminal pane.
 
-## Known Gaps / Next Work
+## Aspirational / In Progress
 
-- System close affordance interception/warning for active remote processes is not currently hooked (only in-app close flows can be fully controlled).
-- Some rail gaze/hover nuance may still need polish depending on input device/runtime behavior.
-- Additional terminal UX parity items (selection semantics, advanced key mapping, etc.) can be iterated further.
+These are not fully shipped yet:
+
+- System close affordance interception/warning for active remote processes (only in-app close flows can currently be fully controlled).
+- Final polish for rail gaze/hover behavior across all input/runtime combinations.
+- Additional terminal parity work (selection semantics, advanced key mapping, and edge-case TUI behavior).
 
 ## Notes On Local Artifacts
 
