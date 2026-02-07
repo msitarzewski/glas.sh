@@ -1,0 +1,15 @@
+# Xcode user/local state
+**/xcuserdata/
+*.xcuserstate
+
+# Workspace user data
+**/*.xcworkspace/xcuserdata/
+
+# SwiftPM local caches/state
+.swiftpm/
+**/.swiftpm/
+
+# Derived and build products
+DerivedData/
+build/
+
