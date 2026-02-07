@@ -4,6 +4,11 @@
 
 This README documents the **current implementation** in this repository.
 
+## Links
+
+- Website: [glas.sh](https://glas.sh)
+- GitHub Sponsors / donations: [github.com/sponsors/msitarzewski](https://github.com/sponsors/msitarzewski)
+
 ## What Is Implemented
 
 - Native SSH connection flow using Citadel (`SSHClient.withPTY`)
@@ -35,10 +40,10 @@ This README documents the **current implementation** in this repository.
 
 Primary files:
 
-- `/Users/michael/Developer/glas.sh/glas.sh/Models.swift`
-- `/Users/michael/Developer/glas.sh/glas.sh/TerminalWindowView.swift`
-- `/Users/michael/Developer/glas.sh/Packages/RealityKitContent/Sources/RealityKitContent/SwiftTermHostView.swift`
-- `/Users/michael/Developer/glas.sh/Packages/RealityKitContent/Package.swift`
+- `glas.sh/Models.swift`
+- `glas.sh/TerminalWindowView.swift`
+- `Packages/RealityKitContent/Sources/RealityKitContent/SwiftTermHostView.swift`
+- `Packages/RealityKitContent/Package.swift`
 
 ## Project Structure
 
@@ -54,10 +59,20 @@ Primary files:
 
 ## Run (Xcode)
 
-1. Open `/Users/michael/Developer/glas.sh/glas.sh.xcodeproj`
+1. Open `glas.sh.xcodeproj`
 2. Select scheme: `glas.sh`
 3. Select a visionOS Simulator destination
 4. Build and run
+
+## App Store Connect Metadata (Recommended)
+
+Use these URLs in App Store Connect so distribution metadata matches the project branding:
+
+- Support URL: [glas.sh/support](https://glas.sh/support)
+- Marketing URL: [glas.sh](https://glas.sh)
+- Privacy Policy URL: [glas.sh/privacy](https://glas.sh/privacy)
+
+If those pages do not exist yet, publish simple placeholder pages before submitting for review.
 
 ## Notable Behavior
 
@@ -79,4 +94,4 @@ Local Xcode/SwiftPM state is intentionally gitignored (for cleaner diffs and few
 - `.swiftpm`
 - derived/build output
 
-See `/Users/michael/Developer/glas.sh/.gitignore`.
+See `.gitignore`.
