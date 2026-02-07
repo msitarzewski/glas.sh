@@ -181,7 +181,7 @@ After these changes, the project should compile without errors. All functionalit
    - Edit a server
    - Open settings
    - Check persistence
-3. **Implement SSH layer** - Core functionality still needs implementation
+3. **Implement SSH layer** - Historical next step at the time of this note
 4. **Add tests** - Now that it builds, add unit tests
 
 ## Common Errors Fixed
@@ -203,6 +203,6 @@ After these changes, the project should compile without errors. All functionalit
 
 ---
 
-**All compilation errors have been resolved!** 🎉
+All compilation errors in that migration phase were resolved.
 
 The project now uses modern Swift 6.2 patterns and is ready for visionOS development.

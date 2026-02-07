@@ -4,6 +4,8 @@
 
 # Workspace user data
 **/*.xcworkspace/xcuserdata/
+**/*.xcworkspace/xcshareddata/swiftpm/
+
 
 # SwiftPM local caches/state
 .swiftpm/
@@ -12,4 +14,3 @@
 # Derived and build products
 DerivedData/
 build/
-
