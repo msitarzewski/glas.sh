@@ -10,6 +10,22 @@ import Foundation
 import Security
 import Observation
 
+enum HostKeyVerificationMode: String, Codable, CaseIterable {
+    case ask = "Ask"
+    case strict = "Strict"
+    case insecureAcceptAny = "Insecure (Accept Any)"
+}
+
+struct TrustedHostKeyEntry: Codable, Identifiable, Hashable {
+    var id: String { "\(host):\(port):\(algorithm):\(fingerprintSHA256)" }
+    let host: String
+    let port: Int
+    let algorithm: String
+    let fingerprintSHA256: String
+    let keyDataBase64: String
+    let addedAt: Date
+}
+
 // MARK: - Session Manager
 
 @MainActor
@@ -35,8 +51,10 @@ class SessionManager {
         
         await session.connect(password: password)
         
-        // Update last connected
-        serverManager.updateLastConnected(server.id)
+        // Update last connected on successful connection only.
+        if session.state == .connected {
+            serverManager.updateLastConnected(server.id)
+        }
         
         return session
     }
@@ -167,6 +185,17 @@ class SettingsManager {
     var maxScrollbackLines: Int = 10000
     var bellEnabled: Bool = false
     var visualBell: Bool = true
+    var hostKeyVerificationMode: String = HostKeyVerificationMode.ask.rawValue
+    var trustedHostKeys: [TrustedHostKeyEntry] = []
+    var cursorStyle: String = "Block"
+    var blinkingCursor: Bool = true
+    var windowOpacity: Double = 0.95
+    var blurBackground: Bool = true
+    var interactiveGlassEffects: Bool = true
+    var glassTint: String = "None"
+    var showSidebarByDefault: Bool = true
+    var showInfoPanelByDefault: Bool = false
+    var sidebarPosition: String = "Left"
     private var hasLoadedPersistentState = false
     
     init(loadImmediately: Bool = true) {
@@ -199,9 +228,41 @@ class SettingsManager {
         if UserDefaults.standard.object(forKey: "visualBell") != nil {
             visualBell = UserDefaults.standard.bool(forKey: "visualBell")
         }
+        if let savedHostKeyMode = UserDefaults.standard.string(forKey: "hostKeyVerificationMode"),
+           HostKeyVerificationMode(rawValue: savedHostKeyMode) != nil {
+            hostKeyVerificationMode = savedHostKeyMode
+        }
+        if let savedCursorStyle = UserDefaults.standard.string(forKey: "cursorStyle") {
+            cursorStyle = savedCursorStyle
+        }
+        if UserDefaults.standard.object(forKey: "blinkingCursor") != nil {
+            blinkingCursor = UserDefaults.standard.bool(forKey: "blinkingCursor")
+        }
+        if UserDefaults.standard.object(forKey: "windowOpacity") != nil {
+            windowOpacity = UserDefaults.standard.double(forKey: "windowOpacity")
+        }
+        if UserDefaults.standard.object(forKey: "blurBackground") != nil {
+            blurBackground = UserDefaults.standard.bool(forKey: "blurBackground")
+        }
+        if UserDefaults.standard.object(forKey: "interactiveGlassEffects") != nil {
+            interactiveGlassEffects = UserDefaults.standard.bool(forKey: "interactiveGlassEffects")
+        }
+        if let savedGlassTint = UserDefaults.standard.string(forKey: "glassTint") {
+            glassTint = savedGlassTint
+        }
+        if UserDefaults.standard.object(forKey: "showSidebarByDefault") != nil {
+            showSidebarByDefault = UserDefaults.standard.bool(forKey: "showSidebarByDefault")
+        }
+        if UserDefaults.standard.object(forKey: "showInfoPanelByDefault") != nil {
+            showInfoPanelByDefault = UserDefaults.standard.bool(forKey: "showInfoPanelByDefault")
+        }
+        if let savedSidebarPosition = UserDefaults.standard.string(forKey: "sidebarPosition") {
+            sidebarPosition = savedSidebarPosition
+        }
         
         loadTheme()
         loadSnippets()
+        loadTrustedHostKeys()
     }
     
     // Manually save when properties change
@@ -212,6 +273,65 @@ class SettingsManager {
         UserDefaults.standard.set(maxScrollbackLines, forKey: "maxScrollbackLines")
         UserDefaults.standard.set(bellEnabled, forKey: "bellEnabled")
         UserDefaults.standard.set(visualBell, forKey: "visualBell")
+        UserDefaults.standard.set(hostKeyVerificationMode, forKey: "hostKeyVerificationMode")
+        UserDefaults.standard.set(cursorStyle, forKey: "cursorStyle")
+        UserDefaults.standard.set(blinkingCursor, forKey: "blinkingCursor")
+        UserDefaults.standard.set(windowOpacity, forKey: "windowOpacity")
+        UserDefaults.standard.set(blurBackground, forKey: "blurBackground")
+        UserDefaults.standard.set(interactiveGlassEffects, forKey: "interactiveGlassEffects")
+        UserDefaults.standard.set(glassTint, forKey: "glassTint")
+        UserDefaults.standard.set(showSidebarByDefault, forKey: "showSidebarByDefault")
+        UserDefaults.standard.set(showInfoPanelByDefault, forKey: "showInfoPanelByDefault")
+        UserDefaults.standard.set(sidebarPosition, forKey: "sidebarPosition")
+    }
+
+    func loadTrustedHostKeys() {
+        guard let data = UserDefaults.standard.data(forKey: "trustedHostKeys") else {
+            trustedHostKeys = []
+            return
+        }
+
+        do {
+            trustedHostKeys = try JSONDecoder().decode([TrustedHostKeyEntry].self, from: data)
+        } catch {
+            print("Failed to load trusted host keys: \(error)")
+            trustedHostKeys = []
+        }
+    }
+
+    func saveTrustedHostKeys() {
+        do {
+            let data = try JSONEncoder().encode(trustedHostKeys)
+            UserDefaults.standard.set(data, forKey: "trustedHostKeys")
+        } catch {
+            print("Failed to save trusted host keys: \(error)")
+        }
+    }
+
+    func trustedHostKeyBase64Set(host: String, port: Int) -> Set<String> {
+        Set(
+            trustedHostKeys
+                .filter { $0.host == host && $0.port == port }
+                .map { $0.keyDataBase64 }
+        )
+    }
+
+    func trustHostKey(_ challenge: HostKeyTrustChallenge) {
+        let entry = TrustedHostKeyEntry(
+            host: challenge.host,
+            port: challenge.port,
+            algorithm: challenge.algorithm,
+            fingerprintSHA256: challenge.fingerprintSHA256,
+            keyDataBase64: challenge.keyDataBase64,
+            addedAt: Date()
+        )
+        trustedHostKeys.removeAll {
+            $0.host == challenge.host
+                && $0.port == challenge.port
+                && $0.keyDataBase64 == challenge.keyDataBase64
+        }
+        trustedHostKeys.append(entry)
+        saveTrustedHostKeys()
     }
     
     func loadTheme() {

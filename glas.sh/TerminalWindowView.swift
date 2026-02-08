@@ -26,6 +26,7 @@ struct TerminalWindowView: View {
     @State private var sidebarButtonFocusStates: [String: Bool] = [:]
     @State private var sidebarButtonHoverStates: [String: Bool] = [:]
     @State private var sidebarCollapseTask: Task<Void, Never>?
+    @State private var didApplyLayoutDefaults = false
     @FocusState private var sidebarFocused: Bool
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismiss) private var dismiss
@@ -42,19 +43,27 @@ struct TerminalWindowView: View {
                     .padding(.bottom, 10)
                     .padding(.top, 4)
             }
-            .background(.ultraThinMaterial, in: .rect(cornerRadius: 24))
+            .background(windowBackgroundStyle, in: .rect(cornerRadius: 24))
+            .overlay {
+                if let tintColor = tintColor {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(tintColor.opacity(settingsManager.interactiveGlassEffects ? 0.08 : 0.14))
+                        .allowsHitTesting(false)
+                }
+            }
+            .opacity(settingsManager.windowOpacity)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.leading, 62)
-            .padding(.trailing, 22)
+            .padding(.leading, sidebarIsLeading ? 62 : 22)
+            .padding(.trailing, sidebarIsLeading ? 22 : 62)
             .padding(.top, 34)
             .padding(.bottom, 26)
         }
-        .ornament(attachmentAnchor: .scene(.leading)) {
+        .ornament(attachmentAnchor: .scene(sidebarIsLeading ? .leading : .trailing)) {
             if showingSidebar {
                 sidebarOrnament
             }
         }
-        .ornament(attachmentAnchor: .scene(.trailing)) {
+        .ornament(attachmentAnchor: .scene(sidebarIsLeading ? .trailing : .leading)) {
             if showingInfoPanel {
                 infoPanelOrnament
             }
@@ -72,6 +81,12 @@ struct TerminalWindowView: View {
         }
         .onChange(of: session.closeWindowNonce) { _, _ in
             dismiss()
+        }
+        .onAppear {
+            guard !didApplyLayoutDefaults else { return }
+            didApplyLayoutDefaults = true
+            showingSidebar = settingsManager.showSidebarByDefault
+            showingInfoPanel = settingsManager.showInfoPanelByDefault
         }
     }
     
@@ -139,6 +154,30 @@ struct TerminalWindowView: View {
         }
         #endif
         return (1, 1, 1, 1)
+    }
+
+    private var sidebarIsLeading: Bool {
+        settingsManager.sidebarPosition != "Right"
+    }
+
+    private var windowBackgroundStyle: AnyShapeStyle {
+        if settingsManager.blurBackground {
+            return AnyShapeStyle(.ultraThinMaterial)
+        }
+        return AnyShapeStyle(Color.black.opacity(0.35))
+    }
+
+    private var tintColor: Color? {
+        switch settingsManager.glassTint {
+        case "Blue":
+            return .blue
+        case "Purple":
+            return .purple
+        case "Green":
+            return .green
+        default:
+            return nil
+        }
     }
     
     // MARK: - Bottom Status
