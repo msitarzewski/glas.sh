@@ -11,6 +11,7 @@ import SwiftUI
 
 struct AddServerView: View {
     @Bindable var serverManager: ServerManager
+    @Environment(SettingsManager.self) private var settingsManager
     @Environment(\.dismiss) private var dismiss
     
     @State private var name: String = ""
@@ -19,7 +20,7 @@ struct AddServerView: View {
     @State private var username: String = ""
     @State private var authMethod: AuthenticationMethod = .password
     @State private var password: String = ""
-    @State private var sshKeyPath: String = ""
+    @State private var sshKeyID: UUID?
     @State private var colorTag: ServerColorTag = .blue
     @State private var tags: [String] = []
     @State private var newTag: String = ""
@@ -27,6 +28,7 @@ struct AddServerView: View {
     
     @State private var currentStep = 0
     @State private var showingValidation = false
+    @State private var showingAddSSHKey = false
     
     private let steps = ["Connection", "Authentication", "Options"]
     
@@ -53,6 +55,10 @@ struct AddServerView: View {
                         dismiss()
                     }
                 }
+            }
+            .sheet(isPresented: $showingAddSSHKey) {
+                AddSSHKeyView()
+                    .environment(settingsManager)
             }
         }
     }
@@ -180,15 +186,24 @@ struct AddServerView: View {
                         .padding(.horizontal)
                     
                 case .sshKey:
-                    FormField(label: "SSH Key Path", icon: "key.radiowaves.forward.fill") {
-                        TextField("~/.ssh/id_rsa", text: $sshKeyPath)
-                            .textInputAutocapitalization(.never)
+                    if settingsManager.sshKeys.isEmpty {
+                        Text("No SSH keys available. Add one to continue.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal)
+                    } else {
+                        Picker("SSH Key", selection: $sshKeyID) {
+                            Text("Select a key").tag(Optional<UUID>.none)
+                            ForEach(settingsManager.sshKeys) { key in
+                                Text("\(key.name) (\(key.algorithm))").tag(Optional(key.id))
+                            }
+                        }
                     }
-                    
+
                     Button {
-                        // TODO: Show file picker
+                        showingAddSSHKey = true
                     } label: {
-                        Label("Browse...", systemImage: "folder")
+                        Label("Add SSH Key", systemImage: "plus.circle")
                     }
                     .buttonStyle(.bordered)
                     
@@ -345,7 +360,7 @@ struct AddServerView: View {
             case .password:
                 return !password.isEmpty
             case .sshKey:
-                return !sshKeyPath.isEmpty
+                return sshKeyID != nil
             case .agent:
                 return true
             }
@@ -365,7 +380,8 @@ struct AddServerView: View {
             port: Int(port) ?? 22,
             username: username,
             authMethod: authMethod,
-            sshKeyPath: authMethod == .sshKey ? sshKeyPath : nil,
+            sshKeyPath: nil,
+            sshKeyID: authMethod == .sshKey ? sshKeyID : nil,
             isFavorite: isFavorite,
             colorTag: colorTag,
             tags: tags
@@ -387,16 +403,21 @@ struct AddServerView: View {
 struct EditServerView: View {
     let server: ServerConfiguration
     @Bindable var serverManager: ServerManager
+    @Environment(SettingsManager.self) private var settingsManager
     @Environment(\.dismiss) private var dismiss
     
     @State private var name: String
     @State private var host: String
     @State private var port: String
     @State private var username: String
+    @State private var authMethod: AuthenticationMethod
+    @State private var sshKeyID: UUID?
+    @State private var password: String = ""
     @State private var colorTag: ServerColorTag
     @State private var tags: [String]
     @State private var isFavorite: Bool
     @State private var newTag: String = ""
+    @State private var showingAddSSHKey = false
     
     init(server: ServerConfiguration, serverManager: ServerManager) {
         self.server = server
@@ -406,6 +427,8 @@ struct EditServerView: View {
         _host = State(initialValue: server.host)
         _port = State(initialValue: String(server.port))
         _username = State(initialValue: server.username)
+        _authMethod = State(initialValue: server.authMethod)
+        _sshKeyID = State(initialValue: server.sshKeyID)
         _colorTag = State(initialValue: server.colorTag)
         _tags = State(initialValue: server.tags)
         _isFavorite = State(initialValue: server.isFavorite)
@@ -429,6 +452,37 @@ struct EditServerView: View {
                     
                     FormField(label: "Username", icon: "person.fill") {
                         TextField("Username", text: $username)
+                    }
+                }
+
+                Section("Authentication") {
+                    Picker("Method", selection: $authMethod) {
+                        ForEach(AuthenticationMethod.allCases, id: \.self) { method in
+                            Text(method.displayName).tag(method)
+                        }
+                    }
+
+                    if authMethod == .password {
+                        SecureField("Password", text: $password)
+                    } else if authMethod == .sshKey {
+                        if settingsManager.sshKeys.isEmpty {
+                            Text("No SSH keys available. Add one to continue.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Picker("SSH Key", selection: $sshKeyID) {
+                                Text("Select a key").tag(Optional<UUID>.none)
+                                ForEach(settingsManager.sshKeys) { key in
+                                    Text("\(key.name) (\(key.algorithm))").tag(Optional(key.id))
+                                }
+                            }
+                        }
+                        Button {
+                            showingAddSSHKey = true
+                        } label: {
+                            Label("Add SSH Key", systemImage: "plus.circle")
+                        }
+                        .buttonStyle(.bordered)
                     }
                 }
                 
@@ -504,6 +558,10 @@ struct EditServerView: View {
                 }
             }
             .navigationTitle("Edit Server")
+            .sheet(isPresented: $showingAddSSHKey) {
+                AddSSHKeyView()
+                    .environment(settingsManager)
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
@@ -526,11 +584,17 @@ struct EditServerView: View {
         updatedServer.host = host
         updatedServer.port = Int(port) ?? 22
         updatedServer.username = username
+        updatedServer.authMethod = authMethod
+        updatedServer.sshKeyID = authMethod == .sshKey ? sshKeyID : nil
+        updatedServer.sshKeyPath = nil
         updatedServer.colorTag = colorTag
         updatedServer.tags = tags
         updatedServer.isFavorite = isFavorite
         
         serverManager.updateServer(updatedServer)
+        if authMethod == .password, !password.isEmpty {
+            try? KeychainManager.savePassword(password, for: updatedServer)
+        }
         dismiss()
     }
 }

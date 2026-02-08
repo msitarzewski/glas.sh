@@ -45,6 +45,11 @@ struct SettingsView: View {
 
 struct GeneralSettingsView: View {
     @Environment(SettingsManager.self) private var settingsManager
+    @State private var serverManager = ServerManager(loadImmediately: false)
+    @State private var showingAddSSHKey = false
+    @State private var editingSSHKey: StoredSSHKey?
+    @State private var sshConfigText: String = ""
+    @State private var importResultMessage: String?
     
     var body: some View {
         @Bindable var settings = settingsManager
@@ -100,9 +105,76 @@ struct GeneralSettingsView: View {
                     settings.saveSettings()
                 }
             }
+
+            Section("SSH Keys") {
+                if settings.sshKeys.isEmpty {
+                    Text("No SSH keys added yet.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(settings.sshKeys) { key in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(key.name)
+                                Text(key.algorithm)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Rename") {
+                                editingSSHKey = key
+                            }
+                            .buttonStyle(.bordered)
+                            Button("Delete", role: .destructive) {
+                                settings.deleteSSHKey(key.id, serverManager: serverManager)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                }
+
+                Button {
+                    showingAddSSHKey = true
+                } label: {
+                    Label("Add SSH Key", systemImage: "plus.circle.fill")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+
+            Section("Import SSH Config") {
+                TextEditor(text: $sshConfigText)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 140)
+
+                Button("Import into Server Configs") {
+                    let result = settings.importSSHConfig(sshConfigText, serverManager: serverManager)
+                    let warnings = result.warnings.prefix(3).joined(separator: "\n")
+                    importResultMessage =
+                        "Imported: \(result.imported), Updated: \(result.updated), Skipped: \(result.skipped)"
+                        + (warnings.isEmpty ? "" : "\n\nWarnings:\n\(warnings)")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(sshConfigText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                if let importResultMessage, !importResultMessage.isEmpty {
+                    Text(importResultMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .formStyle(.grouped)
         .padding()
+        .task {
+            serverManager.loadServersIfNeeded()
+        }
+        .sheet(isPresented: $showingAddSSHKey) {
+            AddSSHKeyView()
+                .environment(settingsManager)
+        }
+        .sheet(item: $editingSSHKey) { key in
+            RenameSSHKeyView(key: key)
+                .environment(settingsManager)
+        }
     }
 }
 
@@ -655,6 +727,103 @@ struct ThemeEditorView: View {
                 theme[keyPath: keyPath] = CodableColor(color: newColor)
             }
         )
+    }
+}
+
+struct AddSSHKeyView: View {
+    @Environment(SettingsManager.self) private var settingsManager
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var name: String = ""
+    @State private var privateKey: String = ""
+    @State private var passphrase: String = ""
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Key Details") {
+                    TextField("Key name", text: $name)
+                    SecureField("Passphrase (optional)", text: $passphrase)
+                    Text("ED25519 is supported now. RSA key auth support is coming soon.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Private Key") {
+                    TextEditor(text: $privateKey)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(minHeight: 220)
+                }
+
+                if let errorMessage {
+                    Section {
+                        Text(errorMessage)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle("Add SSH Key")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        do {
+                            _ = try settingsManager.addSSHKey(
+                                name: name,
+                                privateKey: privateKey,
+                                passphrase: passphrase.isEmpty ? nil : passphrase
+                            )
+                            dismiss()
+                        } catch {
+                            errorMessage = error.localizedDescription
+                        }
+                    }
+                    .disabled(
+                        name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || privateKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
+                }
+            }
+        }
+    }
+}
+
+struct RenameSSHKeyView: View {
+    @Environment(SettingsManager.self) private var settingsManager
+    @Environment(\.dismiss) private var dismiss
+
+    let key: StoredSSHKey
+    @State private var name: String
+
+    init(key: StoredSSHKey) {
+        self.key = key
+        _name = State(initialValue: key.name)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Rename") {
+                    TextField("Key name", text: $name)
+                }
+            }
+            .navigationTitle("Rename SSH Key")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        settingsManager.renameSSHKey(key.id, name: name)
+                        dismiss()
+                    }
+                }
+            }
+        }
     }
 }
 
