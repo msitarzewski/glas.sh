@@ -9,7 +9,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(SettingsManager.self) private var settingsManager
-    
+
     var body: some View {
         TabView {
             GeneralSettingsView()
