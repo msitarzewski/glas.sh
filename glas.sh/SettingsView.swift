@@ -36,7 +36,8 @@ struct SettingsView: View {
                     Label("Snippets", systemImage: "text.badge.star")
                 }
         }
-        .frame(width: 600, height: 500)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .glassBackgroundEffect(in: .rect(cornerRadius: 28))
     }
 }
 
@@ -88,6 +89,17 @@ struct GeneralSettingsView: View {
                         settings.saveSettings()
                     }
             }
+
+            Section("Security") {
+                Picker("Host key verification", selection: $settings.hostKeyVerificationMode) {
+                    ForEach(HostKeyVerificationMode.allCases, id: \.rawValue) { mode in
+                        Text(mode.rawValue).tag(mode.rawValue)
+                    }
+                }
+                .onChange(of: settings.hostKeyVerificationMode) { _, _ in
+                    settings.saveSettings()
+                }
+            }
         }
         .formStyle(.grouped)
         .padding()
@@ -101,6 +113,8 @@ struct TerminalSettingsView: View {
     @State private var showingThemeEditor = false
     
     var body: some View {
+        @Bindable var settings = settingsManager
+        
         Form {
             Section("Theme") {
                 HStack {
@@ -148,14 +162,14 @@ struct TerminalSettingsView: View {
             }
             
             Section("Font") {
-                Picker("Font Family", selection: .constant("SF Mono")) {
+                Picker("Font Family", selection: fontFamilyBinding) {
                     Text("SF Mono").tag("SF Mono")
                     Text("Monaco").tag("Monaco")
                     Text("Menlo").tag("Menlo")
                     Text("Courier New").tag("Courier New")
                 }
                 
-                Slider(value: .constant(14), in: 10...24, step: 1) {
+                Slider(value: fontSizeBinding, in: 10...24, step: 1) {
                     Text("Font Size")
                 } minimumValueLabel: {
                     Text("10")
@@ -165,13 +179,19 @@ struct TerminalSettingsView: View {
             }
             
             Section("Cursor") {
-                Picker("Cursor Style", selection: .constant("Block")) {
+                Picker("Cursor Style", selection: $settings.cursorStyle) {
                     Text("Block").tag("Block")
                     Text("Underline").tag("Underline")
                     Text("Bar").tag("Bar")
                 }
+                .onChange(of: settings.cursorStyle) { _, _ in
+                    settings.saveSettings()
+                }
                 
-                Toggle("Blinking cursor", isOn: .constant(true))
+                Toggle("Blinking cursor", isOn: $settings.blinkingCursor)
+                    .onChange(of: settings.blinkingCursor) { _, _ in
+                        settings.saveSettings()
+                    }
             }
         }
         .formStyle(.grouped)
@@ -181,6 +201,28 @@ struct TerminalSettingsView: View {
                 .environment(settingsManager)
         }
     }
+
+    private var fontFamilyBinding: Binding<String> {
+        Binding(
+            get: { settingsManager.currentTheme.fontName },
+            set: { newValue in
+                var theme = settingsManager.currentTheme
+                theme.fontName = newValue
+                settingsManager.saveTheme(theme)
+            }
+        )
+    }
+
+    private var fontSizeBinding: Binding<Double> {
+        Binding(
+            get: { Double(settingsManager.currentTheme.fontSize) },
+            set: { newValue in
+                var theme = settingsManager.currentTheme
+                theme.fontSize = CGFloat(newValue)
+                settingsManager.saveTheme(theme)
+            }
+        )
+    }
 }
 
 // MARK: - Appearance Settings
@@ -189,38 +231,61 @@ struct AppearanceSettingsView: View {
     @Environment(SettingsManager.self) private var settingsManager
     
     var body: some View {
+        @Bindable var settings = settingsManager
+        
         Form {
             Section("Window") {
-                Slider(value: .constant(0.95), in: 0.5...1.0) {
+                Slider(value: $settings.windowOpacity, in: 0.5...1.0) {
                     Text("Opacity")
                 } minimumValueLabel: {
                     Text("50%")
                 } maximumValueLabel: {
                     Text("100%")
                 }
+                .onChange(of: settings.windowOpacity) { _, _ in
+                    settings.saveSettings()
+                }
                 
-                Toggle("Blur background", isOn: .constant(true))
+                Toggle("Blur background", isOn: $settings.blurBackground)
+                    .onChange(of: settings.blurBackground) { _, _ in
+                        settings.saveSettings()
+                    }
             }
             
             Section("Glass Effect") {
-                Toggle("Interactive glass effects", isOn: .constant(true))
+                Toggle("Interactive glass effects", isOn: $settings.interactiveGlassEffects)
+                    .onChange(of: settings.interactiveGlassEffects) { _, _ in
+                        settings.saveSettings()
+                    }
                 
-                Picker("Glass Tint", selection: .constant("None")) {
+                Picker("Glass Tint", selection: $settings.glassTint) {
                     Text("None").tag("None")
                     Text("Blue").tag("Blue")
                     Text("Purple").tag("Purple")
                     Text("Green").tag("Green")
                 }
+                .onChange(of: settings.glassTint) { _, _ in
+                    settings.saveSettings()
+                }
             }
             
             Section("Layout") {
-                Toggle("Show sidebar by default", isOn: .constant(true))
+                Toggle("Show sidebar by default", isOn: $settings.showSidebarByDefault)
+                    .onChange(of: settings.showSidebarByDefault) { _, _ in
+                        settings.saveSettings()
+                    }
                 
-                Toggle("Show info panel by default", isOn: .constant(false))
+                Toggle("Show info panel by default", isOn: $settings.showInfoPanelByDefault)
+                    .onChange(of: settings.showInfoPanelByDefault) { _, _ in
+                        settings.saveSettings()
+                    }
                 
-                Picker("Sidebar Position", selection: .constant("Left")) {
+                Picker("Sidebar Position", selection: $settings.sidebarPosition) {
                     Text("Left").tag("Left")
                     Text("Right").tag("Right")
+                }
+                .onChange(of: settings.sidebarPosition) { _, _ in
+                    settings.saveSettings()
                 }
             }
         }
@@ -547,22 +612,25 @@ struct ThemeEditorView: View {
         NavigationStack {
             Form {
                 Section("Colors") {
-                    ColorPicker("Background", selection: .constant(.black))
-                    ColorPicker("Foreground", selection: .constant(.white))
-                    ColorPicker("Cursor", selection: .constant(.green))
-                    ColorPicker("Selection", selection: .constant(.blue))
+                    ColorPicker("Background", selection: colorBinding(for: \.background))
+                    ColorPicker("Foreground", selection: colorBinding(for: \.foreground))
+                    ColorPicker("Cursor", selection: colorBinding(for: \.cursor))
+                    ColorPicker("Selection", selection: colorBinding(for: \.selection))
                 }
                 
                 Section("ANSI Colors") {
-                    ColorPicker("Red", selection: .constant(.red))
-                    ColorPicker("Green", selection: .constant(.green))
-                    ColorPicker("Blue", selection: .constant(.blue))
-                    ColorPicker("Yellow", selection: .constant(.yellow))
-                    ColorPicker("Cyan", selection: .constant(.cyan))
-                    ColorPicker("Magenta", selection: .constant(.purple))
+                    ColorPicker("Red", selection: colorBinding(for: \.red))
+                    ColorPicker("Green", selection: colorBinding(for: \.green))
+                    ColorPicker("Blue", selection: colorBinding(for: \.blue))
+                    ColorPicker("Yellow", selection: colorBinding(for: \.yellow))
+                    ColorPicker("Cyan", selection: colorBinding(for: \.cyan))
+                    ColorPicker("Magenta", selection: colorBinding(for: \.magenta))
                 }
             }
             .navigationTitle("Edit Theme")
+            .onAppear {
+                theme = settingsManager.currentTheme
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
@@ -578,6 +646,15 @@ struct ThemeEditorView: View {
                 }
             }
         }
+    }
+
+    private func colorBinding(for keyPath: WritableKeyPath<TerminalTheme, CodableColor>) -> Binding<Color> {
+        Binding(
+            get: { theme[keyPath: keyPath].color },
+            set: { newColor in
+                theme[keyPath: keyPath] = CodableColor(color: newColor)
+            }
+        )
     }
 }
 

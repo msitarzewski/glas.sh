@@ -13,6 +13,9 @@ import Citadel
 import NIOCore
 import NIOSSH
 import RealityKitContent
+#if canImport(CryptoKit)
+import CryptoKit
+#endif
 
 // MARK: - Authentication
 
@@ -119,6 +122,130 @@ enum ServerColorTag: String, Codable, CaseIterable {
 
 // MARK: - Terminal Session
 
+enum HostKeyChallengeReason: String, Codable {
+    case unknown
+    case changed
+}
+
+struct HostKeyTrustChallenge: Codable, Equatable, Sendable {
+    let host: String
+    let port: Int
+    let algorithm: String
+    let fingerprintSHA256: String
+    let keyDataBase64: String
+    let reason: HostKeyChallengeReason
+
+    var summary: String {
+        switch reason {
+        case .unknown:
+            return "This is the first time connecting to \(host):\(port)."
+        case .changed:
+            return "The server key for \(host):\(port) has changed."
+        }
+    }
+}
+
+struct HostKeyTrustRequiredError: Error {
+    let challenge: HostKeyTrustChallenge
+}
+
+final class PromptingHostKeyValidator: NIOSSHClientServerAuthenticationDelegate, @unchecked Sendable {
+    private static let challengeCacheQueue = DispatchQueue(label: "sh.glas.hostkey.challenge-cache")
+    private static var challengeCache: [String: HostKeyTrustChallenge] = [:]
+
+    private let host: String
+    private let port: Int
+    private let trustedKeyBase64Set: Set<String>
+    private let verificationMode: HostKeyVerificationMode
+
+    init(host: String, port: Int, trustedKeyBase64Set: Set<String>, verificationMode: HostKeyVerificationMode) {
+        self.host = host
+        self.port = port
+        self.trustedKeyBase64Set = trustedKeyBase64Set
+        self.verificationMode = verificationMode
+    }
+
+    func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
+        let challenge = Self.challenge(from: hostKey, host: host, port: port, trustedKeyBase64Set: trustedKeyBase64Set)
+        Self.storeChallenge(challenge)
+
+        if trustedKeyBase64Set.contains(challenge.keyDataBase64) {
+            Self.clearChallenge(host: host, port: port)
+            validationCompletePromise.succeed(())
+            return
+        }
+
+        switch verificationMode {
+        case .insecureAcceptAny:
+            validationCompletePromise.succeed(())
+        case .ask, .strict:
+            validationCompletePromise.fail(HostKeyTrustRequiredError(challenge: challenge))
+        }
+    }
+
+    private static func challenge(
+        from hostKey: NIOSSHPublicKey,
+        host: String,
+        port: Int,
+        trustedKeyBase64Set: Set<String>
+    ) -> HostKeyTrustChallenge {
+        var buffer = ByteBufferAllocator().buffer(capacity: 512)
+        _ = hostKey.write(to: &buffer)
+        let keyData = Data(buffer.readableBytesView)
+        let keyDataBase64 = keyData.base64EncodedString()
+        let algorithm = hostKeyAlgorithm(fromWireData: keyData)
+        let fingerprintSHA256 = sha256Base64(of: keyData)
+        let reason: HostKeyChallengeReason = trustedKeyBase64Set.isEmpty ? .unknown : .changed
+
+        return HostKeyTrustChallenge(
+            host: host,
+            port: port,
+            algorithm: algorithm,
+            fingerprintSHA256: fingerprintSHA256,
+            keyDataBase64: keyDataBase64,
+            reason: reason
+        )
+    }
+
+    private static func cacheKey(host: String, port: Int) -> String {
+        "\(host.lowercased()):\(port)"
+    }
+
+    private static func storeChallenge(_ challenge: HostKeyTrustChallenge) {
+        challengeCacheQueue.sync {
+            challengeCache[cacheKey(host: challenge.host, port: challenge.port)] = challenge
+        }
+    }
+
+    static func takeLatestChallenge(host: String, port: Int) -> HostKeyTrustChallenge? {
+        challengeCacheQueue.sync {
+            challengeCache.removeValue(forKey: cacheKey(host: host, port: port))
+        }
+    }
+
+    static func clearChallenge(host: String, port: Int) {
+        _ = challengeCacheQueue.sync {
+            challengeCache.removeValue(forKey: cacheKey(host: host, port: port))
+        }
+    }
+
+    private static func hostKeyAlgorithm(fromWireData data: Data) -> String {
+        guard data.count >= 4 else { return "unknown" }
+        let length = data.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
+        guard length > 0, data.count >= 4 + length else { return "unknown" }
+        return String(data: data[4..<(4 + length)], encoding: .utf8) ?? "unknown"
+    }
+
+    private static func sha256Base64(of data: Data) -> String {
+        #if canImport(CryptoKit)
+        let digest = SHA256.hash(data: data)
+        return Data(digest).base64EncodedString()
+        #else
+        return data.base64EncodedString()
+        #endif
+    }
+}
+
 @MainActor
 @Observable
 class TerminalSession: Identifiable, Hashable {
@@ -135,6 +262,9 @@ class TerminalSession: Identifiable, Hashable {
     var currentDirectory: String = "~"
     var systemInfo: SystemInfo?
     var portForwards: [PortForward] = []
+    var pendingHostKeyChallenge: HostKeyTrustChallenge?
+    var lastConnectionDiagnostics: String?
+    var connectionProgress: ConnectionProgressStage?
     
     // Terminal properties
     var cursorPosition: (row: Int, col: Int) = (0, 0)
@@ -166,16 +296,59 @@ class TerminalSession: Identifiable, Hashable {
     }
     
     func connect(password: String? = nil) async {
+        if state == .connecting {
+            appendLine(TerminalLine(text: "Connection already in progress. Please wait…", style: .system))
+            return
+        }
+
+        if state == .connected {
+            appendLine(TerminalLine(text: "Already connected to \(server.name).", style: .system))
+            return
+        }
+
         state = .connecting
+        connectionProgress = .resolvingDNS
+        lastConnectionDiagnostics = nil
         appendLine(TerminalLine(text: "Connecting to \(server.name)...", style: .system))
         
         do {
             try await sshConnection?.connect(password: password)
+            pendingHostKeyChallenge = nil
+            connectionProgress = nil
+            lastConnectionDiagnostics = nil
             state = .connected
             appendLine(TerminalLine(text: "✓ Connected to \(server.username)@\(server.host)", style: .system))
         } catch {
-            state = .error(error.localizedDescription)
-            appendLine(TerminalLine(text: "✗ Connection failed: \(error.localizedDescription)", style: .error))
+            if let challengeError = error as? HostKeyTrustRequiredError {
+                pendingHostKeyChallenge = challengeError.challenge
+            } else if let cachedChallenge = PromptingHostKeyValidator.takeLatestChallenge(
+                host: server.host,
+                port: server.port
+            ) {
+                pendingHostKeyChallenge = cachedChallenge
+            }
+            let mode = HostKeyVerificationMode(
+                rawValue: UserDefaults.standard.string(forKey: "hostKeyVerificationMode") ?? ""
+            ) ?? .ask
+            let message: String
+            if let challenge = pendingHostKeyChallenge {
+                switch mode {
+                case .ask:
+                    message = "Host key verification required for \(challenge.host):\(challenge.port)."
+                case .strict:
+                    message = "Strict host-key verification blocked the connection to \(challenge.host):\(challenge.port)."
+                case .insecureAcceptAny:
+                    message = SSHConnection.userFacingMessage(for: error, server: server)
+                }
+            } else {
+                message = SSHConnection.userFacingMessage(for: error, server: server)
+            }
+            print("SSH connect error (\(server.host):\(server.port)): \(error)")
+            lastConnectionDiagnostics =
+                "Attempted: \(server.host):\(server.port)\nAuth method: \(server.authMethod.displayName)\nHost key mode: \(mode.rawValue)\nRaw error: \(String(describing: error))"
+            connectionProgress = nil
+            state = .error(message)
+            appendLine(TerminalLine(text: "✗ \(message)", style: .error))
         }
     }
     
@@ -185,6 +358,7 @@ class TerminalSession: Identifiable, Hashable {
         }
         connectionTask?.cancel()
         outputTask?.cancel()
+        connectionProgress = nil
         state = .disconnected
     }
     
@@ -219,6 +393,7 @@ class TerminalSession: Identifiable, Hashable {
     }
 
     func handleCleanRemoteExit() {
+        connectionProgress = nil
         state = .disconnected
         closeWindowNonce &+= 1
     }
@@ -249,6 +424,16 @@ class TerminalSession: Identifiable, Hashable {
         output.enumerated().compactMap { index, line in
             line.text.localizedCaseInsensitiveContains(query) ? index : nil
         }
+    }
+
+    func reportError(_ message: String) {
+        connectionProgress = nil
+        state = .error(message)
+        appendLine(TerminalLine(text: "✗ \(message)", style: .error))
+    }
+
+    func setConnectionProgress(_ progress: ConnectionProgressStage?) {
+        connectionProgress = progress
     }
     
     func feedTerminalData(_ data: Data) {
@@ -323,6 +508,50 @@ enum SessionState: Equatable {
         case .connected: return .green
         case .reconnecting: return .yellow
         case .error: return .red
+        }
+    }
+}
+
+enum ConnectionProgressStage: Equatable {
+    case resolvingDNS
+    case openingSocket(port: Int)
+    case negotiatingSecurity
+    case negotiatingCompatibility
+    case authenticating
+    case startingShell
+
+    var tickerLabel: String {
+        switch self {
+        case .resolvingDNS:
+            return "DNS"
+        case .openingSocket(let port):
+            return "Connecting:\(port)"
+        case .negotiatingSecurity:
+            return "Negotiating"
+        case .negotiatingCompatibility:
+            return "Negotiating (Legacy)"
+        case .authenticating:
+            return "Authenticating"
+        case .startingShell:
+            return "Starting shell"
+        }
+    }
+
+    static let orderedFlow: [ConnectionProgressStage] = [
+        .resolvingDNS,
+        .openingSocket(port: 22),
+        .negotiatingSecurity,
+        .authenticating,
+        .startingShell
+    ]
+
+    var flowIndex: Int {
+        switch self {
+        case .resolvingDNS: return 0
+        case .openingSocket: return 1
+        case .negotiatingSecurity, .negotiatingCompatibility: return 2
+        case .authenticating: return 3
+        case .startingShell: return 4
         }
     }
 }
@@ -579,6 +808,11 @@ class SSHConnection {
     func connect(password: String?) async throws {
         guard let session = session else { throw SSHError.sessionNotFound }
         let server = session.server
+        let normalizedHost = Self.normalizedHost(server.host)
+        guard !normalizedHost.isEmpty else {
+            throw SSHError.invalidHost(server.host)
+        }
+        await session.setConnectionProgress(.resolvingDNS)
         
         // Determine authentication method
         let authMethod: SSHAuthenticationMethod
@@ -609,15 +843,50 @@ class SSHConnection {
             authMethod = .passwordBased(username: server.username, password: pwd)
         }
         
-        // Connect to SSH server using Citadel
-        // The API is: SSHClient.connect(host:port:authenticationMethod:hostKeyValidator:)
-        self.client = try await SSHClient.connect(
-            host: server.host,
-            port: server.port,
-            authenticationMethod: authMethod,
-            hostKeyValidator: .acceptAnything(),
-            reconnect: .never
-        )
+        let mode = Self.hostKeyVerificationMode()
+        let trustedSet = Self.trustedHostKeyBase64Set(host: normalizedHost, port: server.port)
+        let hostKeyValidator: SSHHostKeyValidator
+        if mode == .insecureAcceptAny {
+            hostKeyValidator = .acceptAnything()
+        } else {
+            hostKeyValidator = .custom(
+                PromptingHostKeyValidator(
+                    host: normalizedHost,
+                    port: server.port,
+                    trustedKeyBase64Set: trustedSet,
+                    verificationMode: mode
+                )
+            )
+        }
+
+        // Connect to SSH server using Citadel.
+        // Try modern defaults first, then retry once with compatibility algorithms
+        // for servers that still require older SSH kex/signature sets.
+        await session.setConnectionProgress(.openingSocket(port: server.port))
+        await session.setConnectionProgress(.negotiatingSecurity)
+        do {
+            self.client = try await Self.connectClient(
+                host: normalizedHost,
+                port: server.port,
+                authenticationMethod: authMethod,
+                hostKeyValidator: hostKeyValidator,
+                algorithms: SSHAlgorithms()
+            )
+        } catch {
+            if Self.isKeyExchangeNegotiationFailure(error) {
+                await session.setConnectionProgress(.negotiatingCompatibility)
+                self.client = try await Self.connectClient(
+                    host: normalizedHost,
+                    port: server.port,
+                    authenticationMethod: authMethod,
+                    hostKeyValidator: hostKeyValidator,
+                    algorithms: .all
+                )
+            } else {
+                throw error
+            }
+        }
+        await session.setConnectionProgress(.authenticating)
 
         guard let client = self.client else {
             throw SSHError.connectionFailed
@@ -629,6 +898,9 @@ class SSHConnection {
     }
 
     private func runInteractiveTTY(client: SSHClient, server: ServerConfiguration) async {
+        await MainActor.run {
+            self.session?.setConnectionProgress(.startingShell)
+        }
         do {
             let pty = SSHChannelRequestEvent.PseudoTerminalRequest(
                 wantReply: true,
@@ -691,9 +963,11 @@ class SSHConnection {
                 }
                 return
             }
+            let message = Self.userFacingMessage(for: error, server: server)
+            print("SSH stream error (\(server.host):\(server.port)): \(error)")
             await MainActor.run {
                 if case .connected = self.session?.state {
-                    self.session?.state = .error("Connection lost: \(error.localizedDescription)")
+                    self.session?.reportError(message)
                 }
             }
         }
@@ -753,7 +1027,133 @@ class SSHConnection {
             pixelHeight: 0
         )
     }
-    
+
+    static func userFacingMessage(for error: Error, server: ServerConfiguration) -> String {
+        if let trustError = error as? HostKeyTrustRequiredError {
+            switch trustError.challenge.reason {
+            case .unknown:
+                return "First-time host key check for \(server.host):\(server.port). Review and trust the fingerprint to continue."
+            case .changed:
+                return "Warning: the host key changed for \(server.host):\(server.port). This may indicate a security risk."
+            }
+        }
+
+        if let sshError = error as? SSHError {
+            switch sshError {
+            case .passwordRequired:
+                return "A password is required for \(server.username)@\(server.host):\(server.port)."
+            case .sshKeyNotFound:
+                return "SSH key was not found. Check the key path in server settings."
+            case .authenticationFailed:
+                return "Authentication failed for \(server.username)@\(server.host):\(server.port)."
+            case .invalidHost(let rawHost):
+                return "The host \"\(rawHost)\" is not valid. Use a plain host name or IP (no protocol)."
+            case .connectionFailed:
+                return "Could not establish an SSH connection to \(server.host):\(server.port)."
+            case .notConnected:
+                return "Not connected to \(server.host):\(server.port)."
+            case .sessionNotFound:
+                return "The terminal session is no longer available."
+            }
+        }
+
+        if let channelError = error as? ChannelError {
+            switch channelError {
+            case .connectPending:
+                return "A connection to \(server.host):\(server.port) is already in progress."
+            case .connectTimeout:
+                return "Connection to \(server.host):\(server.port) timed out."
+            case .ioOnClosedChannel, .alreadyClosed, .inputClosed, .outputClosed, .eof:
+                return "The SSH channel to \(server.host):\(server.port) was closed."
+            default:
+                return "SSH channel error while connecting to \(server.host):\(server.port)."
+            }
+        }
+
+        let raw = String(describing: error)
+        if raw.localizedCaseInsensitiveContains("keyexchangenegotiationfailure")
+            || raw.localizedCaseInsensitiveContains("key exchange negotiation failure")
+        {
+            return "SSH handshake failed: no shared security algorithm was found with \(server.host):\(server.port)."
+        }
+        if raw.contains("ChannelError error 0") {
+            return "A connection to \(server.host):\(server.port) is already in progress."
+        }
+        if raw.localizedCaseInsensitiveContains("authentication") {
+            return "Authentication failed for \(server.username)@\(server.host):\(server.port)."
+        }
+        if raw.localizedCaseInsensitiveContains("timed out") {
+            return "Connection to \(server.host):\(server.port) timed out."
+        }
+        if raw.localizedCaseInsensitiveContains("refused") {
+            return "Connection refused by \(server.host):\(server.port). Verify SSH is running on that port."
+        }
+        if raw.localizedCaseInsensitiveContains("no route")
+            || raw.localizedCaseInsensitiveContains("unreachable")
+            || raw.localizedCaseInsensitiveContains("dns")
+        {
+            return "Could not reach \(server.host):\(server.port). Check network access and host name."
+        }
+
+        return "Could not connect to \(server.host):\(server.port)."
+    }
+
+    private static func hostKeyVerificationMode() -> HostKeyVerificationMode {
+        guard
+            let rawValue = UserDefaults.standard.string(forKey: "hostKeyVerificationMode"),
+            let mode = HostKeyVerificationMode(rawValue: rawValue)
+        else {
+            return .ask
+        }
+        return mode
+    }
+
+    private static func trustedHostKeyBase64Set(host: String, port: Int) -> Set<String> {
+        guard let data = UserDefaults.standard.data(forKey: "trustedHostKeys") else {
+            return []
+        }
+        guard let entries = try? JSONDecoder().decode([TrustedHostKeyEntry].self, from: data) else {
+            return []
+        }
+        return Set(
+            entries
+                .filter { $0.host == host && $0.port == port }
+                .map { $0.keyDataBase64 }
+        )
+    }
+
+    private static func normalizedHost(_ host: String) -> String {
+        host
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "ssh://", with: "", options: [.caseInsensitive])
+    }
+
+    private static func connectClient(
+        host: String,
+        port: Int,
+        authenticationMethod: SSHAuthenticationMethod,
+        hostKeyValidator: SSHHostKeyValidator,
+        algorithms: SSHAlgorithms
+    ) async throws -> SSHClient {
+        try await SSHClient.connect(
+            host: host,
+            port: port,
+            authenticationMethod: authenticationMethod,
+            hostKeyValidator: hostKeyValidator,
+            reconnect: .never,
+            algorithms: algorithms
+        )
+    }
+
+    private static func isKeyExchangeNegotiationFailure(_ error: Error) -> Bool {
+        if let nioError = error as? NIOSSHError, nioError.type == .keyExchangeNegotiationFailure {
+            return true
+        }
+
+        let raw = String(describing: error)
+        return raw.localizedCaseInsensitiveContains("keyexchangenegotiationfailure")
+            || raw.localizedCaseInsensitiveContains("key exchange negotiation failure")
+    }
 }
 
 // MARK: - SSH Errors
@@ -765,6 +1165,7 @@ enum SSHError: LocalizedError {
     case connectionFailed
     case notConnected
     case authenticationFailed
+    case invalidHost(String)
     
     var errorDescription: String? {
         switch self {
@@ -780,6 +1181,8 @@ enum SSHError: LocalizedError {
             return "Not connected to SSH server"
         case .authenticationFailed:
             return "Authentication failed"
+        case .invalidHost(let host):
+            return "Invalid host: \(host)"
         }
     }
 }

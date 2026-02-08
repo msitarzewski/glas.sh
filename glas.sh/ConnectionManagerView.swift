@@ -16,6 +16,10 @@ struct ConnectionManagerView: View {
     @State private var showingAddServer = false
     @State private var editingServer: ServerConfiguration?
     @State private var searchQuery: String = ""
+    @State private var pendingTrustSession: TerminalSession?
+    @State private var pendingTrustChallenge: HostKeyTrustChallenge?
+    @State private var pendingConnectPassword: String?
+    @State private var connectionFailureMessage: String?
     
     @Environment(\.openWindow) private var openWindow
     
@@ -31,6 +35,28 @@ struct ConnectionManagerView: View {
         }
         .sheet(item: $editingServer) { server in
             EditServerView(server: server, serverManager: serverManager)
+        }
+        .alert(
+            "Trust SSH Host Key?",
+            isPresented: trustPromptBinding,
+            presenting: pendingTrustChallenge
+        ) { challenge in
+            Button("Trust and Connect") {
+                settingsManager.trustHostKey(challenge)
+                retryPendingConnection()
+            }
+            Button("Cancel", role: .cancel) {
+                clearPendingTrustPrompt()
+            }
+        } message: { challenge in
+            Text(
+                "\(challenge.summary)\n\nAlgorithm: \(challenge.algorithm)\nFingerprint (SHA-256): \(challenge.fingerprintSHA256)"
+            )
+        }
+        .alert("Connection Failed", isPresented: connectionFailureAlertBinding) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(connectionFailureMessage ?? "Unable to connect.")
         }
         .task {
             serverManager.loadServersIfNeeded()
@@ -75,6 +101,28 @@ struct ConnectionManagerView: View {
             }
         }
         .navigationTitle("Connections")
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                Divider()
+
+                HStack {
+                    Button {
+                        openWindow(id: "settings")
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
+                            .labelStyle(.iconOnly)
+                            .font(.headline)
+                            .frame(width: 32, height: 32)
+                    }
+                    .buttonStyle(.plain)
+
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(.ultraThinMaterial)
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -125,6 +173,7 @@ struct ConnectionManagerView: View {
                     ForEach(filteredServers) { server in
                         ServerCard(
                             server: server,
+                            session: sessionForServer(server),
                             onConnect: {
                                 connectToServer(server)
                             },
@@ -170,6 +219,10 @@ struct ConnectionManagerView: View {
             }
         }
     }
+
+    private func sessionForServer(_ server: ServerConfiguration) -> TerminalSession? {
+        sessionManager.sessions.first(where: { $0.server.id == server.id })
+    }
     
     // MARK: - Actions
     
@@ -181,8 +234,8 @@ struct ConnectionManagerView: View {
                 do {
                     password = try KeychainManager.retrievePassword(for: server)
                 } catch {
-                    // TODO: Show password prompt
-                    password = nil
+                    connectionFailureMessage =
+                        "No saved password found for \(server.username)@\(server.host):\(server.port).\n\nOpen Edit Server and save the password in Keychain, then try again."
                     return
                 }
             } else {
@@ -190,8 +243,72 @@ struct ConnectionManagerView: View {
             }
             
             let session = await sessionManager.createSession(for: server, password: password)
-            openWindow(id: "terminal", value: session.id)
+            if let challenge = session.pendingHostKeyChallenge,
+               settingsManager.hostKeyVerificationMode == HostKeyVerificationMode.ask.rawValue {
+                pendingTrustSession = session
+                pendingTrustChallenge = challenge
+                pendingConnectPassword = password
+                return
+            }
+
+            if session.state == .connected {
+                openWindow(id: "terminal", value: session.id)
+                return
+            }
+
+            if case .error(let message) = session.state {
+                if let diagnostics = session.lastConnectionDiagnostics, !diagnostics.isEmpty {
+                    connectionFailureMessage = "\(message)\n\n\(diagnostics)"
+                } else {
+                    connectionFailureMessage = message
+                }
+                sessionManager.closeSession(session)
+            }
         }
+    }
+
+    private var trustPromptBinding: Binding<Bool> {
+        Binding(
+            get: { pendingTrustChallenge != nil },
+            set: { isPresented in
+                if !isPresented {
+                    clearPendingTrustPrompt()
+                }
+            }
+        )
+    }
+
+    private var connectionFailureAlertBinding: Binding<Bool> {
+        Binding(
+            get: { connectionFailureMessage != nil },
+            set: { isPresented in
+                if !isPresented {
+                    connectionFailureMessage = nil
+                }
+            }
+        )
+    }
+
+    private func retryPendingConnection() {
+        guard let session = pendingTrustSession else { return }
+        let password = pendingConnectPassword
+
+        Task {
+            session.pendingHostKeyChallenge = nil
+            await session.connect(password: password)
+            if session.state == .connected {
+                openWindow(id: "terminal", value: session.id)
+                clearPendingTrustPrompt()
+            } else if session.pendingHostKeyChallenge == nil {
+                clearPendingTrustPrompt()
+            }
+        }
+    }
+
+    private func clearPendingTrustPrompt() {
+        pendingTrustSession = nil
+        pendingTrustChallenge = nil
+        pendingConnectPassword = nil
     }
 }
 
@@ -248,12 +365,24 @@ enum ConnectionSection: Hashable, Identifiable, CaseIterable {
 
 struct ServerCard: View {
     let server: ServerConfiguration
+    let session: TerminalSession?
     let onConnect: () -> Void
     let onEdit: () -> Void
     let onToggleFavorite: () -> Void
     let onDelete: () -> Void
     
     @State private var isHovering = false
+    @State private var pulsePhase = false
+
+    private var isConnecting: Bool {
+        guard let state = session?.state else { return false }
+        switch state {
+        case .connecting, .reconnecting:
+            return true
+        default:
+            return false
+        }
+    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -308,6 +437,10 @@ struct ServerCard: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+
+                if isConnecting, let progress = session?.connectionProgress {
+                    ConnectionTicker(stage: progress, port: server.port)
+                }
                 
                 if let lastConnected = server.lastConnected {
                     HStack(spacing: 8) {
@@ -341,14 +474,15 @@ struct ServerCard: View {
             HStack(spacing: 8) {
                 Button(action: onConnect) {
                     HStack {
-                        Image(systemName: "bolt.fill")
-                        Text("Connect")
+                        Image(systemName: isConnecting ? "arrow.triangle.2.circlepath.circle.fill" : "bolt.fill")
+                        Text(isConnecting ? "Connecting…" : "Connect")
                             .fontWeight(.medium)
                     }
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
+                .disabled(isConnecting)
                 
                 Menu {
                     Button(action: onEdit) {
@@ -378,10 +512,71 @@ struct ServerCard: View {
         .background(.ultraThinMaterial, in: .rect(cornerRadius: 20))
         .overlay {
             RoundedRectangle(cornerRadius: 20)
-                .strokeBorder(server.colorTag.color.opacity(0.3), lineWidth: 2)
+                .strokeBorder(
+                    isConnecting ? server.colorTag.color.opacity(0.75) : server.colorTag.color.opacity(0.3),
+                    lineWidth: isConnecting ? 2.6 : 2
+                )
         }
         .hoverEffect(.lift)
-        .shadow(color: .black.opacity(0.1), radius: 10, x: 0, y: 5)
+        .scaleEffect(isConnecting && pulsePhase ? 1.012 : 1.0)
+        .shadow(
+            color: isConnecting ? server.colorTag.color.opacity(0.25) : .black.opacity(0.1),
+            radius: isConnecting ? 14 : 10,
+            x: 0,
+            y: isConnecting ? 8 : 5
+        )
+        .onAppear {
+            updatePulseAnimation()
+        }
+        .onChange(of: isConnecting) { _, _ in
+            updatePulseAnimation()
+        }
+    }
+
+    private func updatePulseAnimation() {
+        if isConnecting {
+            pulsePhase = false
+            withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) {
+                pulsePhase = true
+            }
+        } else {
+            pulsePhase = false
+        }
+    }
+}
+
+private struct ConnectionTicker: View {
+    let stage: ConnectionProgressStage
+    let port: Int
+
+    private var labels: [String] {
+        ["DNS", "Connecting:\(port)", "Negotiating", "Auth", "Shell"]
+    }
+
+    var body: some View {
+        let active = stage.flowIndex
+        VStack(alignment: .leading, spacing: 6) {
+            Text(stage.tickerLabel)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.primary)
+                .contentTransition(.numericText())
+
+            HStack(spacing: 6) {
+                ForEach(Array(labels.enumerated()), id: \.offset) { index, label in
+                    Text(label)
+                        .font(.caption2)
+                        .foregroundStyle(index <= active ? .primary : .tertiary)
+                    if index < labels.count - 1 {
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(index < active ? .primary : .tertiary)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(.regularMaterial, in: .rect(cornerRadius: 10))
     }
 }
 
