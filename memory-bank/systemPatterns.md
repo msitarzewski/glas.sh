@@ -7,7 +7,9 @@
 
 ## UI Structure
 - Multi-window app model with terminal-focused windows.
-- Ornaments for host, tools rail, and status details.
+- Footer-first terminal action model (search/clear/preview/tools) instead of persistent side rails.
+- Terminal-local settings modal for session-scoped behavior (`Terminal`, `Overrides`, `Port Forwarding`).
+- Composition boundary: keep outer frame/chrome stable while applying tint/translucency at terminal display layer.
 
 ## Repo Layout Pattern
 - Runtime app code in `/Users/michael/Developer/glas.sh/glas.sh`.

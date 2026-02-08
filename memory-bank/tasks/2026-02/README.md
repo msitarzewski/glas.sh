@@ -1,5 +1,13 @@
 # 2026-02 Tasks
 
+## 2026-02-08: Terminal window UX polish + in-window session settings
+- Replaced toolbar/rail experiments with compact footer action controls.
+- Added in-terminal search overlay and centered terminal session settings modal.
+- Moved session-specific controls out of global settings into terminal-local tabs.
+- Added inline terminal-session port forwarding management.
+- Scoped tint/transparency behavior to terminal display background to avoid tinting text output.
+- See: [260208_terminal-window-ux-polish-and-session-settings.md](./260208_terminal-window-ux-polish-and-session-settings.md)
+
 ## 2026-02-08: Settings UX + session management + SSH handshake fixes
 - Implemented sticky settings access in Connections and refined visionOS-style settings UX.
 - Wired settings/session persistence and host-key trust workflows.
@@ -20,3 +28,4 @@ Task records:
 - [260207_ssh-implementation.md](./260207_ssh-implementation.md)
 - [260207_todo-inventory.md](./260207_todo-inventory.md)
 - [260208_settings-ux-session-management-and-ssh-handshake.md](./260208_settings-ux-session-management-and-ssh-handshake.md)
+- [260208_terminal-window-ux-polish-and-session-settings.md](./260208_terminal-window-ux-polish-and-session-settings.md)

@@ -16,18 +16,11 @@ struct TerminalWindowView: View {
     @Environment(SessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
     
-    @State private var showingSearch = false
     @State private var searchQuery: String = ""
-    @State private var showingSidebar = true
-    @State private var showingInfoPanel = false
+    @State private var showingSearchOverlay = false
+    @State private var showingTerminalSettings = false
+    @State private var terminalSettingsTab: TerminalSettingsModalTab = .terminal
     @StateObject private var terminalHostModel = SwiftTermHostModel()
-    @State private var toolsExpanded = false
-    @State private var sidebarHovered = false
-    @State private var sidebarButtonFocusStates: [String: Bool] = [:]
-    @State private var sidebarButtonHoverStates: [String: Bool] = [:]
-    @State private var sidebarCollapseTask: Task<Void, Never>?
-    @State private var didApplyLayoutDefaults = false
-    @FocusState private var sidebarFocused: Bool
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -43,36 +36,24 @@ struct TerminalWindowView: View {
                     .padding(.bottom, 10)
                     .padding(.top, 4)
             }
-            .background(windowBackgroundStyle, in: .rect(cornerRadius: 24))
-            .overlay {
-                if let tintColor = tintColor {
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .fill(tintColor.opacity(settingsManager.interactiveGlassEffects ? 0.08 : 0.14))
-                        .allowsHitTesting(false)
-                }
-            }
-            .opacity(settingsManager.windowOpacity)
+            .background(.ultraThinMaterial, in: .rect(cornerRadius: 24))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.leading, sidebarIsLeading ? 62 : 22)
-            .padding(.trailing, sidebarIsLeading ? 22 : 62)
+            .padding(.horizontal, 22)
             .padding(.top, 34)
             .padding(.bottom, 26)
-        }
-        .ornament(attachmentAnchor: .scene(sidebarIsLeading ? .leading : .trailing)) {
-            if showingSidebar {
-                sidebarOrnament
+
+            if showingTerminalSettings {
+                Color.black.opacity(0.18)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showingTerminalSettings = false
+                        }
+                    }
+
+                terminalSettingsModal
+                    .transition(.scale(scale: 0.96).combined(with: .opacity))
             }
-        }
-        .ornament(attachmentAnchor: .scene(sidebarIsLeading ? .trailing : .leading)) {
-            if showingInfoPanel {
-                infoPanelOrnament
-            }
-        }
-        .ornament(attachmentAnchor: .scene(.top)) {
-            toolbarOrnament
-        }
-        .toolbar {
-            toolbarContent
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -82,19 +63,22 @@ struct TerminalWindowView: View {
         .onChange(of: session.closeWindowNonce) { _, _ in
             dismiss()
         }
-        .onAppear {
-            guard !didApplyLayoutDefaults else { return }
-            didApplyLayoutDefaults = true
-            showingSidebar = settingsManager.showSidebarByDefault
-            showingInfoPanel = settingsManager.showInfoPanelByDefault
-        }
     }
     
     // MARK: - Terminal Content
     
     private var terminalContent: some View {
         ZStack {
-            settingsManager.currentTheme.background.color
+            terminalDisplayBackground
+            if let tintColor = tintColor {
+                Rectangle()
+                    .fill(
+                        tintColor.opacity(
+                            (effectiveInteractiveGlassEffects ? 0.08 : 0.14) * effectiveWindowOpacity
+                        )
+                    )
+                    .allowsHitTesting(false)
+            }
             SwiftTermHostView(
                 model: terminalHostModel,
                 theme: swiftTermTheme,
@@ -126,6 +110,13 @@ struct TerminalWindowView: View {
         .onChange(of: session.terminalInputNonce) { _, nonce in
             terminalHostModel.ingest(data: session.terminalInputChunk, nonce: nonce)
         }
+        .overlay(alignment: .top) {
+            if showingSearchOverlay {
+                terminalSearchOverlay
+                    .padding(.top, 14)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -156,19 +147,21 @@ struct TerminalWindowView: View {
         return (1, 1, 1, 1)
     }
 
-    private var sidebarIsLeading: Bool {
-        settingsManager.sidebarPosition != "Right"
-    }
-
-    private var windowBackgroundStyle: AnyShapeStyle {
-        if settingsManager.blurBackground {
-            return AnyShapeStyle(.ultraThinMaterial)
+    @ViewBuilder
+    private var terminalDisplayBackground: some View {
+        if effectiveBlurBackground {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .opacity(effectiveWindowOpacity)
+        } else {
+            let bg = rgbaComponents(settingsManager.currentTheme.background.color)
+            Rectangle()
+                .fill(Color(red: bg.red, green: bg.green, blue: bg.blue, opacity: effectiveWindowOpacity))
         }
-        return AnyShapeStyle(Color.black.opacity(0.35))
     }
 
     private var tintColor: Color? {
-        switch settingsManager.glassTint {
+        switch effectiveGlassTint {
         case "Blue":
             return .blue
         case "Purple":
@@ -178,6 +171,22 @@ struct TerminalWindowView: View {
         default:
             return nil
         }
+    }
+
+    private var effectiveWindowOpacity: Double {
+        settingsManager.sessionOverride(for: session.id)?.windowOpacity ?? settingsManager.windowOpacity
+    }
+
+    private var effectiveBlurBackground: Bool {
+        settingsManager.sessionOverride(for: session.id)?.blurBackground ?? settingsManager.blurBackground
+    }
+
+    private var effectiveInteractiveGlassEffects: Bool {
+        settingsManager.sessionOverride(for: session.id)?.interactiveGlassEffects ?? settingsManager.interactiveGlassEffects
+    }
+
+    private var effectiveGlassTint: String {
+        settingsManager.sessionOverride(for: session.id)?.glassTint ?? settingsManager.glassTint
     }
     
     // MARK: - Bottom Status
@@ -196,300 +205,170 @@ struct TerminalWindowView: View {
             Divider()
                 .frame(height: 12)
             
+            Text(session.server.name)
+                .font(.caption2)
+                .fontWeight(.semibold)
+
+            Text("\(session.server.username)@\(session.server.host)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
             Spacer(minLength: 0)
 
             Text("TERM \(session.server.terminalType)")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
-            Button {
-                showingInfoPanel.toggle()
-            } label: {
-                Label("Info", systemImage: "info.circle")
-                    .font(.caption)
+            FooterGlassIconButton(symbol: "magnifyingglass", title: "Search") {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showingSearchOverlay.toggle()
+                }
             }
-            .buttonStyle(.bordered)
+
+            FooterGlassIconButton(symbol: "trash", title: "Clear") {
+                session.clearScreen()
+            }
+
+            FooterGlassIconButton(symbol: "safari", title: "HTML Preview") {
+                let context = HTMLPreviewContext(
+                    sessionID: session.id,
+                    url: "http://localhost:8080"
+                )
+                openWindow(id: "html-preview", value: context)
+            }
+
+            Menu {
+                Button {
+                    Task {
+                        let _ = await sessionManager.createSession(for: session.server)
+                    }
+                } label: {
+                    Label("Duplicate Session", systemImage: "doc.on.doc")
+                }
+
+                if session.state == .connected {
+                    Button {
+                        Task {
+                            session.disconnect()
+                            try? await Task.sleep(for: .seconds(1))
+                            await session.connect()
+                        }
+                    } label: {
+                        Label("Reconnect", systemImage: "arrow.clockwise")
+                    }
+                }
+
+                Button {
+                    openWindow(id: "port-forwarding")
+                } label: {
+                    Label("Port Forwarding", systemImage: "arrow.forward.square")
+                }
+
+                Button {
+                    terminalSettingsTab = .terminal
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showingTerminalSettings = true
+                    }
+                } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
+            } label: {
+                Label("Tools", systemImage: "gearshape")
+            }
+            .menuStyle(.button)
+            .labelStyle(.iconOnly)
             .controlSize(.small)
+            .help("Tools")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
         .background(.ultraThinMaterial)
     }
     
-    // MARK: - Toolbar Ornament
-    
-    private var toolbarOrnament: some View {
-        HStack(spacing: 20) {
-            // Server info
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(session.server.colorTag.color)
-                    .frame(width: 8, height: 8)
-                
-                Text(session.server.name)
-                    .font(.headline)
-                    .fontWeight(.semibold)
-                
-                Text("•")
-                    .foregroundStyle(.secondary)
-                
-                Text("\(session.server.username)@\(session.server.host)")
-                    .font(.subheadline)
+    private var terminalSearchOverlay: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+
+            TextField("Search terminal output", text: $searchQuery)
+                .textFieldStyle(.plain)
+                .submitLabel(.search)
+
+            if !searchQuery.isEmpty {
+                Text("\(session.searchOutput(searchQuery).count)")
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            
-            Spacer()
-        }
-        .padding()
-        .background(.ultraThinMaterial, in: .rect(cornerRadius: 20))
-    }
-    
-    @Namespace private var toolbarNamespace
-    
-    // MARK: - Sidebar Ornament
-    
-    private var sidebarOrnament: some View {
-        VStack(spacing: 8) {
-            SidebarButton(
-                icon: "arrow.forward.square",
-                title: "Port Forward",
-                compact: !toolsExpanded,
-                id: "port-forward",
-                onFocusChange: handleSidebarButtonFocus,
-                onHoverChange: handleSidebarButtonHover,
-                action: {
-                    openWindow(id: "port-forwarding")
-                }
-            )
-            
-            SidebarButton(
-                icon: "safari",
-                title: "HTML Preview",
-                compact: !toolsExpanded,
-                id: "html-preview",
-                onFocusChange: handleSidebarButtonFocus,
-                onHoverChange: handleSidebarButtonHover,
-                action: {
-                    let context = HTMLPreviewContext(
-                        sessionID: session.id,
-                        url: "http://localhost:8080"
-                    )
-                    openWindow(id: "html-preview", value: context)
-                }
-            )
-            
-            SidebarButton(
-                icon: "doc.text",
-                title: "SFTP Browser",
-                compact: !toolsExpanded,
-                id: "sftp-browser",
-                onFocusChange: handleSidebarButtonFocus,
-                onHoverChange: handleSidebarButtonHover,
-                action: {
-                    // TODO: Open SFTP browser
-                }
-            )
-            
-            SidebarButton(
-                icon: "terminal",
-                title: "Snippets",
-                compact: !toolsExpanded,
-                id: "snippets",
-                onFocusChange: handleSidebarButtonFocus,
-                onHoverChange: handleSidebarButtonHover,
-                action: {
-                    // TODO: Show snippets panel
-                }
-            )
-            
-            Divider()
-                .padding(.vertical, 4)
-            
-            SidebarButton(
-                icon: "magnifyingglass",
-                title: "Search",
-                compact: !toolsExpanded,
-                id: "search",
-                onFocusChange: handleSidebarButtonFocus,
-                onHoverChange: handleSidebarButtonHover,
-                action: {
-                    showingSearch.toggle()
-                }
-            )
-            
-            SidebarButton(
-                icon: "trash",
-                title: "Clear",
-                compact: !toolsExpanded,
-                id: "clear",
-                onFocusChange: handleSidebarButtonFocus,
-                onHoverChange: handleSidebarButtonHover,
-                action: {
-                    session.clearScreen()
-                }
-            )
-            
-            Divider()
-                .padding(.vertical, 4)
-            
-            if session.state == .connected {
-                SidebarButton(
-                    icon: "arrow.clockwise",
-                    title: "Reconnect",
-                    compact: !toolsExpanded,
-                    id: "reconnect",
-                    onFocusChange: handleSidebarButtonFocus,
-                    onHoverChange: handleSidebarButtonHover,
-                    action: {
-                        Task {
-                            session.disconnect()
-                            try? await Task.sleep(for: .seconds(1))
-                            await session.connect()
-                        }
-                    }
-                )
-            }
-            
-            SidebarButton(
-                icon: "square.split.2x1",
-                title: "Split View",
-                compact: !toolsExpanded,
-                id: "split-view",
-                onFocusChange: handleSidebarButtonFocus,
-                onHoverChange: handleSidebarButtonHover,
-                action: {
-                    // TODO: Split terminal
-                }
-            )
-            
-            SidebarButton(
-                icon: "doc.on.doc",
-                title: "Duplicate",
-                compact: !toolsExpanded,
-                id: "duplicate",
-                onFocusChange: handleSidebarButtonFocus,
-                onHoverChange: handleSidebarButtonHover,
-                action: {
-                    Task {
-                        let _ = await sessionManager.createSession(for: session.server)
-                    }
-                }
-            )
-        }
-        .frame(width: toolsExpanded ? 214 : 52)
-        .padding(toolsExpanded ? 11 : 8)
-        .background(
-            .ultraThinMaterial,
-            in: RoundedRectangle(
-                cornerRadius: toolsExpanded ? 26 : 999,
-                style: .continuous
-            )
-        )
-        .focusable()
-        .focused($sidebarFocused)
-        .onChange(of: sidebarFocused) { _, _ in
-            syncToolsExpanded()
-        }
-        .onHover { hovering in
-            sidebarHovered = hovering
-            syncToolsExpanded()
-        }
-    }
 
-    private func handleSidebarButtonFocus(id: String, focused: Bool) {
-        if sidebarButtonFocusStates[id] == focused { return }
-        sidebarButtonFocusStates[id] = focused
-        syncToolsExpanded()
-    }
-
-    private func handleSidebarButtonHover(id: String, hovering: Bool) {
-        if sidebarButtonHoverStates[id] == hovering { return }
-        sidebarButtonHoverStates[id] = hovering
-        syncToolsExpanded()
-    }
-
-    private var sidebarInteracting: Bool {
-        sidebarHovered || sidebarFocused || sidebarButtonFocusStates.values.contains(true) || sidebarButtonHoverStates.values.contains(true)
-    }
-
-    private func syncToolsExpanded() {
-        sidebarCollapseTask?.cancel()
-
-        if sidebarInteracting {
-            withAnimation(.easeInOut(duration: 0.16)) {
-                toolsExpanded = true
-            }
-            return
-        }
-
-        sidebarCollapseTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(180))
-            guard !sidebarInteracting else { return }
-            withAnimation(.easeInOut(duration: 0.16)) {
-                toolsExpanded = false
-            }
-        }
-    }
-
-    // MARK: - Info Panel Ornament
-    
-    private var infoPanelOrnament: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("System Information")
-                .font(.headline)
-                .fontWeight(.semibold)
-            
-            if let systemInfo = session.systemInfo {
-                VStack(alignment: .leading, spacing: 8) {
-                    InfoRow(label: "Hostname", value: systemInfo.hostname)
-                    InfoRow(label: "OS", value: systemInfo.os)
-                    InfoRow(label: "Kernel", value: systemInfo.kernel)
-                    InfoRow(label: "Uptime", value: systemInfo.uptime)
-                    InfoRow(label: "CPU Cores", value: "\(systemInfo.cpuCores)")
-                    InfoRow(label: "Memory", value: systemInfo.totalMemory)
-                    InfoRow(label: "Architecture", value: systemInfo.architecture)
-                }
-            } else {
-                Text("Fetching system information...")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            
-            Divider()
-                .padding(.vertical, 8)
-            
-            Text("Port Forwards")
-                .font(.headline)
-                .fontWeight(.semibold)
-            
-            if session.portForwards.isEmpty {
-                Text("No active port forwards")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(session.portForwards) { forward in
-                        PortForwardDisplayRow(forward: forward)
-                    }
-                }
-            }
-        }
-        .frame(width: 280)
-        .padding()
-        .background(.ultraThinMaterial, in: .rect(cornerRadius: 20))
-    }
-    
-    // MARK: - Toolbar Content
-    
-    @ToolbarContentBuilder
-    private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
             Button {
-                openWindow(id: "connections")
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showingSearchOverlay = false
+                }
             } label: {
-                Label("Connections", systemImage: "server.rack")
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
             }
+            .buttonStyle(.plain)
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(minWidth: 280, maxWidth: 420)
+        .background(.ultraThinMaterial, in: .capsule)
+    }
+
+    private var terminalSettingsModal: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Text("Terminal Settings")
+                    .font(.headline)
+
+                Spacer()
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showingTerminalSettings = false
+                    }
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            .padding(.bottom, 12)
+
+            Picker("Settings Tab", selection: $terminalSettingsTab) {
+                Text("Terminal").tag(TerminalSettingsModalTab.terminal)
+                Text("Overrides").tag(TerminalSettingsModalTab.overrides)
+                Text("Port Forwarding").tag(TerminalSettingsModalTab.portForwarding)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 12)
+
+            Group {
+                switch terminalSettingsTab {
+                case .terminal:
+                    TerminalSettingsView()
+                        .environment(settingsManager)
+                case .overrides:
+                    TerminalOverridesSettingsView(session: session)
+                        .environment(settingsManager)
+                case .portForwarding:
+                    TerminalPortForwardingSettingsView(session: session)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(width: 760, height: 560)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(.white.opacity(0.18), lineWidth: 1)
+        }
+        .shadow(radius: 20, y: 8)
     }
 }
 
@@ -526,97 +405,283 @@ struct TerminalLineView: View {
     }
 }
 
-struct SidebarButton: View {
-    let icon: String
+struct FooterGlassIconButton: View {
+    let symbol: String
     let title: String
-    var compact: Bool = false
-    let id: String
-    var onFocusChange: ((String, Bool) -> Void)? = nil
-    var onHoverChange: ((String, Bool) -> Void)? = nil
     let action: () -> Void
 
     @Environment(\.isFocused) private var isFocused
     @State private var isHovered = false
-    
+
     var body: some View {
         Button(action: action) {
-            HStack(spacing: compact ? 0 : 12) {
-                Image(systemName: icon)
-                    .font(.system(size: compact ? 16 : 18, weight: .medium))
-                    .symbolRenderingMode(.monochrome)
-                    .foregroundStyle(.secondary)
-                    .frame(width: compact ? 32 : 30, height: compact ? 32 : 30)
-                    .background {
-                        if isFocused || isHovered {
-                            Circle()
-                                .fill(.regularMaterial)
-                        }
-                    }
-                
-                if !compact {
-                    Text(title)
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                    
-                    Spacer(minLength: 0)
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 24, height: 24)
+                .background {
+                    Circle()
+                        .fill((isHovered || isFocused) ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(Color.clear))
                 }
-            }
-            .padding(.horizontal, compact ? 0 : 12)
-            .padding(.vertical, compact ? 8 : 10)
-            .frame(maxWidth: .infinity, alignment: compact ? .center : .leading)
         }
         .buttonStyle(.plain)
         .focusable(true)
-        .onChange(of: isFocused) { _, focused in
-            onFocusChange?(id, focused)
-        }
         .onHover { hovering in
             isHovered = hovering
-            onHoverChange?(id, hovering)
         }
-        .contentShape(.rect)
         .hoverEffect(.lift)
+        .help(title)
     }
 }
 
-struct InfoRow: View {
-    let label: String
-    let value: String
-    
-    var body: some View {
-        HStack {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(width: 80, alignment: .leading)
-            
-            Text(value)
-                .font(.caption)
-                .fontWeight(.medium)
-        }
-    }
+private enum TerminalSettingsModalTab: Hashable {
+    case terminal
+    case overrides
+    case portForwarding
 }
 
-struct PortForwardDisplayRow: View {
-    let forward: PortForward
-    
+struct TerminalOverridesSettingsView: View {
+    @Bindable var session: TerminalSession
+    @Environment(SettingsManager.self) private var settingsManager
+
+    private var sessionOverride: TerminalSessionOverride {
+        settingsManager.sessionOverride(for: session.id) ?? TerminalSessionOverride()
+    }
+
     var body: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(forward.isActive ? Color.green : Color.gray)
-                .frame(width: 6, height: 6)
-            
-            VStack(alignment: .leading, spacing: 2) {
-                Text(forward.type.displayName)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                
-                Text(forward.displayString)
-                    .font(.caption)
-                    .fontWeight(.medium)
+        @Bindable var settings = settingsManager
+
+        Form {
+            Section("Session") {
+                LabeledContent("Name", value: session.server.name)
+                LabeledContent("Host", value: "\(session.server.username)@\(session.server.host)")
+                LabeledContent("Status", value: session.state.displayName)
+            }
+
+            Section("Window Overrides") {
+                HStack {
+                    Text("Window opacity")
+                    Spacer()
+                    Slider(
+                        value: Binding(
+                            get: { sessionOverride.windowOpacity ?? settings.windowOpacity },
+                            set: { newValue in
+                                settings.updateSessionOverride(for: session.id) { override in
+                                    override.windowOpacity = newValue
+                                }
+                            }
+                        ),
+                        in: 0.5...1.0
+                    )
+                    .frame(maxWidth: 220)
+                    Text("\(Int((sessionOverride.windowOpacity ?? settings.windowOpacity) * 100))%")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, alignment: .trailing)
+                }
+
+                Toggle(
+                    "Blur background",
+                    isOn: Binding(
+                        get: { sessionOverride.blurBackground ?? settings.blurBackground },
+                        set: { newValue in
+                            settings.updateSessionOverride(for: session.id) { override in
+                                override.blurBackground = newValue
+                            }
+                        }
+                    )
+                )
+
+                Toggle(
+                    "Interactive glass effects",
+                    isOn: Binding(
+                        get: { sessionOverride.interactiveGlassEffects ?? settings.interactiveGlassEffects },
+                        set: { newValue in
+                            settings.updateSessionOverride(for: session.id) { override in
+                                override.interactiveGlassEffects = newValue
+                            }
+                        }
+                    )
+                )
+
+                Picker(
+                    "Glass tint",
+                    selection: Binding(
+                        get: { sessionOverride.glassTint ?? settings.glassTint },
+                        set: { newValue in
+                            settings.updateSessionOverride(for: session.id) { override in
+                                override.glassTint = newValue
+                            }
+                        }
+                    )
+                ) {
+                    Text("None").tag("None")
+                    Text("Blue").tag("Blue")
+                    Text("Purple").tag("Purple")
+                    Text("Green").tag("Green")
+                }
+
+                Button("Reset Overrides", role: .destructive) {
+                    settings.updateSessionOverride(for: session.id) { override in
+                        override.windowOpacity = nil
+                        override.blurBackground = nil
+                        override.interactiveGlassEffects = nil
+                        override.glassTint = nil
+                    }
+                }
             }
         }
-        .padding(.vertical, 4)
+        .formStyle(.grouped)
+        .padding()
+    }
+}
+
+struct TerminalPortForwardingSettingsView: View {
+    @Bindable var session: TerminalSession
+    @State private var showingAddForward = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Port Forwards")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    showingAddForward = true
+                } label: {
+                    Label("Add", systemImage: "plus.circle.fill")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 14)
+            .padding(.bottom, 8)
+
+            if session.portForwards.isEmpty {
+                ContentUnavailableView {
+                    Label("No Port Forwards", systemImage: "arrow.forward.square")
+                } description: {
+                    Text("Add a local, remote, or dynamic forward for this session.")
+                }
+            } else {
+                List {
+                    ForEach(session.portForwards) { forward in
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(forward.type.displayName)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text(forward.displayString)
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                            }
+
+                            Spacer()
+
+                            Toggle(
+                                "",
+                                isOn: Binding(
+                                    get: { forward.isActive },
+                                    set: { newValue in
+                                        setForwardActive(forward.id, isActive: newValue)
+                                    }
+                                )
+                            )
+                            .labelsHidden()
+
+                            Button(role: .destructive) {
+                                removeForward(forward.id)
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                }
+                .listStyle(.plain)
+            }
+        }
+        .sheet(isPresented: $showingAddForward) {
+            AddSessionPortForwardView { forward in
+                session.portForwards.append(forward)
+            }
+        }
+    }
+
+    private func setForwardActive(_ id: UUID, isActive: Bool) {
+        guard let index = session.portForwards.firstIndex(where: { $0.id == id }) else { return }
+        session.portForwards[index].isActive = isActive
+    }
+
+    private func removeForward(_ id: UUID) {
+        session.portForwards.removeAll { $0.id == id }
+    }
+}
+
+struct AddSessionPortForwardView: View {
+    let onAdd: (PortForward) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var forwardType: PortForward.ForwardType = .local
+    @State private var localPort = ""
+    @State private var remoteHost = "localhost"
+    @State private var remotePort = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Forward Type") {
+                    Picker("Type", selection: $forwardType) {
+                        Text("Local").tag(PortForward.ForwardType.local)
+                        Text("Remote").tag(PortForward.ForwardType.remote)
+                        Text("Dynamic (SOCKS)").tag(PortForward.ForwardType.dynamic)
+                    }
+                }
+
+                Section("Configuration") {
+                    TextField("Local Port", text: $localPort)
+                        .keyboardType(.numberPad)
+
+                    if forwardType != .dynamic {
+                        TextField("Remote Host", text: $remoteHost)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+
+                        TextField("Remote Port", text: $remotePort)
+                            .keyboardType(.numberPad)
+                    }
+                }
+            }
+            .navigationTitle("Add Port Forward")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add") {
+                        guard let local = Int(localPort) else { return }
+                        let remote = Int(remotePort) ?? 0
+                        let forward = PortForward(
+                            type: forwardType,
+                            localPort: local,
+                            remoteHost: forwardType == .dynamic ? "localhost" : remoteHost,
+                            remotePort: forwardType == .dynamic ? 0 : remote
+                        )
+                        onAdd(forward)
+                        dismiss()
+                    }
+                    .disabled(!isValid)
+                }
+            }
+        }
+    }
+
+    private var isValid: Bool {
+        guard let local = Int(localPort), local > 0 && local <= 65535 else { return false }
+        if forwardType == .dynamic { return true }
+        guard !remoteHost.isEmpty else { return false }
+        guard let remote = Int(remotePort), remote > 0 && remote <= 65535 else { return false }
+        return true
     }
 }
 

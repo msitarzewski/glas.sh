@@ -81,6 +81,13 @@ class SessionManager {
     }
 }
 
+struct TerminalSessionOverride: Codable, Hashable {
+    var windowOpacity: Double?
+    var blurBackground: Bool?
+    var interactiveGlassEffects: Bool?
+    var glassTint: String?
+}
+
 // MARK: - Server Manager
 
 @MainActor
@@ -196,6 +203,7 @@ class SettingsManager {
     var showSidebarByDefault: Bool = true
     var showInfoPanelByDefault: Bool = false
     var sidebarPosition: String = "Left"
+    var sessionOverrides: [String: TerminalSessionOverride] = [:]
     private var hasLoadedPersistentState = false
     
     init(loadImmediately: Bool = true) {
@@ -259,6 +267,14 @@ class SettingsManager {
         if let savedSidebarPosition = UserDefaults.standard.string(forKey: "sidebarPosition") {
             sidebarPosition = savedSidebarPosition
         }
+        if let data = UserDefaults.standard.data(forKey: "sessionOverrides") {
+            do {
+                sessionOverrides = try JSONDecoder().decode([String: TerminalSessionOverride].self, from: data)
+            } catch {
+                print("Failed to load session overrides: \(error)")
+                sessionOverrides = [:]
+            }
+        }
         
         loadTheme()
         loadSnippets()
@@ -283,6 +299,23 @@ class SettingsManager {
         UserDefaults.standard.set(showSidebarByDefault, forKey: "showSidebarByDefault")
         UserDefaults.standard.set(showInfoPanelByDefault, forKey: "showInfoPanelByDefault")
         UserDefaults.standard.set(sidebarPosition, forKey: "sidebarPosition")
+        do {
+            let data = try JSONEncoder().encode(sessionOverrides)
+            UserDefaults.standard.set(data, forKey: "sessionOverrides")
+        } catch {
+            print("Failed to save session overrides: \(error)")
+        }
+    }
+
+    func sessionOverride(for sessionID: UUID) -> TerminalSessionOverride? {
+        sessionOverrides[sessionID.uuidString]
+    }
+
+    func updateSessionOverride(for sessionID: UUID, mutate: (inout TerminalSessionOverride) -> Void) {
+        var override = sessionOverride(for: sessionID) ?? TerminalSessionOverride()
+        mutate(&override)
+        sessionOverrides[sessionID.uuidString] = override
+        saveSettings()
     }
 
     func loadTrustedHostKeys() {
