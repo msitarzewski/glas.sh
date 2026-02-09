@@ -1,5 +1,11 @@
 # 2026-02 Tasks
 
+## 2026-02-09: Connections recovery + terminal footer actions
+- Removed beacon-window experiment and returned to Connections as the single recovery target.
+- Added app-level window-presence recovery watcher to reopen Connections when all windows are closed.
+- Switched Connections scene to a single-instance `Window` to prevent duplicate Connections windows.
+- Consolidated terminal actions into one gear menu and added centered footer Connections quick-open button.
+- See: [260209_connections-window-recovery-and-terminal-footer-actions.md](./260209_connections-window-recovery-and-terminal-footer-actions.md)
 ## 2026-02-09: Terminal performance redraw and stream coalescing
 - Reduced redraw pressure in SwiftTerm host integration by removing forced full-view invalidation and avoiding repeated unchanged theme application.
 - Removed duplicate terminal-emulator parsing path in `TerminalSession`.
@@ -44,4 +50,5 @@ Task records:
 - [260208_settings-ux-session-management-and-ssh-handshake.md](./260208_settings-ux-session-management-and-ssh-handshake.md)
 - [260208_ssh-key-management-config-import-and-trust-scoping.md](./260208_ssh-key-management-config-import-and-trust-scoping.md)
 - [260208_terminal-window-ux-polish-and-session-settings.md](./260208_terminal-window-ux-polish-and-session-settings.md)
+- [260209_connections-window-recovery-and-terminal-footer-actions.md](./260209_connections-window-recovery-and-terminal-footer-actions.md)
 - [260209_terminal-performance-redraw-and-stream-coalescing.md](./260209_terminal-performance-redraw-and-stream-coalescing.md)

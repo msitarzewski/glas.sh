@@ -22,6 +22,7 @@ struct ConnectionManagerView: View {
     @State private var connectionFailureMessage: String?
     
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
     
     var body: some View {
         NavigationSplitView {
@@ -256,6 +257,7 @@ struct ConnectionManagerView: View {
 
             if session.state == .connected {
                 openWindow(id: "terminal", value: session.id)
+                dismissWindow(id: "main")
                 return
             }
 
@@ -304,6 +306,7 @@ struct ConnectionManagerView: View {
             await session.connect(password: password)
             if session.state == .connected {
                 openWindow(id: "terminal", value: session.id)
+                dismissWindow(id: "main")
                 clearPendingTrustPrompt()
             } else if session.pendingHostKeyChallenge == nil {
                 clearPendingTrustPrompt()

@@ -21,6 +21,7 @@ struct TerminalWindowView: View {
     @State private var showingTerminalSettings = false
     @State private var terminalSettingsTab: TerminalSettingsModalTab = .terminal
     @StateObject private var terminalHostModel = SwiftTermHostModel()
+    @State private var didRunCloseGooseCall = false
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -61,7 +62,11 @@ struct TerminalWindowView: View {
             }
         }
         .onChange(of: session.closeWindowNonce) { _, _ in
+            runCloseGooseCallIfNeeded()
             dismiss()
+        }
+        .onDisappear {
+            runCloseGooseCallIfNeeded()
         }
     }
     
@@ -188,7 +193,39 @@ struct TerminalWindowView: View {
     private var effectiveGlassTint: String {
         settingsManager.sessionOverride(for: session.id)?.glassTint ?? settingsManager.glassTint
     }
-    
+
+    private func runCloseGooseCallIfNeeded() {
+        guard !didRunCloseGooseCall else { return }
+        didRunCloseGooseCall = true
+        Task { @MainActor in
+            await Task.yield()
+            openWindow(id: "main")
+            try? await Task.sleep(for: .milliseconds(150))
+            openWindow(id: "main")
+        }
+    }
+
+    private func duplicateSession() {
+        Task {
+            let _ = await sessionManager.createSession(for: session.server)
+        }
+    }
+
+    private func reconnectSession() {
+        Task {
+            session.disconnect()
+            try? await Task.sleep(for: .seconds(1))
+            await session.connect()
+        }
+    }
+
+    private func openTerminalSettings() {
+        terminalSettingsTab = .terminal
+        withAnimation(.easeInOut(duration: 0.2)) {
+            showingTerminalSettings = true
+        }
+    }
+
     // MARK: - Bottom Status
 
     private var bottomStatusBar: some View {
@@ -219,56 +256,50 @@ struct TerminalWindowView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
-            FooterGlassIconButton(symbol: "magnifyingglass", title: "Search") {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    showingSearchOverlay.toggle()
-                }
-            }
-
-            FooterGlassIconButton(symbol: "trash", title: "Clear") {
-                session.clearScreen()
-            }
-
-            FooterGlassIconButton(symbol: "safari", title: "HTML Preview") {
-                let context = HTMLPreviewContext(
-                    sessionID: session.id,
-                    url: "http://localhost:8080"
-                )
-                openWindow(id: "html-preview", value: context)
-            }
-
             Menu {
                 Button {
-                    Task {
-                        let _ = await sessionManager.createSession(for: session.server)
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showingSearchOverlay.toggle()
                     }
+                } label: {
+                    Label("Search", systemImage: "magnifyingglass")
+                }
+
+                Button {
+                    session.clearScreen()
+                } label: {
+                    Label("Clear", systemImage: "trash")
+                }
+
+                Button {
+                    let context = HTMLPreviewContext(
+                        sessionID: session.id,
+                        url: "http://localhost:8080"
+                    )
+                    openWindow(id: "html-preview", value: context)
+                } label: {
+                    Label("HTML Preview", systemImage: "safari")
+                }
+
+                Divider()
+
+                Button {
+                    duplicateSession()
                 } label: {
                     Label("Duplicate Session", systemImage: "doc.on.doc")
                 }
 
-                if session.state == .connected {
-                    Button {
-                        Task {
-                            session.disconnect()
-                            try? await Task.sleep(for: .seconds(1))
-                            await session.connect()
-                        }
-                    } label: {
-                        Label("Reconnect", systemImage: "arrow.clockwise")
-                    }
-                }
-
                 Button {
-                    openWindow(id: "port-forwarding")
+                    reconnectSession()
                 } label: {
-                    Label("Port Forwarding", systemImage: "arrow.forward.square")
+                    Label("Reconnect", systemImage: "arrow.clockwise")
                 }
+                .disabled(session.state != .connected)
+
+                Divider()
 
                 Button {
-                    terminalSettingsTab = .terminal
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        showingTerminalSettings = true
-                    }
+                    openTerminalSettings()
                 } label: {
                     Label("Settings", systemImage: "gearshape")
                 }
@@ -283,6 +314,11 @@ struct TerminalWindowView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
         .background(.ultraThinMaterial)
+        .overlay(alignment: .center) {
+            FooterGlassIconButton(symbol: "rectangle.3.group", title: "Connections") {
+                openWindow(id: "main")
+            }
+        }
     }
     
     private var terminalSearchOverlay: some View {
@@ -371,6 +407,7 @@ struct TerminalWindowView: View {
         .shadow(radius: 20, y: 8)
     }
 }
+
 
 // MARK: - Supporting Views
 
