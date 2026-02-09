@@ -105,9 +105,10 @@ public struct SwiftTermHostView: UIViewRepresentable {
     public func makeUIView(context: Context) -> TerminalView {
         let terminal = TerminalView(frame: .zero)
         terminal.terminalDelegate = context.coordinator
+        terminal.notifyUpdateChanges = false
         terminal.isOpaque = false
         terminal.backgroundColor = .clear
-        terminal.clearsContextBeforeDrawing = true
+        terminal.clearsContextBeforeDrawing = false
         terminal.layer.cornerRadius = 18
         terminal.layer.masksToBounds = true
         applyTheme(theme, to: terminal)
@@ -178,9 +179,7 @@ public struct SwiftTermHostView: UIViewRepresentable {
         public func bell(source: TerminalView) {}
         public func clipboardCopy(source: TerminalView, content: Data) {}
         public func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {}
-        public func rangeChanged(source: TerminalView, startY: Int, endY: Int) {
-            source.setNeedsDisplay(source.bounds)
-        }
+        public func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
     }
 }
 #endif
