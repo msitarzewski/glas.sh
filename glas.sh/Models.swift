@@ -51,6 +51,8 @@ struct ServerConfiguration: Identifiable, Codable, Hashable {
     var username: String
     var authMethod: AuthenticationMethod
     var sshKeyPath: String?
+    var sshKeyID: UUID?
+    var trustedHostKeys: [TrustedHostKeyEntry]?
     var isFavorite: Bool
     var colorTag: ServerColorTag
     let dateAdded: Date
@@ -74,6 +76,7 @@ struct ServerConfiguration: Identifiable, Codable, Hashable {
         username: String,
         authMethod: AuthenticationMethod = .password,
         sshKeyPath: String? = nil,
+        sshKeyID: UUID? = nil,
         isFavorite: Bool = false,
         colorTag: ServerColorTag = .blue,
         tags: [String] = []
@@ -85,6 +88,8 @@ struct ServerConfiguration: Identifiable, Codable, Hashable {
         self.username = username
         self.authMethod = authMethod
         self.sshKeyPath = sshKeyPath
+        self.sshKeyID = sshKeyID
+        self.trustedHostKeys = nil
         self.isFavorite = isFavorite
         self.colorTag = colorTag
         self.dateAdded = Date()
@@ -250,12 +255,10 @@ final class PromptingHostKeyValidator: NIOSSHClientServerAuthenticationDelegate,
 @Observable
 class TerminalSession: Identifiable, Hashable {
     let id: UUID
-    let server: ServerConfiguration
+    var server: ServerConfiguration
     
     var state: SessionState = .disconnected
     var output: [TerminalLine] = []
-    var screenRows: [String] = []
-    var screenStyledRows: [[TerminalStyledCell]] = []
     var terminalInputChunk: Data = Data()
     var terminalInputNonce: UInt64 = 0
     var closeWindowNonce: UInt64 = 0
@@ -267,7 +270,6 @@ class TerminalSession: Identifiable, Hashable {
     var connectionProgress: ConnectionProgressStage?
     
     // Terminal properties
-    var cursorPosition: (row: Int, col: Int) = (0, 0)
     var scrollbackBuffer: [TerminalLine] = []
     let maxScrollback: Int = 10000
     
@@ -275,15 +277,13 @@ class TerminalSession: Identifiable, Hashable {
     private var sshConnection: SSHConnection?
     private var connectionTask: Task<Void, Never>?
     private var outputTask: Task<Void, Never>?
-    let emulator = TerminalEmulator(cols: 140, rows: 40)
-    
+    private var pendingTerminalOutput = Data()
+    private var terminalFlushTask: Task<Void, Never>?
+    private let terminalFlushInterval: Duration = .milliseconds(8)
     init(server: ServerConfiguration) {
         self.id = UUID()
         self.server = server
         self.sshConnection = SSHConnection(session: self)
-        self.screenRows = emulator.rows
-        self.screenStyledRows = emulator.styledRows
-        self.cursorPosition = emulator.cursor
     }
     
     // Hashable conformance
@@ -411,12 +411,12 @@ class TerminalSession: Identifiable, Hashable {
     
     func clearScreen() {
         let clearSequence = "\u{1b}[2J\u{1b}[H"
-        emulator.feed(text: clearSequence)
+        terminalFlushTask?.cancel()
+        terminalFlushTask = nil
+        pendingTerminalOutput.removeAll(keepingCapacity: true)
         if let clearData = clearSequence.data(using: .utf8) {
-            terminalInputChunk = clearData
-            terminalInputNonce &+= 1
+            emitTerminalChunk(clearData)
         }
-        syncEmulatorSnapshot()
         output.removeAll()
     }
     
@@ -437,23 +437,19 @@ class TerminalSession: Identifiable, Hashable {
     }
     
     func feedTerminalData(_ data: Data) {
-        emulator.feed(data: data)
-        terminalInputChunk = data
-        terminalInputNonce &+= 1
-        syncEmulatorSnapshot()
+        pendingTerminalOutput.append(data)
+        scheduleTerminalFlush()
     }
     
     func feedTerminalText(_ text: String) {
-        emulator.feed(text: text)
-        syncEmulatorSnapshot()
+        guard let data = text.data(using: .utf8) else { return }
+        feedTerminalData(data)
     }
 
     func updateTerminalGeometry(rows: Int, columns: Int) {
         let clampedRows = max(8, rows)
         let clampedColumns = max(20, columns)
 
-        emulator.resize(cols: clampedColumns, rows: clampedRows)
-        syncEmulatorSnapshot()
         sshConnection?.setPreferredTerminalSize(rows: clampedRows, columns: clampedColumns)
 
         guard state == .connected else { return }
@@ -466,11 +462,30 @@ class TerminalSession: Identifiable, Hashable {
             }
         }
     }
-    
-    private func syncEmulatorSnapshot() {
-        screenRows = emulator.rows
-        screenStyledRows = emulator.styledRows
-        cursorPosition = emulator.cursor
+
+    private func emitTerminalChunk(_ data: Data) {
+        terminalInputChunk = data
+        terminalInputNonce &+= 1
+    }
+
+    private func scheduleTerminalFlush() {
+        guard terminalFlushTask == nil else { return }
+        terminalFlushTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: self.terminalFlushInterval)
+            self.flushPendingTerminalOutput()
+            self.terminalFlushTask = nil
+            if !self.pendingTerminalOutput.isEmpty {
+                self.scheduleTerminalFlush()
+            }
+        }
+    }
+
+    private func flushPendingTerminalOutput() {
+        guard !pendingTerminalOutput.isEmpty else { return }
+        let chunk = pendingTerminalOutput
+        pendingTerminalOutput.removeAll(keepingCapacity: true)
+        emitTerminalChunk(chunk)
     }
 }
 
@@ -824,16 +839,27 @@ class SSHConnection {
             authMethod = .passwordBased(username: server.username, password: pwd)
             
         case .sshKey:
-            // TODO: Implement SSH key authentication
-            guard let keyPath = server.sshKeyPath else {
+            guard let keyID = server.sshKeyID else {
                 throw SSHError.sshKeyNotFound
             }
-            _ = keyPath
-            // For now, fall back to password
-            guard let pwd = password else {
-                throw SSHError.passwordRequired
+            do {
+                let keyMaterial = try KeychainManager.retrieveSSHKey(for: keyID)
+                let passphraseData = keyMaterial.passphrase?.data(using: .utf8)
+                let keyType = try SSHKeyDetection.detectPrivateKeyType(from: keyMaterial.privateKey)
+                switch keyType {
+                case .rsa:
+                    throw SSHError.unsupportedSSHKeyType("RSA key auth support is coming soon")
+                case .ed25519:
+                    let key = try Curve25519.Signing.PrivateKey(sshEd25519: keyMaterial.privateKey, decryptionKey: passphraseData)
+                    authMethod = .ed25519(username: server.username, privateKey: key)
+                default:
+                    throw SSHError.unsupportedSSHKeyType(keyType.description)
+                }
+            } catch let error as SSHError {
+                throw error
+            } catch {
+                throw SSHError.invalidSSHKey(error.localizedDescription)
             }
-            authMethod = .passwordBased(username: server.username, password: pwd)
             
         case .agent:
             // TODO: Implement SSH agent authentication
@@ -844,7 +870,7 @@ class SSHConnection {
         }
         
         let mode = Self.hostKeyVerificationMode()
-        let trustedSet = Self.trustedHostKeyBase64Set(host: normalizedHost, port: server.port)
+        let trustedSet = Self.trustedHostKeyBase64Set(server: server, host: normalizedHost, port: server.port)
         let hostKeyValidator: SSHHostKeyValidator
         if mode == .insecureAcceptAny {
             hostKeyValidator = .acceptAnything()
@@ -1054,6 +1080,10 @@ class SSHConnection {
                 return "Not connected to \(server.host):\(server.port)."
             case .sessionNotFound:
                 return "The terminal session is no longer available."
+            case .unsupportedSSHKeyType(let keyType):
+                return "\(keyType). Please use an ED25519 key for now."
+            case .invalidSSHKey:
+                return "The selected SSH key could not be parsed. Verify key contents and passphrase."
             }
         }
 
@@ -1108,18 +1138,23 @@ class SSHConnection {
         return mode
     }
 
-    private static func trustedHostKeyBase64Set(host: String, port: Int) -> Set<String> {
-        guard let data = UserDefaults.standard.data(forKey: "trustedHostKeys") else {
-            return []
-        }
-        guard let entries = try? JSONDecoder().decode([TrustedHostKeyEntry].self, from: data) else {
-            return []
-        }
-        return Set(
-            entries
+    private static func trustedHostKeyBase64Set(server: ServerConfiguration, host: String, port: Int) -> Set<String> {
+        let serverEntries = Set(
+            (server.trustedHostKeys ?? [])
                 .filter { $0.host == host && $0.port == port }
                 .map { $0.keyDataBase64 }
         )
+        if !serverEntries.isEmpty {
+            return serverEntries
+        }
+
+        // Backward-compatible fallback for previously stored global trust entries.
+        guard let data = UserDefaults.standard.data(forKey: "trustedHostKeys"),
+              let entries = try? JSONDecoder().decode([TrustedHostKeyEntry].self, from: data)
+        else {
+            return []
+        }
+        return Set(entries.filter { $0.host == host && $0.port == port }.map { $0.keyDataBase64 })
     }
 
     private static func normalizedHost(_ host: String) -> String {
@@ -1166,6 +1201,8 @@ enum SSHError: LocalizedError {
     case notConnected
     case authenticationFailed
     case invalidHost(String)
+    case unsupportedSSHKeyType(String)
+    case invalidSSHKey(String)
     
     var errorDescription: String? {
         switch self {
@@ -1183,6 +1220,10 @@ enum SSHError: LocalizedError {
             return "Authentication failed"
         case .invalidHost(let host):
             return "Invalid host: \(host)"
+        case .unsupportedSSHKeyType(let keyType):
+            return "SSH key type '\(keyType)' is not supported yet. Use RSA or ED25519."
+        case .invalidSSHKey(let message):
+            return "Invalid SSH key: \(message)"
         }
     }
 }

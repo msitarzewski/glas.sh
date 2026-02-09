@@ -12,6 +12,7 @@ import Observation
 #if canImport(UIKit)
 import UIKit
 #endif
+import Citadel
 
 enum HostKeyVerificationMode: String, Codable, CaseIterable {
     case ask = "Ask"
@@ -27,6 +28,120 @@ struct TrustedHostKeyEntry: Codable, Identifiable, Hashable {
     let fingerprintSHA256: String
     let keyDataBase64: String
     let addedAt: Date
+}
+
+struct StoredSSHKey: Codable, Identifiable, Hashable {
+    let id: UUID
+    var name: String
+    let algorithm: String
+    let createdAt: Date
+}
+
+struct SSHKeyMaterial {
+    let privateKey: String
+    let passphrase: String?
+}
+
+struct SSHConfigImportResult {
+    let imported: Int
+    let updated: Int
+    let skipped: Int
+    let warnings: [String]
+}
+
+struct ParsedSSHHostEntry {
+    let alias: String
+    let hostName: String?
+    let user: String?
+    let port: Int?
+    let identityFile: String?
+}
+
+enum SSHConfigParser {
+    static func parse(_ text: String) -> ([ParsedSSHHostEntry], [String]) {
+        let blockedDirectives: Set<String> = [
+            "proxycommand", "localcommand", "include", "match", "proxyjump", "remotecommand"
+        ]
+        var warnings: [String] = []
+        var entries: [ParsedSSHHostEntry] = []
+
+        var currentHosts: [String] = []
+        var hostName: String?
+        var user: String?
+        var port: Int?
+        var identityFile: String?
+
+        func flushCurrent() {
+            guard !currentHosts.isEmpty else { return }
+            for alias in currentHosts {
+                if alias.contains("*") || alias.contains("?") || alias.contains("!") {
+                    warnings.append("Skipped wildcard/negated Host pattern '\(alias)'.")
+                    continue
+                }
+                entries.append(
+                    ParsedSSHHostEntry(
+                        alias: alias,
+                        hostName: hostName,
+                        user: user,
+                        port: port,
+                        identityFile: identityFile
+                    )
+                )
+            }
+        }
+
+        let lines = text.components(separatedBy: .newlines)
+        for (index, rawLine) in lines.enumerated() {
+            let lineNo = index + 1
+            let stripped = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !stripped.isEmpty, !stripped.hasPrefix("#") else { continue }
+
+            let line = stripped.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? stripped
+            let parts = line.split(maxSplits: 1, omittingEmptySubsequences: true, whereSeparator: { $0 == " " || $0 == "\t" })
+            guard parts.count >= 2 else {
+                warnings.append("Ignored malformed line \(lineNo).")
+                continue
+            }
+
+            let key = parts[0].lowercased()
+            let value = String(parts[1]).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+
+            if blockedDirectives.contains(key) {
+                warnings.append("Ignored unsupported directive '\(parts[0])' on line \(lineNo).")
+                continue
+            }
+
+            switch key {
+            case "host":
+                flushCurrent()
+                let hostParts = value.split(whereSeparator: { $0 == " " || $0 == "\t" })
+                currentHosts = hostParts.map(String.init)
+                hostName = nil
+                user = nil
+                port = nil
+                identityFile = nil
+            case "hostname":
+                hostName = value
+            case "user":
+                user = value
+            case "port":
+                port = Int(value)
+                if port == nil {
+                    warnings.append("Ignored invalid Port '\(value)' on line \(lineNo).")
+                }
+            case "identityfile":
+                identityFile = value
+            case "identitiesonly":
+                // Parsed but currently no-op in app settings.
+                break
+            default:
+                // Unknown directives are ignored to keep parser safe.
+                break
+            }
+        }
+        flushCurrent()
+        return (entries, warnings)
+    }
 }
 
 // MARK: - Session Manager
@@ -189,6 +304,10 @@ class ServerManager {
             saveServers()
         }
     }
+
+    func server(for id: UUID) -> ServerConfiguration? {
+        servers.first { $0.id == id }
+    }
     
     func deleteServer(_ server: ServerConfiguration) {
         servers.removeAll { $0.id == server.id }
@@ -207,6 +326,28 @@ class ServerManager {
             servers[index].isFavorite.toggle()
             saveServers()
         }
+    }
+
+    func trustHostKey(_ challenge: HostKeyTrustChallenge, for serverID: UUID) {
+        guard let index = servers.firstIndex(where: { $0.id == serverID }) else { return }
+        var keys = servers[index].trustedHostKeys ?? []
+        keys.removeAll {
+            $0.host == challenge.host
+                && $0.port == challenge.port
+                && $0.keyDataBase64 == challenge.keyDataBase64
+        }
+        keys.append(
+            TrustedHostKeyEntry(
+                host: challenge.host,
+                port: challenge.port,
+                algorithm: challenge.algorithm,
+                fingerprintSHA256: challenge.fingerprintSHA256,
+                keyDataBase64: challenge.keyDataBase64,
+                addedAt: Date()
+            )
+        )
+        servers[index].trustedHostKeys = keys
+        saveServers()
     }
     
     var favoriteServers: [ServerConfiguration] {
@@ -239,6 +380,7 @@ class SettingsManager {
     var visualBell: Bool = true
     var hostKeyVerificationMode: String = HostKeyVerificationMode.ask.rawValue
     var trustedHostKeys: [TrustedHostKeyEntry] = []
+    var sshKeys: [StoredSSHKey] = []
     var cursorStyle: String = "Block"
     var blinkingCursor: Bool = true
     var windowOpacity: Double = 0.95
@@ -324,6 +466,7 @@ class SettingsManager {
         loadTheme()
         loadSnippets()
         loadTrustedHostKeys()
+        loadSSHKeys()
     }
     
     // Manually save when properties change
@@ -384,6 +527,133 @@ class SettingsManager {
         } catch {
             print("Failed to save trusted host keys: \(error)")
         }
+    }
+
+    func loadSSHKeys() {
+        guard let data = UserDefaults.standard.data(forKey: "sshKeys") else {
+            sshKeys = []
+            return
+        }
+        do {
+            sshKeys = try JSONDecoder().decode([StoredSSHKey].self, from: data)
+        } catch {
+            print("Failed to load ssh keys: \(error)")
+            sshKeys = []
+        }
+    }
+
+    private func saveSSHKeys() {
+        do {
+            let data = try JSONEncoder().encode(sshKeys)
+            UserDefaults.standard.set(data, forKey: "sshKeys")
+        } catch {
+            print("Failed to save ssh keys: \(error)")
+        }
+    }
+
+    func addSSHKey(name: String, privateKey: String, passphrase: String?) throws -> StoredSSHKey {
+        let keyType = try SSHKeyDetection.detectPrivateKeyType(from: privateKey)
+        if keyType == .rsa {
+            throw KeychainManager.KeychainError.rsaSupportComingSoon
+        }
+        guard keyType == .ed25519 else {
+            throw KeychainManager.KeychainError.unsupportedSSHKeyType
+        }
+        let key = StoredSSHKey(
+            id: UUID(),
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            algorithm: keyType.description,
+            createdAt: Date()
+        )
+        try KeychainManager.saveSSHKey(privateKey, passphrase: passphrase, for: key.id)
+        sshKeys.append(key)
+        saveSSHKeys()
+        return key
+    }
+
+    func renameSSHKey(_ keyID: UUID, name: String) {
+        guard let index = sshKeys.firstIndex(where: { $0.id == keyID }) else { return }
+        sshKeys[index].name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        saveSSHKeys()
+    }
+
+    func deleteSSHKey(_ keyID: UUID, serverManager: ServerManager? = nil) {
+        sshKeys.removeAll { $0.id == keyID }
+        try? KeychainManager.deleteSSHKey(for: keyID)
+
+        if let serverManager {
+            for i in serverManager.servers.indices {
+                if serverManager.servers[i].sshKeyID == keyID {
+                    serverManager.servers[i].sshKeyID = nil
+                }
+            }
+            serverManager.saveServers()
+        }
+        saveSSHKeys()
+    }
+
+    func importSSHConfig(_ text: String, serverManager: ServerManager) -> SSHConfigImportResult {
+        let (entries, parserWarnings) = SSHConfigParser.parse(text)
+        var warnings = parserWarnings
+        var imported = 0
+        var updated = 0
+        var skipped = 0
+
+        for entry in entries {
+            let host = (entry.hostName ?? entry.alias).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !host.isEmpty else {
+                warnings.append("Skipped Host '\(entry.alias)' because HostName resolved empty.")
+                skipped += 1
+                continue
+            }
+            guard let username = entry.user, !username.isEmpty else {
+                warnings.append("Skipped Host '\(entry.alias)' because User is missing.")
+                skipped += 1
+                continue
+            }
+
+            let port = entry.port ?? 22
+            let identityFile = entry.identityFile
+            let matchedKeyID = resolveKeyID(for: identityFile)
+            let authMethod: AuthenticationMethod = identityFile == nil ? .password : .sshKey
+
+            if let idx = serverManager.servers.firstIndex(where: { $0.name == entry.alias }) {
+                serverManager.servers[idx].host = host
+                serverManager.servers[idx].port = port
+                serverManager.servers[idx].username = username
+                serverManager.servers[idx].authMethod = authMethod
+                serverManager.servers[idx].sshKeyPath = identityFile
+                serverManager.servers[idx].sshKeyID = matchedKeyID
+                updated += 1
+            } else {
+                let server = ServerConfiguration(
+                    name: entry.alias,
+                    host: host,
+                    port: port,
+                    username: username,
+                    authMethod: authMethod,
+                    sshKeyPath: identityFile,
+                    sshKeyID: matchedKeyID,
+                    tags: ["imported"]
+                )
+                serverManager.servers.append(server)
+                imported += 1
+            }
+        }
+
+        serverManager.saveServers()
+        return SSHConfigImportResult(imported: imported, updated: updated, skipped: skipped, warnings: warnings)
+    }
+
+    private func resolveKeyID(for identityFile: String?) -> UUID? {
+        guard let identityFile, !identityFile.isEmpty else { return nil }
+        let normalized = identityFile.trimmingCharacters(in: .whitespacesAndNewlines)
+        let basename = URL(fileURLWithPath: normalized).lastPathComponent.lowercased()
+
+        return sshKeys.first {
+            let keyName = $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return keyName == normalized.lowercased() || keyName == basename
+        }?.id
     }
 
     func trustedHostKeyBase64Set(host: String, port: Int) -> Set<String> {
@@ -547,11 +817,95 @@ enum KeychainManager {
             throw KeychainError.unableToDelete
         }
     }
+
+    static func saveSSHKey(_ privateKey: String, passphrase: String?, for keyID: UUID) throws {
+        try saveGenericPassword(privateKey, account: keyID.uuidString, service: "sh.glas.sshkeys.private")
+        if let passphrase, !passphrase.isEmpty {
+            try saveGenericPassword(passphrase, account: keyID.uuidString, service: "sh.glas.sshkeys.passphrase")
+        } else {
+            try? deleteGenericPassword(account: keyID.uuidString, service: "sh.glas.sshkeys.passphrase")
+        }
+    }
+
+    static func retrieveSSHKey(for keyID: UUID) throws -> SSHKeyMaterial {
+        let privateKey = try retrieveGenericPassword(account: keyID.uuidString, service: "sh.glas.sshkeys.private")
+        let passphrase = try? retrieveGenericPassword(account: keyID.uuidString, service: "sh.glas.sshkeys.passphrase")
+        return SSHKeyMaterial(privateKey: privateKey, passphrase: passphrase)
+    }
+
+    static func deleteSSHKey(for keyID: UUID) throws {
+        try deleteGenericPassword(account: keyID.uuidString, service: "sh.glas.sshkeys.private")
+        try? deleteGenericPassword(account: keyID.uuidString, service: "sh.glas.sshkeys.passphrase")
+    }
+
+    private static func saveGenericPassword(_ value: String, account: String, service: String) throws {
+        let data = value.data(using: .utf8) ?? Data()
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: account,
+            kSecAttrService as String: service,
+            kSecValueData as String: data
+        ]
+        SecItemDelete(query as CFDictionary)
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw KeychainError.unableToSave
+        }
+    }
+
+    private static func retrieveGenericPassword(account: String, service: String) throws -> String {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: account,
+            kSecAttrService as String: service,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess,
+              let data = result as? Data,
+              let value = String(data: data, encoding: .utf8) else {
+            throw KeychainError.notFound
+        }
+        return value
+    }
+
+    private static func deleteGenericPassword(account: String, service: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: account,
+            kSecAttrService as String: service
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainError.unableToDelete
+        }
+    }
     
     enum KeychainError: Error {
         case unableToSave
         case notFound
         case unableToDelete
+        case unsupportedSSHKeyType
+        case rsaSupportComingSoon
+    }
+}
+
+extension KeychainManager.KeychainError: LocalizedError {
+    var errorDescription: String? {
+        switch self {
+        case .unableToSave:
+            return "Unable to save secure item in Keychain."
+        case .notFound:
+            return "Requested secure item was not found in Keychain."
+        case .unableToDelete:
+            return "Unable to delete secure item from Keychain."
+        case .unsupportedSSHKeyType:
+            return "Unsupported SSH key type. Use ED25519."
+        case .rsaSupportComingSoon:
+            return "RSA key auth support is coming soon. Please use an ED25519 key for now."
+        }
     }
 }
 

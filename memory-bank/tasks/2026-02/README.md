@@ -6,6 +6,19 @@
 - Switched Connections scene to a single-instance `Window` to prevent duplicate Connections windows.
 - Consolidated terminal actions into one gear menu and added centered footer Connections quick-open button.
 - See: [260209_connections-window-recovery-and-terminal-footer-actions.md](./260209_connections-window-recovery-and-terminal-footer-actions.md)
+## 2026-02-09: Terminal performance redraw and stream coalescing
+- Reduced redraw pressure in SwiftTerm host integration by removing forced full-view invalidation and avoiding repeated unchanged theme application.
+- Removed duplicate terminal-emulator parsing path in `TerminalSession`.
+- Added terminal output coalescing to reduce per-frame `onChange(UInt64)` update pressure under high-frequency output.
+- User-validated improvement on device during enlarged full-screen `htop` scenario.
+- See: [260209_terminal-performance-redraw-and-stream-coalescing.md](./260209_terminal-performance-redraw-and-stream-coalescing.md)
+
+## 2026-02-08: SSH key management + config import + trust scoping
+- Added settings-level SSH key CRUD with Keychain-backed private key storage.
+- Added pasted OpenSSH config import (safe subset parser and sanitization warnings).
+- Scoped host-key trust persistence to server configurations and wired trust acceptance into server updates.
+- Added explicit RSA messaging: support coming soon, ED25519 supported now.
+- See: [260208_ssh-key-management-config-import-and-trust-scoping.md](./260208_ssh-key-management-config-import-and-trust-scoping.md)
 
 ## 2026-02-08: Terminal window UX polish + in-window session settings
 - Replaced toolbar/rail experiments with compact footer action controls.
@@ -35,5 +48,7 @@ Task records:
 - [260207_ssh-implementation.md](./260207_ssh-implementation.md)
 - [260207_todo-inventory.md](./260207_todo-inventory.md)
 - [260208_settings-ux-session-management-and-ssh-handshake.md](./260208_settings-ux-session-management-and-ssh-handshake.md)
+- [260208_ssh-key-management-config-import-and-trust-scoping.md](./260208_ssh-key-management-config-import-and-trust-scoping.md)
 - [260208_terminal-window-ux-polish-and-session-settings.md](./260208_terminal-window-ux-polish-and-session-settings.md)
 - [260209_connections-window-recovery-and-terminal-footer-actions.md](./260209_connections-window-recovery-and-terminal-footer-actions.md)
+- [260209_terminal-performance-redraw-and-stream-coalescing.md](./260209_terminal-performance-redraw-and-stream-coalescing.md)

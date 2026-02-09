@@ -44,6 +44,9 @@ struct ConnectionManagerView: View {
         ) { challenge in
             Button("Trust and Connect") {
                 settingsManager.trustHostKey(challenge)
+                if let session = pendingTrustSession {
+                    serverManager.trustHostKey(challenge, for: session.server.id)
+                }
                 retryPendingConnection()
             }
             Button("Cancel", role: .cancel) {
@@ -296,6 +299,9 @@ struct ConnectionManagerView: View {
         let password = pendingConnectPassword
 
         Task {
+            if let updatedServer = serverManager.server(for: session.server.id) {
+                session.server = updatedServer
+            }
             session.pendingHostKeyChallenge = nil
             await session.connect(password: password)
             if session.state == .connected {
