@@ -1,5 +1,12 @@
 # 2026-02 Tasks
 
+## 2026-02-09: Terminal performance redraw and stream coalescing
+- Reduced redraw pressure in SwiftTerm host integration by removing forced full-view invalidation and avoiding repeated unchanged theme application.
+- Removed duplicate terminal-emulator parsing path in `TerminalSession`.
+- Added terminal output coalescing to reduce per-frame `onChange(UInt64)` update pressure under high-frequency output.
+- User-validated improvement on device during enlarged full-screen `htop` scenario.
+- See: [260209_terminal-performance-redraw-and-stream-coalescing.md](./260209_terminal-performance-redraw-and-stream-coalescing.md)
+
 ## 2026-02-08: Terminal window UX polish + in-window session settings
 - Replaced toolbar/rail experiments with compact footer action controls.
 - Added in-terminal search overlay and centered terminal session settings modal.
@@ -29,3 +36,4 @@ Task records:
 - [260207_todo-inventory.md](./260207_todo-inventory.md)
 - [260208_settings-ux-session-management-and-ssh-handshake.md](./260208_settings-ux-session-management-and-ssh-handshake.md)
 - [260208_terminal-window-ux-polish-and-session-settings.md](./260208_terminal-window-ux-polish-and-session-settings.md)
+- [260209_terminal-performance-redraw-and-stream-coalescing.md](./260209_terminal-performance-redraw-and-stream-coalescing.md)
