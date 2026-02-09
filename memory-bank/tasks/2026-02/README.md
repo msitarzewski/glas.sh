@@ -1,5 +1,12 @@
 # 2026-02 Tasks
 
+## 2026-02-09: Connections recovery + terminal footer actions
+- Removed beacon-window experiment and returned to Connections as the single recovery target.
+- Added app-level window-presence recovery watcher to reopen Connections when all windows are closed.
+- Switched Connections scene to a single-instance `Window` to prevent duplicate Connections windows.
+- Consolidated terminal actions into one gear menu and added centered footer Connections quick-open button.
+- See: [260209_connections-window-recovery-and-terminal-footer-actions.md](./260209_connections-window-recovery-and-terminal-footer-actions.md)
+
 ## 2026-02-08: Terminal window UX polish + in-window session settings
 - Replaced toolbar/rail experiments with compact footer action controls.
 - Added in-terminal search overlay and centered terminal session settings modal.
@@ -29,3 +36,4 @@ Task records:
 - [260207_todo-inventory.md](./260207_todo-inventory.md)
 - [260208_settings-ux-session-management-and-ssh-handshake.md](./260208_settings-ux-session-management-and-ssh-handshake.md)
 - [260208_terminal-window-ux-polish-and-session-settings.md](./260208_terminal-window-ux-polish-and-session-settings.md)
+- [260209_connections-window-recovery-and-terminal-footer-actions.md](./260209_connections-window-recovery-and-terminal-footer-actions.md)

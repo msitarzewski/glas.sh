@@ -11,16 +11,19 @@ import SwiftUI
 struct glas_shApp: App {
     @State private var sessionManager = SessionManager(loadImmediately: false)
     @State private var settingsManager = SettingsManager(loadImmediately: false)
+    @State private var windowRecoveryManager = WindowRecoveryManager()
     
     var body: some Scene {
-        // Connection manager - PRIMARY WINDOW (opens on launch)
-        WindowGroup(id: "main") {
+        // Connection manager - PRIMARY WINDOW (single instance)
+        Window("Connections", id: "main") {
             MainBootstrapView()
                 .environment(sessionManager)
                 .environment(settingsManager)
+                .trackWindowPresence(key: "main", recovery: windowRecoveryManager)
         }
         .windowStyle(.plain)
         .defaultSize(width: 800, height: 600)
+        .handlesExternalEvents(matching: ["main"])
         
         // Main terminal windows (can open multiple)
         WindowGroup(id: "terminal", for: UUID.self) { $sessionID in
@@ -29,10 +32,12 @@ struct glas_shApp: App {
                 TerminalWindowView(session: session)
                     .environment(sessionManager)
                     .environment(settingsManager)
+                    .trackWindowPresence(key: "terminal-\(sessionID.uuidString)", recovery: windowRecoveryManager)
             } else {
                 SessionNotFoundView()
                     .environment(sessionManager)
                     .environment(settingsManager)
+                    .trackWindowPresence(key: "terminal-missing", recovery: windowRecoveryManager)
             }
         }
         .windowStyle(.plain)
@@ -43,6 +48,10 @@ struct glas_shApp: App {
             if let context = context {
                 HTMLPreviewWindow(context: context)
                     .environment(sessionManager)
+                    .trackWindowPresence(
+                        key: "html-preview-\(context.sessionID.uuidString)",
+                        recovery: windowRecoveryManager
+                    )
             }
         }
         .windowStyle(.plain)
@@ -52,6 +61,7 @@ struct glas_shApp: App {
         Window("Port Forwarding", id: "port-forwarding") {
             PortForwardingManagerView()
                 .environment(sessionManager)
+                .trackWindowPresence(key: "port-forwarding", recovery: windowRecoveryManager)
         }
         .windowStyle(.plain)
         .defaultSize(width: 600, height: 500)
@@ -60,6 +70,7 @@ struct glas_shApp: App {
         Window("Settings", id: "settings") {
             SettingsView()
                 .environment(settingsManager)
+                .trackWindowPresence(key: "settings", recovery: windowRecoveryManager)
         }
         .windowStyle(.plain)
         .defaultSize(width: 700, height: 600)
@@ -110,6 +121,27 @@ struct MainBootstrapView: View {
 
         bootMessage = "Ready"
         isReady = true
+    }
+}
+
+private struct WindowPresenceTrackingModifier: ViewModifier {
+    let key: String
+    let recovery: WindowRecoveryManager
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                recovery.markWindowVisible(key)
+            }
+            .onDisappear {
+                recovery.markWindowHidden(key)
+            }
+    }
+}
+
+private extension View {
+    func trackWindowPresence(key: String, recovery: WindowRecoveryManager) -> some View {
+        modifier(WindowPresenceTrackingModifier(key: key, recovery: recovery))
     }
 }
 
