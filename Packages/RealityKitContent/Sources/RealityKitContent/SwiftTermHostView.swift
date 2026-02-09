@@ -7,6 +7,7 @@ import SwiftTerm
 @MainActor
 public final class SwiftTermHostModel: ObservableObject {
     private weak var terminalView: TerminalView?
+    private var attachedViewID: ObjectIdentifier?
     private var pendingChunks: [Data] = []
     private var lastNonce: UInt64 = 0
     private var focusRetryTask: Task<Void, Never>?
@@ -14,7 +15,13 @@ public final class SwiftTermHostModel: ObservableObject {
     public init() {}
 
     public func attach(_ view: TerminalView) {
+        let viewID = ObjectIdentifier(view)
+        guard attachedViewID != viewID else {
+            flushPending()
+            return
+        }
         terminalView = view
+        attachedViewID = viewID
         flushPending()
         focus()
     }
@@ -54,7 +61,7 @@ public final class SwiftTermHostModel: ObservableObject {
     }
 }
 
-public struct SwiftTermTheme {
+public struct SwiftTermTheme: Equatable {
     public var fontSize: CGFloat
     public var foreground: (red: Double, green: Double, blue: Double)
     public var background: (red: Double, green: Double, blue: Double, alpha: Double)
@@ -70,6 +77,13 @@ public struct SwiftTermTheme {
         self.foreground = foreground
         self.background = background
         self.cursor = cursor
+    }
+
+    public static func == (lhs: SwiftTermTheme, rhs: SwiftTermTheme) -> Bool {
+        lhs.fontSize == rhs.fontSize
+            && lhs.foreground == rhs.foreground
+            && lhs.background == rhs.background
+            && lhs.cursor == rhs.cursor
     }
 }
 
@@ -107,18 +121,26 @@ public struct SwiftTermHostView: UIViewRepresentable {
         terminal.terminalDelegate = context.coordinator
         terminal.isOpaque = false
         terminal.backgroundColor = .clear
-        terminal.clearsContextBeforeDrawing = true
+        terminal.clearsContextBeforeDrawing = false
         terminal.layer.cornerRadius = 18
         terminal.layer.masksToBounds = true
         applyTheme(theme, to: terminal)
+        context.coordinator.lastTheme = theme
         model.attach(terminal)
         return terminal
     }
 
     public func updateUIView(_ uiView: TerminalView, context: Context) {
-        uiView.layer.cornerRadius = 18
-        uiView.layer.masksToBounds = true
-        applyTheme(theme, to: uiView)
+        if uiView.layer.cornerRadius != 18 {
+            uiView.layer.cornerRadius = 18
+        }
+        if !uiView.layer.masksToBounds {
+            uiView.layer.masksToBounds = true
+        }
+        if context.coordinator.lastTheme != theme {
+            applyTheme(theme, to: uiView)
+            context.coordinator.lastTheme = theme
+        }
         model.attach(uiView)
     }
 
@@ -148,6 +170,7 @@ public struct SwiftTermHostView: UIViewRepresentable {
         private let onSendData: (Data) -> Void
         private let onResize: (Int, Int) -> Void
         private let onTitleChanged: (String) -> Void
+        fileprivate var lastTheme: SwiftTermTheme?
 
         init(
             onSendData: @escaping (Data) -> Void,
@@ -178,9 +201,7 @@ public struct SwiftTermHostView: UIViewRepresentable {
         public func bell(source: TerminalView) {}
         public func clipboardCopy(source: TerminalView, content: Data) {}
         public func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {}
-        public func rangeChanged(source: TerminalView, startY: Int, endY: Int) {
-            source.setNeedsDisplay(source.bounds)
-        }
+        public func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
     }
 }
 #endif

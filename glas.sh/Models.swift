@@ -259,8 +259,6 @@ class TerminalSession: Identifiable, Hashable {
     
     var state: SessionState = .disconnected
     var output: [TerminalLine] = []
-    var screenRows: [String] = []
-    var screenStyledRows: [[TerminalStyledCell]] = []
     var terminalInputChunk: Data = Data()
     var terminalInputNonce: UInt64 = 0
     var closeWindowNonce: UInt64 = 0
@@ -272,7 +270,6 @@ class TerminalSession: Identifiable, Hashable {
     var connectionProgress: ConnectionProgressStage?
     
     // Terminal properties
-    var cursorPosition: (row: Int, col: Int) = (0, 0)
     var scrollbackBuffer: [TerminalLine] = []
     let maxScrollback: Int = 10000
     
@@ -280,15 +277,13 @@ class TerminalSession: Identifiable, Hashable {
     private var sshConnection: SSHConnection?
     private var connectionTask: Task<Void, Never>?
     private var outputTask: Task<Void, Never>?
-    let emulator = TerminalEmulator(cols: 140, rows: 40)
-    
+    private var pendingTerminalOutput = Data()
+    private var terminalFlushTask: Task<Void, Never>?
+    private let terminalFlushInterval: Duration = .milliseconds(8)
     init(server: ServerConfiguration) {
         self.id = UUID()
         self.server = server
         self.sshConnection = SSHConnection(session: self)
-        self.screenRows = emulator.rows
-        self.screenStyledRows = emulator.styledRows
-        self.cursorPosition = emulator.cursor
     }
     
     // Hashable conformance
@@ -416,12 +411,12 @@ class TerminalSession: Identifiable, Hashable {
     
     func clearScreen() {
         let clearSequence = "\u{1b}[2J\u{1b}[H"
-        emulator.feed(text: clearSequence)
+        terminalFlushTask?.cancel()
+        terminalFlushTask = nil
+        pendingTerminalOutput.removeAll(keepingCapacity: true)
         if let clearData = clearSequence.data(using: .utf8) {
-            terminalInputChunk = clearData
-            terminalInputNonce &+= 1
+            emitTerminalChunk(clearData)
         }
-        syncEmulatorSnapshot()
         output.removeAll()
     }
     
@@ -442,23 +437,19 @@ class TerminalSession: Identifiable, Hashable {
     }
     
     func feedTerminalData(_ data: Data) {
-        emulator.feed(data: data)
-        terminalInputChunk = data
-        terminalInputNonce &+= 1
-        syncEmulatorSnapshot()
+        pendingTerminalOutput.append(data)
+        scheduleTerminalFlush()
     }
     
     func feedTerminalText(_ text: String) {
-        emulator.feed(text: text)
-        syncEmulatorSnapshot()
+        guard let data = text.data(using: .utf8) else { return }
+        feedTerminalData(data)
     }
 
     func updateTerminalGeometry(rows: Int, columns: Int) {
         let clampedRows = max(8, rows)
         let clampedColumns = max(20, columns)
 
-        emulator.resize(cols: clampedColumns, rows: clampedRows)
-        syncEmulatorSnapshot()
         sshConnection?.setPreferredTerminalSize(rows: clampedRows, columns: clampedColumns)
 
         guard state == .connected else { return }
@@ -471,11 +462,30 @@ class TerminalSession: Identifiable, Hashable {
             }
         }
     }
-    
-    private func syncEmulatorSnapshot() {
-        screenRows = emulator.rows
-        screenStyledRows = emulator.styledRows
-        cursorPosition = emulator.cursor
+
+    private func emitTerminalChunk(_ data: Data) {
+        terminalInputChunk = data
+        terminalInputNonce &+= 1
+    }
+
+    private func scheduleTerminalFlush() {
+        guard terminalFlushTask == nil else { return }
+        terminalFlushTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: self.terminalFlushInterval)
+            self.flushPendingTerminalOutput()
+            self.terminalFlushTask = nil
+            if !self.pendingTerminalOutput.isEmpty {
+                self.scheduleTerminalFlush()
+            }
+        }
+    }
+
+    private func flushPendingTerminalOutput() {
+        guard !pendingTerminalOutput.isEmpty else { return }
+        let chunk = pendingTerminalOutput
+        pendingTerminalOutput.removeAll(keepingCapacity: true)
+        emitTerminalChunk(chunk)
     }
 }
 
