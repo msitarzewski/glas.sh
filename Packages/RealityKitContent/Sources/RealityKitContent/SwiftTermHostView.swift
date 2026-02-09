@@ -119,6 +119,7 @@ public struct SwiftTermHostView: UIViewRepresentable {
     public func makeUIView(context: Context) -> TerminalView {
         let terminal = TerminalView(frame: .zero)
         terminal.terminalDelegate = context.coordinator
+        terminal.notifyUpdateChanges = false
         terminal.isOpaque = false
         terminal.backgroundColor = .clear
         terminal.clearsContextBeforeDrawing = false
