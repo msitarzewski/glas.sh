@@ -359,7 +359,7 @@ struct AddServerView: View {
     // MARK: - Save
     
     private func saveServer() {
-        var server = ServerConfiguration(
+        let server = ServerConfiguration(
             name: name,
             host: host,
             port: Int(port) ?? 22,

@@ -21,7 +21,6 @@ struct TerminalWindowView: View {
     @State private var showingTerminalSettings = false
     @State private var terminalSettingsTab: TerminalSettingsModalTab = .terminal
     @StateObject private var terminalHostModel = SwiftTermHostModel()
-    @State private var didRunCloseGooseCall = false
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -62,11 +61,7 @@ struct TerminalWindowView: View {
             }
         }
         .onChange(of: session.closeWindowNonce) { _, _ in
-            runCloseGooseCallIfNeeded()
             dismiss()
-        }
-        .onDisappear {
-            runCloseGooseCallIfNeeded()
         }
     }
     
@@ -194,17 +189,6 @@ struct TerminalWindowView: View {
         settingsManager.sessionOverride(for: session.id)?.glassTint ?? settingsManager.glassTint
     }
 
-    private func runCloseGooseCallIfNeeded() {
-        guard !didRunCloseGooseCall else { return }
-        didRunCloseGooseCall = true
-        Task { @MainActor in
-            await Task.yield()
-            openWindow(id: "main")
-            try? await Task.sleep(for: .milliseconds(150))
-            openWindow(id: "main")
-        }
-    }
-
     private func duplicateSession() {
         Task {
             let _ = await sessionManager.createSession(for: session.server)
@@ -304,10 +288,9 @@ struct TerminalWindowView: View {
                     Label("Settings", systemImage: "gearshape")
                 }
             } label: {
-                Label("Tools", systemImage: "gearshape")
+                Image(systemName: "gearshape")
             }
             .menuStyle(.button)
-            .labelStyle(.iconOnly)
             .controlSize(.small)
             .help("Tools")
         }
@@ -458,7 +441,7 @@ struct FooterGlassIconButton: View {
                 .frame(width: 24, height: 24)
                 .background {
                     Circle()
-                        .fill((isHovered || isFocused) ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(Color.clear))
+                        .fill((isHovered || isFocused) ? Color.white.opacity(0.18) : Color.clear)
                 }
         }
         .buttonStyle(.plain)
