@@ -827,7 +827,7 @@ class SSHConnection {
         guard !normalizedHost.isEmpty else {
             throw SSHError.invalidHost(server.host)
         }
-        await session.setConnectionProgress(.resolvingDNS)
+        session.setConnectionProgress(.resolvingDNS)
         
         // Determine authentication method
         let authMethod: SSHAuthenticationMethod
@@ -888,8 +888,8 @@ class SSHConnection {
         // Connect to SSH server using Citadel.
         // Try modern defaults first, then retry once with compatibility algorithms
         // for servers that still require older SSH kex/signature sets.
-        await session.setConnectionProgress(.openingSocket(port: server.port))
-        await session.setConnectionProgress(.negotiatingSecurity)
+        session.setConnectionProgress(.openingSocket(port: server.port))
+        session.setConnectionProgress(.negotiatingSecurity)
         do {
             self.client = try await Self.connectClient(
                 host: normalizedHost,
@@ -900,7 +900,7 @@ class SSHConnection {
             )
         } catch {
             if Self.isKeyExchangeNegotiationFailure(error) {
-                await session.setConnectionProgress(.negotiatingCompatibility)
+                session.setConnectionProgress(.negotiatingCompatibility)
                 self.client = try await Self.connectClient(
                     host: normalizedHost,
                     port: server.port,
@@ -912,7 +912,7 @@ class SSHConnection {
                 throw error
             }
         }
-        await session.setConnectionProgress(.authenticating)
+        session.setConnectionProgress(.authenticating)
 
         guard let client = self.client else {
             throw SSHError.connectionFailed
