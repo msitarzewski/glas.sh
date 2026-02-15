@@ -12,10 +12,12 @@ struct ConnectionManagerView: View {
     @Environment(SettingsManager.self) private var settingsManager
     @State private var serverManager = ServerManager(loadImmediately: false)
     
-    @State private var selectedSection: ConnectionSection = .favorites
+    @State private var selectedSection: ConnectionSection = .all
     @State private var showingAddServer = false
     @State private var editingServer: ServerConfiguration?
+    @State private var viewingServer: ServerConfiguration?
     @State private var searchQuery: String = ""
+    @State private var activeTagFilters: [String] = []
     @State private var pendingTrustSession: TerminalSession?
     @State private var pendingTrustChallenge: HostKeyTrustChallenge?
     @State private var pendingConnectPassword: String?
@@ -26,16 +28,60 @@ struct ConnectionManagerView: View {
     
     var body: some View {
         NavigationSplitView {
-            sidebar
+            List {
+                Section("Connections") {
+                    ForEach(sortedSections) { section in
+                        Button {
+                            selectedSection = section
+                        } label: {
+                            HStack {
+                                Label(section.title, systemImage: section.icon)
+                                    .foregroundStyle(section.color)
+                                Spacer()
+                                if selectedSection == section {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Connections")
         } detail: {
             detailView
+                .navigationTitle(selectedSection.title)
+                .searchable(text: $searchQuery, prompt: "Search servers...")
+                .onSubmit(of: .search) {
+                    applySearchAsTagFilterIfPossible()
+                }
+                .toolbar {
+                    ToolbarItemGroup(placement: .primaryAction) {
+                        Button {
+                            showingAddServer = true
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+
+                        Button {
+                            openWindow(id: "settings")
+                        } label: {
+                            Image(systemName: "gearshape")
+                        }
+                    }
+                }
         }
-        .navigationTitle("Connections")
         .sheet(isPresented: $showingAddServer) {
             AddServerView(serverManager: serverManager)
         }
         .sheet(item: $editingServer) { server in
             EditServerView(server: server, serverManager: serverManager)
+        }
+        .sheet(item: $viewingServer) { server in
+            ServerInfoView(
+                server: server,
+                session: sessionForServer(server)
+            )
         }
         .alert(
             "Trust SSH Host Key?",
@@ -67,78 +113,6 @@ struct ConnectionManagerView: View {
         }
     }
     
-    // MARK: - Sidebar
-    
-    private var sidebar: some View {
-        List {
-            Section {
-                ForEach(ConnectionSection.allCases) { section in
-                    Button {
-                        selectedSection = section
-                    } label: {
-                        Label {
-                            Text(section.title)
-                        } icon: {
-                            Image(systemName: section.icon)
-                                .symbolRenderingMode(.hierarchical)
-                                .foregroundStyle(section.color)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            
-            Section("Tags") {
-                ForEach(availableTags, id: \.self) { tag in
-                    Button {
-                        selectedSection = .tag(tag)
-                    } label: {
-                        Label {
-                            Text(tag)
-                        } icon: {
-                            Image(systemName: "tag")
-                                .foregroundStyle(.orange)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-        .navigationTitle("Connections")
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 0) {
-                Divider()
-
-                HStack {
-                    Button {
-                        openWindow(id: "settings")
-                    } label: {
-                        Label("Settings", systemImage: "gearshape")
-                            .labelStyle(.iconOnly)
-                            .font(.headline)
-                            .frame(width: 32, height: 32)
-                    }
-                    .buttonStyle(.plain)
-
-                    Spacer()
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(.ultraThinMaterial)
-            }
-        }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    showingAddServer = true
-                } label: {
-                    Label("Add Server", systemImage: "plus.circle.fill")
-                }
-                .buttonStyle(.borderedProminent)
-            }
-        }
-    }
-    
     private var availableTags: [String] {
         Array(Set(serverManager.servers.flatMap { $0.tags })).sorted()
     }
@@ -147,81 +121,112 @@ struct ConnectionManagerView: View {
     
     private var detailView: some View {
         VStack(spacing: 0) {
-            // Search bar
-            HStack {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                
-                TextField("Search servers...", text: $searchQuery)
-                    .textFieldStyle(.plain)
-                
-                if !searchQuery.isEmpty {
-                    Button {
-                        searchQuery = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
+            if !activeTagFilters.isEmpty {
+                activeTagFilterBar
             }
-            .padding()
-            .background(.ultraThinMaterial, in: .rect(cornerRadius: 12))
-            .padding()
-            
-            // Server grid
-            ScrollView {
-                LazyVGrid(columns: [
-                    GridItem(.adaptive(minimum: 320, maximum: 400), spacing: 20)
-                ], spacing: 20) {
-                    ForEach(filteredServers) { server in
-                        ServerCard(
-                            server: server,
-                            session: sessionForServer(server),
-                            onConnect: {
-                                connectToServer(server)
-                            },
-                            onEdit: {
-                                editingServer = server
-                            },
-                            onToggleFavorite: {
-                                serverManager.toggleFavorite(server)
-                            },
-                            onDelete: {
-                                serverManager.deleteServer(server)
-                            }
-                        )
+
+            List(filteredServers) { server in
+                ServerListRow(
+                    server: server,
+                    session: sessionForServer(server),
+                    onView: {
+                        viewingServer = server
+                    },
+                    onEdit: {
+                        editingServer = server
+                    },
+                    onDelete: {
+                        serverManager.deleteServer(server)
                     }
+                )
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    connectToServer(server)
                 }
-                .padding()
             }
         }
-        .background(Color.clear)
     }
-    
+
+    private var activeTagFilterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(activeTagFilters, id: \.self) { tag in
+                    HStack(spacing: 6) {
+                        Text(tag)
+                        Button {
+                            activeTagFilters.removeAll { $0 == tag }
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.regularMaterial, in: .capsule)
+                }
+
+                Button("Clear") {
+                    activeTagFilters.removeAll()
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+        .background(.bar)
+    }
+
     private var filteredServers: [ServerConfiguration] {
         let servers: [ServerConfiguration]
         
         switch selectedSection {
         case .all:
             servers = serverManager.servers
-        case .favorites:
-            servers = serverManager.favoriteServers
+        case .tags:
+            servers = serverManager.servers.filter { !$0.tags.isEmpty }
         case .recent:
             servers = serverManager.recentServers
         case .tag(let tag):
             servers = serverManager.servers.filter { $0.tags.contains(tag) }
         }
-        
-        if searchQuery.isEmpty {
-            return servers
-        } else {
-            return servers.filter {
+
+        var result = servers
+
+        if !activeTagFilters.isEmpty {
+            let active = Set(activeTagFilters.map { $0.lowercased() })
+            result = result.filter { server in
+                !active.isDisjoint(with: Set(server.tags.map { $0.lowercased() }))
+            }
+        }
+
+        if !searchQuery.isEmpty {
+            result = result.filter {
                 $0.name.localizedCaseInsensitiveContains(searchQuery) ||
                 $0.host.localizedCaseInsensitiveContains(searchQuery) ||
                 $0.username.localizedCaseInsensitiveContains(searchQuery)
             }
         }
+
+        return result
+    }
+
+    private var sortedSections: [ConnectionSection] {
+        ConnectionSection.allCases.sorted {
+            $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+        }
+    }
+
+    private func applySearchAsTagFilterIfPossible() {
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+        guard let matchedTag = availableTags.first(where: { $0.caseInsensitiveCompare(query) == .orderedSame }) else {
+            return
+        }
+        if !activeTagFilters.contains(where: { $0.caseInsensitiveCompare(matchedTag) == .orderedSame }) {
+            activeTagFilters.append(matchedTag)
+        }
+        searchQuery = ""
     }
 
     private func sessionForServer(_ server: ServerConfiguration) -> TerminalSession? {
@@ -321,18 +326,168 @@ struct ConnectionManagerView: View {
     }
 }
 
+private struct ServerListRow: View {
+    let server: ServerConfiguration
+    let session: TerminalSession?
+    let onView: () -> Void
+    let onEdit: () -> Void
+    let onDelete: () -> Void
+
+    private var rawConnection: String {
+        "\(server.username)@\(server.host):\(server.port)"
+    }
+
+    private var shouldTruncateConnection: Bool {
+        rawConnection.count > 128
+    }
+
+    private var displayConnection: String {
+        let raw = rawConnection
+        guard raw.count > 128 else { return raw }
+        return String(raw.prefix(127)) + "…"
+    }
+
+    var body: some View {
+        HStack(spacing: 16) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(server.colorTag.color)
+                    .frame(width: 10, height: 10)
+
+                Text(server.name)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+            }
+            .frame(minWidth: 180, alignment: .leading)
+
+            Text(displayConnection)
+                .font(.subheadline.monospaced())
+                .lineLimit(shouldTruncateConnection ? 1 : 2)
+                .truncationMode(.tail)
+                .minimumScaleFactor(shouldTruncateConnection ? 0.82 : 1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Image(systemName: server.authMethod.icon)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .frame(width: 24, alignment: .center)
+                .accessibilityLabel(server.authMethod.displayName)
+
+            Group {
+                if let lastConnected = server.lastConnected {
+                    Text(lastConnected, formatter: relativeDateFormatter)
+                } else {
+                    Text("Never")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(width: 90, alignment: .leading)
+
+            Menu {
+                Button {
+                    onView()
+                } label: {
+                    Label("View", systemImage: "eye")
+                }
+
+                Button {
+                    onEdit()
+                } label: {
+                    Label("Edit", systemImage: "pencil")
+                }
+
+                Divider()
+
+                Button(role: .destructive) {
+                    onDelete()
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.title3)
+            }
+            .frame(width: 32, alignment: .trailing)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+private struct ServerInfoView: View {
+    let server: ServerConfiguration
+    let session: TerminalSession?
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Connection") {
+                    infoRow("Name", server.name)
+                    infoRow("Host", "\(server.host):\(server.port)")
+                    infoRow("User", server.username)
+                    infoRow("Auth", server.authMethod.displayName)
+                }
+
+                Section("Session") {
+                    infoRow("State", session?.state.displayName ?? "Disconnected")
+                    infoRow("Progress", session?.connectionProgress?.tickerLabel ?? "Idle")
+                    infoRow(
+                        "Last Connected",
+                        server.lastConnected.map {
+                            relativeDateFormatter.localizedString(for: $0, relativeTo: Date())
+                        } ?? "Never"
+                    )
+                }
+
+                Section("Advanced") {
+                    infoRow("TERM", server.terminalType)
+                    infoRow("Compression", server.compression ? "On" : "Off")
+                    infoRow("Keep Alive", "\(server.keepAliveInterval)s")
+                    infoRow("PTY Requested", server.requestPTY ? "Yes" : "No")
+                    infoRow("Forward Agent", server.forwardAgent ? "Yes" : "No")
+                }
+
+                if !server.tags.isEmpty {
+                    Section("Tags") {
+                        Text(server.tags.joined(separator: ", "))
+                    }
+                }
+            }
+            .navigationTitle("Server Info")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    private func infoRow(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
 // MARK: - Connection Section
 
 enum ConnectionSection: Hashable, Identifiable, CaseIterable {
     case all
-    case favorites
+    case tags
     case recent
     case tag(String)
     
     var id: String {
         switch self {
         case .all: return "all"
-        case .favorites: return "favorites"
+        case .tags: return "tags"
         case .recent: return "recent"
         case .tag(let tag): return "tag-\(tag)"
         }
@@ -341,7 +496,7 @@ enum ConnectionSection: Hashable, Identifiable, CaseIterable {
     var title: String {
         switch self {
         case .all: return "All Servers"
-        case .favorites: return "Favorites"
+        case .tags: return "Tags"
         case .recent: return "Recent"
         case .tag(let tag): return tag
         }
@@ -350,7 +505,7 @@ enum ConnectionSection: Hashable, Identifiable, CaseIterable {
     var icon: String {
         switch self {
         case .all: return "server.rack"
-        case .favorites: return "heart.fill"
+        case .tags: return "tag"
         case .recent: return "clock.fill"
         case .tag: return "tag.fill"
         }
@@ -359,14 +514,19 @@ enum ConnectionSection: Hashable, Identifiable, CaseIterable {
     var color: Color {
         switch self {
         case .all: return .blue
-        case .favorites: return .pink
+        case .tags: return .orange
         case .recent: return .purple
         case .tag: return .orange
         }
     }
     
     static var allCases: [ConnectionSection] {
-        [.all, .favorites, .recent]
+        [.all, .tags, .recent]
+    }
+
+    var isTag: Bool {
+        if case .tag = self { return true }
+        return false
     }
 }
 

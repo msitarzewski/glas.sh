@@ -1,5 +1,13 @@
 # 2026-02 Tasks
 
+## 2026-02-15: Connections native UI + tag search filters + form persistence
+- Reworked Connections to use native visionOS split-view/list/search/toolbar patterns with reduced custom ornament behavior.
+- Added alphabetical left-nav section ordering and promoted tag filtering into search submit flow.
+- Added active tag filter chips under the title area and removed bottom pill strip.
+- Fixed tag entry persistence on Save in both Add and Edit server forms.
+- Fixed SSH key picker persistence reliability in Add/Edit flows.
+- See: [260215_connections-native-ui-tag-search-filters-and-form-persistence.md](./260215_connections-native-ui-tag-search-filters-and-form-persistence.md)
+
 ## 2026-02-09: Connections recovery + terminal footer actions
 - Removed beacon-window experiment and returned to Connections as the single recovery target.
 - Added app-level window-presence recovery watcher to reopen Connections when all windows are closed.
@@ -52,3 +60,4 @@ Task records:
 - [260208_terminal-window-ux-polish-and-session-settings.md](./260208_terminal-window-ux-polish-and-session-settings.md)
 - [260209_connections-window-recovery-and-terminal-footer-actions.md](./260209_connections-window-recovery-and-terminal-footer-actions.md)
 - [260209_terminal-performance-redraw-and-stream-coalescing.md](./260209_terminal-performance-redraw-and-stream-coalescing.md)
+- [260215_connections-native-ui-tag-search-filters-and-form-persistence.md](./260215_connections-native-ui-tag-search-filters-and-form-persistence.md)

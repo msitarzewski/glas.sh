@@ -22,7 +22,7 @@ struct glas_shApp: App {
                 .trackWindowPresence(key: "main", recovery: windowRecoveryManager)
         }
         .windowStyle(.plain)
-        .defaultSize(width: 800, height: 600)
+        .defaultSize(width: 1320, height: 760)
         .handlesExternalEvents(matching: ["main"])
         
         // Main terminal windows (can open multiple)
@@ -52,6 +52,9 @@ struct glas_shApp: App {
                         key: "html-preview-\(context.sessionID.uuidString)",
                         recovery: windowRecoveryManager
                     )
+            } else {
+                HTMLPreviewNotFoundView()
+                    .trackWindowPresence(key: "html-preview-missing", recovery: windowRecoveryManager)
             }
         }
         .windowStyle(.plain)
@@ -80,47 +83,16 @@ struct glas_shApp: App {
 struct MainBootstrapView: View {
     @Environment(SessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
-    @State private var bootMessage: String = "Starting glas.sh"
-    @State private var isReady = false
     @State private var didBootstrap = false
 
     var body: some View {
-        Group {
-            if isReady {
-                ConnectionManagerView()
-            } else {
-                VStack(spacing: 14) {
-                    ProgressView()
-                        .controlSize(.large)
-                    Text("glas.sh")
-                        .font(.title3)
-                        .fontWeight(.semibold)
-                    Text(bootMessage)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(28)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-            }
-        }
+        ConnectionManagerView()
         .task {
             guard !didBootstrap else { return }
             didBootstrap = true
-            await bootstrap()
+            settingsManager.loadPersistentStateIfNeeded()
+            sessionManager.preloadPersistentStateIfNeeded()
         }
-    }
-
-    private func bootstrap() async {
-        bootMessage = "Loading preferences"
-        settingsManager.loadPersistentStateIfNeeded()
-        await Task.yield()
-
-        bootMessage = "Preparing sessions"
-        sessionManager.preloadPersistentStateIfNeeded()
-        try? await Task.sleep(for: .milliseconds(120))
-
-        bootMessage = "Ready"
-        isReady = true
     }
 }
 
@@ -163,6 +135,34 @@ struct SessionNotFoundView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
+
+            Button("Open Connections") {
+                openWindow(id: "main")
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(32)
+    }
+}
+
+struct HTMLPreviewNotFoundView: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 44))
+                .foregroundStyle(.secondary)
+
+            Text("Preview unavailable")
+                .font(.title3)
+                .fontWeight(.semibold)
+
+            Text("This preview window was restored, but its source session is no longer active.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 460)
 
             Button("Open Connections") {
                 openWindow(id: "main")

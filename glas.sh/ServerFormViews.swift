@@ -193,9 +193,9 @@ struct AddServerView: View {
                             .padding(.horizontal)
                     } else {
                         Picker("SSH Key", selection: $sshKeyID) {
-                            Text("Select a key").tag(Optional<UUID>.none)
+                            Text("Select a key").tag(nil as UUID?)
                             ForEach(settingsManager.sshKeys) { key in
-                                Text("\(key.name) (\(key.algorithm))").tag(Optional(key.id))
+                                Text("\(key.name) (\(key.algorithm))").tag(key.id as UUID?)
                             }
                         }
                     }
@@ -218,6 +218,15 @@ struct AddServerView: View {
                     .background(.ultraThinMaterial, in: .rect(cornerRadius: 12))
                 }
             }
+        }
+        .onAppear {
+            normalizeSelectedSSHKey()
+        }
+        .onChange(of: authMethod) { _, _ in
+            normalizeSelectedSSHKey()
+        }
+        .onChange(of: settingsManager.sshKeys.map(\.id)) { _, _ in
+            normalizeSelectedSSHKey()
         }
     }
     
@@ -274,16 +283,12 @@ struct AddServerView: View {
                                 .textFieldStyle(.plain)
                                 .frame(width: 80)
                                 .onSubmit {
-                                    if !newTag.isEmpty {
-                                        tags.append(newTag)
-                                        newTag = ""
-                                    }
+                                    commitPendingTag()
                                 }
                             
                             if !newTag.isEmpty {
                                 Button {
-                                    tags.append(newTag)
-                                    newTag = ""
+                                    commitPendingTag()
                                 } label: {
                                     Image(systemName: "plus.circle.fill")
                                         .foregroundStyle(.blue)
@@ -374,7 +379,9 @@ struct AddServerView: View {
     // MARK: - Save
     
     private func saveServer() {
-        var server = ServerConfiguration(
+        commitPendingTag()
+
+        let server = ServerConfiguration(
             name: name,
             host: host,
             port: Int(port) ?? 22,
@@ -395,6 +402,27 @@ struct AddServerView: View {
         }
         
         dismiss()
+    }
+
+    private func commitPendingTag() {
+        let trimmed = newTag.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            newTag = ""
+            return
+        }
+        if !tags.contains(trimmed) {
+            tags.append(trimmed)
+        }
+        newTag = ""
+    }
+
+    private func normalizeSelectedSSHKey() {
+        guard authMethod == .sshKey else { return }
+        let availableIDs = Set(settingsManager.sshKeys.map(\.id))
+        if let selected = sshKeyID, availableIDs.contains(selected) {
+            return
+        }
+        sshKeyID = settingsManager.sshKeys.first?.id
     }
 }
 
@@ -471,9 +499,9 @@ struct EditServerView: View {
                                 .foregroundStyle(.secondary)
                         } else {
                             Picker("SSH Key", selection: $sshKeyID) {
-                                Text("Select a key").tag(Optional<UUID>.none)
+                                Text("Select a key").tag(nil as UUID?)
                                 ForEach(settingsManager.sshKeys) { key in
-                                    Text("\(key.name) (\(key.algorithm))").tag(Optional(key.id))
+                                    Text("\(key.name) (\(key.algorithm))").tag(key.id as UUID?)
                                 }
                             }
                         }
@@ -527,16 +555,12 @@ struct EditServerView: View {
                                     .textFieldStyle(.plain)
                                     .frame(width: 80)
                                     .onSubmit {
-                                        if !newTag.isEmpty {
-                                            tags.append(newTag)
-                                            newTag = ""
-                                        }
+                                        commitPendingTag()
                                     }
                                 
                                 if !newTag.isEmpty {
                                     Button {
-                                        tags.append(newTag)
-                                        newTag = ""
+                                        commitPendingTag()
                                     } label: {
                                         Image(systemName: "plus.circle.fill")
                                             .foregroundStyle(.blue)
@@ -576,9 +600,20 @@ struct EditServerView: View {
                 }
             }
         }
+        .onAppear {
+            normalizeSelectedSSHKey()
+        }
+        .onChange(of: authMethod) { _, _ in
+            normalizeSelectedSSHKey()
+        }
+        .onChange(of: settingsManager.sshKeys.map(\.id)) { _, _ in
+            normalizeSelectedSSHKey()
+        }
     }
     
     private func saveChanges() {
+        commitPendingTag()
+
         var updatedServer = server
         updatedServer.name = name
         updatedServer.host = host
@@ -596,6 +631,27 @@ struct EditServerView: View {
             try? KeychainManager.savePassword(password, for: updatedServer)
         }
         dismiss()
+    }
+
+    private func commitPendingTag() {
+        let trimmed = newTag.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            newTag = ""
+            return
+        }
+        if !tags.contains(trimmed) {
+            tags.append(trimmed)
+        }
+        newTag = ""
+    }
+
+    private func normalizeSelectedSSHKey() {
+        guard authMethod == .sshKey else { return }
+        let availableIDs = Set(settingsManager.sshKeys.map(\.id))
+        if let selected = sshKeyID, availableIDs.contains(selected) {
+            return
+        }
+        sshKeyID = settingsManager.sshKeys.first?.id
     }
 }
 
