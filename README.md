@@ -12,6 +12,7 @@ This README documents the **current implementation** in this repository.
 ## Live Now
 
 - Native SSH connection flow using Citadel (`SSHClient.withPTY`)
+- SSH negotiation compatibility retry (`SSHAlgorithms()` first, then `.all` on key-exchange failure)
 - PTY interactive terminal sessions (not command-by-command exec)
 - Dynamic PTY resize via `WindowChangeRequest` (rows/cols update as terminal size changes)
 - SwiftTerm-backed terminal rendering (real terminal widget, not a text-log approximation)
@@ -22,11 +23,14 @@ This README documents the **current implementation** in this repository.
   - HTML preview window
   - Port forwarding manager window
   - Settings window
-- VisionOS ornament-based UI:
-  - Top server ornament
-  - Left tools rail (compact/expanded)
-  - Right info ornament
-  - Bottom session/status bar
+- Connection manager with favorites/recent sections, tag filters, and server search
+- Host key trust flow:
+  - host key verification mode (Ask / Strict / Insecure Accept Any)
+  - trust prompt with fingerprint details
+- Terminal window UX:
+  - footer-first status/actions
+  - in-window search overlay
+  - terminal-local settings modal (`Terminal`, `Overrides`, `Port Forwarding`)
 - Session close on clean remote exit
 - Secure password retrieval via Keychain helper
 
@@ -64,18 +68,42 @@ Primary files:
 3. Select a visionOS Simulator destination
 4. Build and run
 
+## GitHub Pages
+
+A lightweight project site now lives in `docs/` for GitHub Pages.
+
+- Source files:
+  - `docs/index.html`
+  - `docs/styles.css`
+- Suggested Pages URL (once enabled):
+  - `https://msitarzewski.github.io/glas.sh/`
+
+To publish from this repository:
+
+1. Push this branch and merge to `main`.
+2. In GitHub: **Settings -> Pages**.
+3. Set **Source** to **Deploy from a branch**.
+4. Select branch `main` and folder `/docs`.
+5. Save and wait for the first Pages deployment.
+
 ## Notable Behavior
 
 - Typing `exit` in remote shell is treated as clean session termination.
-- Terminal background defaults to transparent so the glass scene shows through unless host output explicitly paints backgrounds.
-- Left tools rail supports compact/expanded interaction and ornament placement separate from the terminal pane.
+- Terminal display background opacity/blur/tint applies to the terminal pane, with per-session overrides.
+- Settings can be opened from the Connections window and in a dedicated Settings window.
+
+## Known Limitations
+
+- `SSH Key` and `SSH Agent` auth paths are present in UI, but connection auth still falls back to password-based auth.
+- Port forwarding UI/state management exists, but start/stop forwarding is not yet wired to active SSH forwarding.
 
 ## Aspirational / In Progress
 
 These are not fully shipped yet:
 
 - System close affordance interception/warning for active remote processes (only in-app close flows can currently be fully controlled).
-- Final polish for rail gaze/hover behavior across all input/runtime combinations.
+- Full SSH key-based and SSH agent-based authentication execution path.
+- Active SSH port forwarding lifecycle (start/stop backing tunnel operations).
 - Additional terminal parity work (selection semantics, advanced key mapping, and edge-case TUI behavior).
 
 ## Notes On Local Artifacts
