@@ -1,0 +1,107 @@
+:root {
+  color-scheme: dark;
+  --bg-0: #090e16;
+  --bg-1: #0f1a29;
+  --fg: #e8eef8;
+  --muted: #a9b8cf;
+  --line: #2b3950;
+  --accent: #79b8ff;
+  --accent-2: #9ceadf;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  color: var(--fg);
+  background:
+    radial-gradient(1200px 600px at 20% -10%, #16324f 0%, transparent 60%),
+    radial-gradient(1000px 500px at 90% 10%, #113944 0%, transparent 55%),
+    linear-gradient(180deg, var(--bg-1), var(--bg-0));
+}
+
+.layout {
+  width: min(960px, 92vw);
+  margin: 0 auto;
+  padding: 4.5rem 0 5rem;
+}
+
+.hero {
+  margin-bottom: 1.8rem;
+}
+
+.eyebrow {
+  margin: 0 0 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+h1 {
+  margin: 0 0 0.7rem;
+  font-size: clamp(2rem, 5vw, 3.5rem);
+  line-height: 1.05;
+}
+
+.lede {
+  margin: 0 0 1.2rem;
+  max-width: 62ch;
+  color: #d5e0ef;
+  font-size: clamp(1rem, 2vw, 1.2rem);
+  line-height: 1.45;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+}
+
+.button {
+  display: inline-block;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.62rem 1rem;
+  color: var(--fg);
+  text-decoration: none;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.button.primary {
+  border-color: #508fda;
+  background: linear-gradient(180deg, #4f8dd6, #3e6fa6);
+}
+
+.panel {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 1.05rem 1.1rem;
+  background: rgba(9, 16, 27, 0.54);
+  backdrop-filter: blur(6px);
+  margin-bottom: 0.85rem;
+}
+
+h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.03rem;
+}
+
+ul {
+  margin: 0;
+  padding-left: 1.2rem;
+  line-height: 1.55;
+}
+
+p {
+  margin: 0;
+  line-height: 1.55;
+}
+
+code {
+  font-family: "SF Mono", "Menlo", monospace;
+  color: var(--accent-2);
+}
