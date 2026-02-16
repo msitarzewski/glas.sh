@@ -1,6 +1,21 @@
 # Progress
 
 ## Latest Milestones
+- Terminal in-place progress/status rendering stabilized:
+  - PTY terminal mode negotiation now disables only CR->NL rewriting (`OCRNL`) while preserving expected newline behavior.
+  - Terminal stream handoff from session model to SwiftTerm host now drains queued chunks per UI nonce update, avoiding chunk overwrite loss under burst output.
+  - User-validated against Ubuntu progress workloads (`apt`, `wget --progress=bar:force:noscroll`).
+- SSH key security and migration baseline shipped:
+  - Secret store abstraction + keychain migration scaffold and status reporting.
+  - Key metadata and UI badges (storage/algorithm/migration state) across Settings, server forms, and server info.
+  - Secure Enclave-assisted P-256 key generation path with connection-time user-auth preflight prompt.
+  - Legacy compatibility preserved for existing users (RSA + ED25519 import/auth paths).
+- RSA SHA-2 interoperability fix landed:
+  - Userauth algorithm/signature path aligned to RSA SHA-2 (`rsa-sha2-512`) with modern OpenSSH server behavior.
+  - Connection diagnostics improved for authentication failure cases.
+- SSH key management UX hardening:
+  - Destructive delete confirmation dialog.
+  - "Copy Public Key" action for stored keys with OpenSSH-format export.
 - Connections window refactored to a native visionOS split-view/list/search/toolbar structure.
 - Tag filtering moved to search-submit promotion with active chip filters under title context.
 - Server form persistence hardened:
@@ -20,5 +35,5 @@
 ## Open Areas
 - Ongoing terminal UX parity polish for edge-case TUIs.
 - Final contrast tuning for modal/settings surfaces across varied scene lighting.
-- Queued feature request (post-UX): Secure Enclave-backed SSH key generation/storage path comparable to Blink-style hardware-bound key handling.
-- Queued feature request (post-UX): SSH agent auth/forwarding end-to-end support (model -> connection settings -> transport behavior).
+- Follow-up hardening: move generated P-256 auth to true Secure Enclave signing semantics (no app-exportable raw private key at auth time).
+- Queued feature request: SSH agent auth/forwarding end-to-end support (model -> connection settings -> transport behavior).

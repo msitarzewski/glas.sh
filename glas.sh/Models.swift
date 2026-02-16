@@ -259,7 +259,6 @@ class TerminalSession: Identifiable, Hashable {
     
     var state: SessionState = .disconnected
     var output: [TerminalLine] = []
-    var terminalInputChunk: Data = Data()
     var terminalInputNonce: UInt64 = 0
     var closeWindowNonce: UInt64 = 0
     var currentDirectory: String = "~"
@@ -278,6 +277,7 @@ class TerminalSession: Identifiable, Hashable {
     private var connectionTask: Task<Void, Never>?
     private var outputTask: Task<Void, Never>?
     private var pendingTerminalOutput = Data()
+    private var pendingTerminalInputChunks: [Data] = []
     private var terminalFlushTask: Task<Void, Never>?
     private let terminalFlushInterval: Duration = .milliseconds(8)
     init(server: ServerConfiguration) {
@@ -463,8 +463,15 @@ class TerminalSession: Identifiable, Hashable {
         }
     }
 
+    func drainTerminalInputChunks() -> [Data] {
+        guard !pendingTerminalInputChunks.isEmpty else { return [] }
+        let chunks = pendingTerminalInputChunks
+        pendingTerminalInputChunks.removeAll(keepingCapacity: true)
+        return chunks
+    }
+
     private func emitTerminalChunk(_ data: Data) {
-        terminalInputChunk = data
+        pendingTerminalInputChunks.append(data)
         terminalInputNonce &+= 1
     }
 
@@ -814,6 +821,13 @@ class SSHConnection {
         self.session = session
     }
 
+    nonisolated static func preferredPTYTerminalModes() -> SSHTerminalModes {
+        SSHTerminalModes([
+            // Keep shell line behavior intact while ensuring CR isn't rewritten to NL.
+            .OCRNL: 0
+        ])
+    }
+
     func setPreferredTerminalSize(rows: Int, columns: Int) {
         terminalRows = max(8, rows)
         terminalColumns = max(20, columns)
@@ -843,17 +857,28 @@ class SSHConnection {
                 throw SSHError.sshKeyNotFound
             }
             do {
-                let keyMaterial = try KeychainManager.retrieveSSHKey(for: keyID)
+                let keyMaterial = try SecretStoreFactory.shared.retrieveSSHKey(for: keyID)
                 let passphraseData = keyMaterial.passphrase?.data(using: .utf8)
-                let keyType = try SSHKeyDetection.detectPrivateKeyType(from: keyMaterial.privateKey)
-                switch keyType {
-                case .rsa:
-                    throw SSHError.unsupportedSSHKeyType("RSA key auth support is coming soon")
-                case .ed25519:
-                    let key = try Curve25519.Signing.PrivateKey(sshEd25519: keyMaterial.privateKey, decryptionKey: passphraseData)
-                    authMethod = .ed25519(username: server.username, privateKey: key)
-                default:
-                    throw SSHError.unsupportedSSHKeyType(keyType.description)
+
+                if keyMaterial.privateKey.hasPrefix("SECURE_ENCLAVE_P256:") {
+                    let payload = String(keyMaterial.privateKey.dropFirst("SECURE_ENCLAVE_P256:".count))
+                    guard let rawData = Data(base64Encoded: payload) else {
+                        throw SSHError.invalidSSHKey("Invalid Secure Enclave P-256 payload.")
+                    }
+                    let key = try P256.Signing.PrivateKey(rawRepresentation: rawData)
+                    authMethod = .p256(username: server.username, privateKey: key)
+                } else {
+                    let keyType = try SSHKeyDetection.detectPrivateKeyType(from: keyMaterial.privateKey)
+                    switch keyType {
+                    case .rsa:
+                        let key = try Insecure.RSA.PrivateKey(sshRsa: keyMaterial.privateKey, decryptionKey: passphraseData)
+                        authMethod = .rsa(username: server.username, privateKey: key)
+                    case .ed25519:
+                        let key = try Curve25519.Signing.PrivateKey(sshEd25519: keyMaterial.privateKey, decryptionKey: passphraseData)
+                        authMethod = .ed25519(username: server.username, privateKey: key)
+                    default:
+                        throw SSHError.unsupportedSSHKeyType(keyType.description)
+                    }
                 }
             } catch let error as SSHError {
                 throw error
@@ -935,7 +960,7 @@ class SSHConnection {
                 terminalRowHeight: terminalRows,
                 terminalPixelWidth: 0,
                 terminalPixelHeight: 0,
-                terminalModes: SSHTerminalModes([:])
+                terminalModes: Self.preferredPTYTerminalModes()
             )
             var mergedEnv = server.environmentVariables
             if mergedEnv["TERM"] == nil {
@@ -1081,7 +1106,7 @@ class SSHConnection {
             case .sessionNotFound:
                 return "The terminal session is no longer available."
             case .unsupportedSSHKeyType(let keyType):
-                return "\(keyType). Please use an ED25519 key for now."
+                return "\(keyType). Supported key types are RSA, ED25519, and ECDSA P-256."
             case .invalidSSHKey:
                 return "The selected SSH key could not be parsed. Verify key contents and passphrase."
             }
@@ -1108,6 +1133,14 @@ class SSHConnection {
         }
         if raw.contains("ChannelError error 0") {
             return "A connection to \(server.host):\(server.port) is already in progress."
+        }
+        if raw.localizedCaseInsensitiveContains("allauthenticationoptionsfailed")
+            || raw.localizedCaseInsensitiveContains("all authentication options failed")
+        {
+            if server.authMethod == .sshKey {
+                return "SSH authentication was rejected by \(server.host):\(server.port). Verify username, ensure the matching public key is installed in authorized_keys, and confirm the server allows this key algorithm."
+            }
+            return "Authentication failed for \(server.username)@\(server.host):\(server.port). Verify credentials and server auth policy."
         }
         if raw.localizedCaseInsensitiveContains("authentication") {
             return "Authentication failed for \(server.username)@\(server.host):\(server.port)."

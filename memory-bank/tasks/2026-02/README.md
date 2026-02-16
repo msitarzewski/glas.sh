@@ -1,5 +1,19 @@
 # 2026-02 Tasks
 
+## 2026-02-16: Terminal carriage-return rendering + stream queue handoff fix
+- Fixed in-place progress rendering regressions where carriage-return status updates were stacking on new lines.
+- Adjusted PTY mode negotiation to disable only CR->NL translation (`OCRNL`) without breaking standard newline behavior.
+- Reworked terminal ingest handoff from single chunk overwrite semantics to queued chunk drain semantics to prevent dropped control-byte updates under burst output.
+- Validated against real Ubuntu progress workloads (`apt`, `wget`) with user-confirmed in-place behavior.
+- See: [260216_terminal-carriage-return-and-stream-queue-fix.md](./260216_terminal-carriage-return-and-stream-queue-fix.md)
+
+## 2026-02-16: Secure Enclave migration plan + key-type badging kickoff
+- Defined approved migration strategy for Secure Enclave adoption across password and SSH key handling.
+- Started implementation with a secret storage abstraction and migration scaffold entrypoint.
+- Added backward-compatible SSH key metadata model for source/algorithm badge rendering.
+- Added key-type badges to visible SSH key selection/management surfaces.
+- See: [260216_secure-enclave-migration-and-key-badging-plan.md](./260216_secure-enclave-migration-and-key-badging-plan.md)
+
 ## 2026-02-15: Connections native UI + tag search filters + form persistence
 - Reworked Connections to use native visionOS split-view/list/search/toolbar patterns with reduced custom ornament behavior.
 - Added alphabetical left-nav section ordering and promoted tag filtering into search submit flow.

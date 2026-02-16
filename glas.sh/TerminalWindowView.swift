@@ -105,7 +105,11 @@ struct TerminalWindowView: View {
         .onAppear {
             terminalHostModel.focus()
             if session.terminalInputNonce > 0 {
-                terminalHostModel.ingest(data: session.terminalInputChunk, nonce: session.terminalInputNonce)
+                let chunks = session.drainTerminalInputChunks()
+                if !chunks.isEmpty {
+                    let data = chunks.reduce(into: Data()) { $0.append($1) }
+                    terminalHostModel.ingest(data: data, nonce: session.terminalInputNonce)
+                }
             }
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(150))
@@ -113,7 +117,11 @@ struct TerminalWindowView: View {
             }
         }
         .onChange(of: session.terminalInputNonce) { _, nonce in
-            terminalHostModel.ingest(data: session.terminalInputChunk, nonce: nonce)
+            let chunks = session.drainTerminalInputChunks()
+            if !chunks.isEmpty {
+                let data = chunks.reduce(into: Data()) { $0.append($1) }
+                terminalHostModel.ingest(data: data, nonce: nonce)
+            }
         }
         .overlay(alignment: .top) {
             if showingSearchOverlay {

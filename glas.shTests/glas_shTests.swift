@@ -7,6 +7,7 @@
 
 import Testing
 @testable import glas_sh
+import NIOSSH
 
 struct glas_shTests {
 
@@ -48,6 +49,14 @@ struct glas_shTests {
         #expect(entries.count == 1)
         #expect(entries.first?.alias == "prod")
         #expect(warnings.count >= 2)
+    }
+
+    @Test func ptyTerminalModesDisableOnlyCarriageReturnTranslation() async throws {
+        let modes = SSHConnection.preferredPTYTerminalModes().modeMapping
+
+        #expect(modes[.OCRNL]?.rawValue == 0)
+        #expect(modes[.ONLCR] == nil)
+        #expect(modes[.ONLRET] == nil)
     }
 
 }
