@@ -17,3 +17,13 @@
   - Legacy RSA users stay supported.
   - Modern OpenSSH interop restored without forcing immediate key migration.
   - Additional vendored SSH-layer maintenance responsibility accepted.
+
+## 2026-02-16: Prefer queued terminal chunk handoff + minimal PTY CR/LF override
+- Status: Approved
+- Context: In-place progress/status updates (carriage-return driven) were intermittently stacking as new lines. Remote PTY settings on affected hosts were already sane, indicating local stream handoff loss under burst output.
+- Decision:
+  - Keep PTY mode override minimal: set only `OCRNL=0` (disable CR->NL rewrite), avoid forcing `ONLCR`/`ONLRET`.
+  - Replace single-value terminal chunk handoff with queued drain semantics between session model and SwiftTerm host update path.
+- Consequences:
+  - In-place progress rendering behavior is stable across apt/wget/curl-like workloads.
+  - Terminal bridge correctness improves under high-frequency output, with modest memory overhead for short-lived pending chunk queues.

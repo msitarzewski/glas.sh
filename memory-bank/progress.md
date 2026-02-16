@@ -1,6 +1,10 @@
 # Progress
 
 ## Latest Milestones
+- Terminal in-place progress/status rendering stabilized:
+  - PTY terminal mode negotiation now disables only CR->NL rewriting (`OCRNL`) while preserving expected newline behavior.
+  - Terminal stream handoff from session model to SwiftTerm host now drains queued chunks per UI nonce update, avoiding chunk overwrite loss under burst output.
+  - User-validated against Ubuntu progress workloads (`apt`, `wget --progress=bar:force:noscroll`).
 - SSH key security and migration baseline shipped:
   - Secret store abstraction + keychain migration scaffold and status reporting.
   - Key metadata and UI badges (storage/algorithm/migration state) across Settings, server forms, and server info.
