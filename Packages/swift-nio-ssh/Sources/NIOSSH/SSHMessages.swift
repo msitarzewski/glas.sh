@@ -1304,7 +1304,13 @@ extension ByteBuffer {
         case .publicKey(.known(key: let key, signature: let signature)):
             writtenBytes += self.writeSSHString("publickey".utf8)
             writtenBytes += self.writeSSHBoolean(signature != nil)
-            writtenBytes += self.writeSSHString(key.keyPrefix)
+            let userAuthAlgorithm: String.UTF8View
+            if key.keyPrefix.elementsEqual("ssh-rsa".utf8) {
+                userAuthAlgorithm = "rsa-sha2-512".utf8
+            } else {
+                userAuthAlgorithm = key.keyPrefix
+            }
+            writtenBytes += self.writeSSHString(userAuthAlgorithm)
             writtenBytes += self.writeCompositeSSHString { buffer in
                 buffer.writeSSHHostKey(key)
             }

@@ -73,15 +73,15 @@ extension Insecure.RSA {
                 return false
             }
             
-            var clientSignature = [UInt8](repeating: 0, count: 20)
+            var clientSignature = [UInt8](repeating: 0, count: 64)
             let digest = Array(digest)
-            CCryptoBoringSSL_SHA1(digest, digest.count, &clientSignature)
+            CCryptoBoringSSL_SHA512(digest, digest.count, &clientSignature)
             
             let signature = Array(signature.rawRepresentation)
             return CCryptoBoringSSL_RSA_verify(
-                NID_sha1,
+                NID_sha512,
                 clientSignature,
-                20,
+                64,
                 signature,
                 signature.count,
                 context
@@ -138,7 +138,7 @@ extension Insecure.RSA {
     }
     
     public struct Signature: ContiguousBytes, NIOSSHSignatureProtocol {
-        public static let signaturePrefix = "ssh-rsa"
+        public static let signaturePrefix = "rsa-sha2-512"
         
         public let rawRepresentation: Data
         
@@ -165,6 +165,7 @@ extension Insecure.RSA {
     }
     
     public final class PrivateKey: NIOSSHPrivateKeyProtocol {
+        // Keep key prefix as ssh-rsa; user-auth algorithm is selected separately.
         public static let keyPrefix = "ssh-rsa"
         
         // Private Exponent
@@ -230,12 +231,12 @@ extension Insecure.RSA {
                 throw CitadelError.signingError
             }
             
-            let hash = Array(Insecure.SHA1.hash(data: message))
+            let hash = Array(SHA512.hash(data: message))
             let out = UnsafeMutablePointer<UInt8>.allocate(capacity: 4096)
             defer { out.deallocate() }
             var outLength: UInt32 = 4096
             let result = CCryptoBoringSSL_RSA_sign(
-                NID_sha1,
+                NID_sha512,
                 hash,
                 Int(hash.count),
                 out,

@@ -1,5 +1,12 @@
 # 2026-02 Tasks
 
+## 2026-02-16: Secure Enclave migration plan + key-type badging kickoff
+- Defined approved migration strategy for Secure Enclave adoption across password and SSH key handling.
+- Started implementation with a secret storage abstraction and migration scaffold entrypoint.
+- Added backward-compatible SSH key metadata model for source/algorithm badge rendering.
+- Added key-type badges to visible SSH key selection/management surfaces.
+- See: [260216_secure-enclave-migration-and-key-badging-plan.md](./260216_secure-enclave-migration-and-key-badging-plan.md)
+
 ## 2026-02-15: Connections native UI + tag search filters + form persistence
 - Reworked Connections to use native visionOS split-view/list/search/toolbar patterns with reduced custom ornament behavior.
 - Added alphabetical left-nav section ordering and promoted tag filtering into search submit flow.

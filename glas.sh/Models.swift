@@ -843,17 +843,28 @@ class SSHConnection {
                 throw SSHError.sshKeyNotFound
             }
             do {
-                let keyMaterial = try KeychainManager.retrieveSSHKey(for: keyID)
+                let keyMaterial = try SecretStoreFactory.shared.retrieveSSHKey(for: keyID)
                 let passphraseData = keyMaterial.passphrase?.data(using: .utf8)
-                let keyType = try SSHKeyDetection.detectPrivateKeyType(from: keyMaterial.privateKey)
-                switch keyType {
-                case .rsa:
-                    throw SSHError.unsupportedSSHKeyType("RSA key auth support is coming soon")
-                case .ed25519:
-                    let key = try Curve25519.Signing.PrivateKey(sshEd25519: keyMaterial.privateKey, decryptionKey: passphraseData)
-                    authMethod = .ed25519(username: server.username, privateKey: key)
-                default:
-                    throw SSHError.unsupportedSSHKeyType(keyType.description)
+
+                if keyMaterial.privateKey.hasPrefix("SECURE_ENCLAVE_P256:") {
+                    let payload = String(keyMaterial.privateKey.dropFirst("SECURE_ENCLAVE_P256:".count))
+                    guard let rawData = Data(base64Encoded: payload) else {
+                        throw SSHError.invalidSSHKey("Invalid Secure Enclave P-256 payload.")
+                    }
+                    let key = try P256.Signing.PrivateKey(rawRepresentation: rawData)
+                    authMethod = .p256(username: server.username, privateKey: key)
+                } else {
+                    let keyType = try SSHKeyDetection.detectPrivateKeyType(from: keyMaterial.privateKey)
+                    switch keyType {
+                    case .rsa:
+                        let key = try Insecure.RSA.PrivateKey(sshRsa: keyMaterial.privateKey, decryptionKey: passphraseData)
+                        authMethod = .rsa(username: server.username, privateKey: key)
+                    case .ed25519:
+                        let key = try Curve25519.Signing.PrivateKey(sshEd25519: keyMaterial.privateKey, decryptionKey: passphraseData)
+                        authMethod = .ed25519(username: server.username, privateKey: key)
+                    default:
+                        throw SSHError.unsupportedSSHKeyType(keyType.description)
+                    }
                 }
             } catch let error as SSHError {
                 throw error
@@ -1081,7 +1092,7 @@ class SSHConnection {
             case .sessionNotFound:
                 return "The terminal session is no longer available."
             case .unsupportedSSHKeyType(let keyType):
-                return "\(keyType). Please use an ED25519 key for now."
+                return "\(keyType). Supported key types are RSA, ED25519, and ECDSA P-256."
             case .invalidSSHKey:
                 return "The selected SSH key could not be parsed. Verify key contents and passphrase."
             }
@@ -1108,6 +1119,14 @@ class SSHConnection {
         }
         if raw.contains("ChannelError error 0") {
             return "A connection to \(server.host):\(server.port) is already in progress."
+        }
+        if raw.localizedCaseInsensitiveContains("allauthenticationoptionsfailed")
+            || raw.localizedCaseInsensitiveContains("all authentication options failed")
+        {
+            if server.authMethod == .sshKey {
+                return "SSH authentication was rejected by \(server.host):\(server.port). Verify username, ensure the matching public key is installed in authorized_keys, and confirm the server allows this key algorithm."
+            }
+            return "Authentication failed for \(server.username)@\(server.host):\(server.port). Verify credentials and server auth policy."
         }
         if raw.localizedCaseInsensitiveContains("authentication") {
             return "Authentication failed for \(server.username)@\(server.host):\(server.port)."

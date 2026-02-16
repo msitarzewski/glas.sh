@@ -45,7 +45,11 @@ internal struct UserAuthSignablePayload {
         newBuffer.writeSSHString(serviceName.utf8)
         newBuffer.writeSSHString("publickey".utf8)
         newBuffer.writeSSHBoolean(true)
-        newBuffer.writeSSHString(publicKey.keyPrefix)
+        if publicKey.keyPrefix.elementsEqual("ssh-rsa".utf8) {
+            newBuffer.writeSSHString("rsa-sha2-512".utf8)
+        } else {
+            newBuffer.writeSSHString(publicKey.keyPrefix)
+        }
         newBuffer.writeCompositeSSHString { buffer in
             buffer.writeSSHHostKey(publicKey)
         }

@@ -195,7 +195,7 @@ struct AddServerView: View {
                         Picker("SSH Key", selection: $sshKeyID) {
                             Text("Select a key").tag(nil as UUID?)
                             ForEach(settingsManager.sshKeys) { key in
-                                Text("\(key.name) (\(key.algorithm))").tag(key.id as UUID?)
+                                Text("\(key.name) (\(key.keyTypeBadge))").tag(key.id as UUID?)
                             }
                         }
                     }
@@ -398,7 +398,7 @@ struct AddServerView: View {
         
         // Save password to keychain if using password auth
         if authMethod == .password {
-            try? KeychainManager.savePassword(password, for: server)
+            try? SecretStoreFactory.shared.savePassword(password, for: server)
         }
         
         dismiss()
@@ -501,7 +501,7 @@ struct EditServerView: View {
                             Picker("SSH Key", selection: $sshKeyID) {
                                 Text("Select a key").tag(nil as UUID?)
                                 ForEach(settingsManager.sshKeys) { key in
-                                    Text("\(key.name) (\(key.algorithm))").tag(key.id as UUID?)
+                                    Text("\(key.name) (\(key.keyTypeBadge))").tag(key.id as UUID?)
                                 }
                             }
                         }
@@ -628,7 +628,7 @@ struct EditServerView: View {
         
         serverManager.updateServer(updatedServer)
         if authMethod == .password, !password.isEmpty {
-            try? KeychainManager.savePassword(password, for: updatedServer)
+            try? SecretStoreFactory.shared.savePassword(password, for: updatedServer)
         }
         dismiss()
     }

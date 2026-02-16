@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import LocalAuthentication
 
 struct ConnectionManagerView: View {
     @Environment(SessionManager.self) private var sessionManager
@@ -236,12 +237,16 @@ struct ConnectionManagerView: View {
     // MARK: - Actions
     
     private func connectToServer(_ server: ServerConfiguration) {
-        Task {
+        Task { @MainActor in
+            if !(await ensureUserPresenceIfRequired(for: server)) {
+                return
+            }
+
             // Get password from keychain or prompt
             let password: String?
             if server.authMethod == .password {
                 do {
-                    password = try KeychainManager.retrievePassword(for: server)
+                    password = try SecretStoreFactory.shared.retrievePassword(for: server)
                 } catch {
                     connectionFailureMessage =
                         "No saved password found for \(server.username)@\(server.host):\(server.port).\n\nOpen Edit Server and save the password in Keychain, then try again."
@@ -277,6 +282,35 @@ struct ConnectionManagerView: View {
         }
     }
 
+    private func selectedSSHKey(for server: ServerConfiguration) -> StoredSSHKey? {
+        guard let keyID = server.sshKeyID else { return nil }
+        return settingsManager.sshKeys.first(where: { $0.id == keyID })
+    }
+
+    @MainActor
+    private func ensureUserPresenceIfRequired(for server: ServerConfiguration) async -> Bool {
+        guard server.authMethod == .sshKey else { return true }
+        guard let key = selectedSSHKey(for: server), key.storageKind == .secureEnclave else { return true }
+
+        let context = LAContext()
+        var error: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
+            connectionFailureMessage = "Secure Enclave authentication unavailable: \(error?.localizedDescription ?? "Unknown error")."
+            return false
+        }
+
+        do {
+            let ok = try await context.evaluatePolicy(
+                .deviceOwnerAuthentication,
+                localizedReason: "Authenticate to use Secure Enclave key '\(key.name)'."
+            )
+            return ok
+        } catch {
+            connectionFailureMessage = "Authentication canceled or failed for Secure Enclave key '\(key.name)'."
+            return false
+        }
+    }
+
     private var trustPromptBinding: Binding<Bool> {
         Binding(
             get: { pendingTrustChallenge != nil },
@@ -303,7 +337,7 @@ struct ConnectionManagerView: View {
         guard let session = pendingTrustSession else { return }
         let password = pendingConnectPassword
 
-        Task {
+        Task { @MainActor in
             if let updatedServer = serverManager.server(for: session.server.id) {
                 session.server = updatedServer
             }
@@ -417,6 +451,7 @@ private struct ServerListRow: View {
 private struct ServerInfoView: View {
     let server: ServerConfiguration
     let session: TerminalSession?
+    @Environment(SettingsManager.self) private var settingsManager
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -427,6 +462,11 @@ private struct ServerInfoView: View {
                     infoRow("Host", "\(server.host):\(server.port)")
                     infoRow("User", server.username)
                     infoRow("Auth", server.authMethod.displayName)
+                    if server.authMethod == .sshKey {
+                        infoRow("Key Type", selectedSSHKeyBadge)
+                        infoRow("Key Storage", selectedSSHKeyStorage)
+                        infoRow("Key Migration", selectedSSHKeyMigrationState)
+                    }
                 }
 
                 Section("Session") {
@@ -473,6 +513,44 @@ private struct ServerInfoView: View {
             Text(value)
                 .multilineTextAlignment(.trailing)
         }
+    }
+
+    private var selectedSSHKeyBadge: String {
+        guard let key = selectedSSHKey else {
+            return "Not selected"
+        }
+        return key.keyTypeBadge
+    }
+
+    private var selectedSSHKeyStorage: String {
+        guard let key = selectedSSHKey else { return "Unknown" }
+        switch key.storageKind {
+        case .legacy:
+            return "Legacy Keychain"
+        case .imported:
+            return "Imported Keychain"
+        case .secureEnclave:
+            return "Secure Enclave Wrapped"
+        }
+    }
+
+    private var selectedSSHKeyMigrationState: String {
+        guard let key = selectedSSHKey else { return "Unknown" }
+        switch key.migrationState {
+        case .notNeeded:
+            return "Not needed"
+        case .pending:
+            return "Pending"
+        case .migrated:
+            return "Migrated"
+        case .failed:
+            return "Failed"
+        }
+    }
+
+    private var selectedSSHKey: StoredSSHKey? {
+        guard let keyID = server.sshKeyID else { return nil }
+        return settingsManager.sshKeys.first(where: { $0.id == keyID })
     }
 }
 
