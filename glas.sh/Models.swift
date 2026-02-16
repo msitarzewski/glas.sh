@@ -259,7 +259,6 @@ class TerminalSession: Identifiable, Hashable {
     
     var state: SessionState = .disconnected
     var output: [TerminalLine] = []
-    var terminalInputChunk: Data = Data()
     var terminalInputNonce: UInt64 = 0
     var closeWindowNonce: UInt64 = 0
     var currentDirectory: String = "~"
@@ -278,6 +277,7 @@ class TerminalSession: Identifiable, Hashable {
     private var connectionTask: Task<Void, Never>?
     private var outputTask: Task<Void, Never>?
     private var pendingTerminalOutput = Data()
+    private var pendingTerminalInputChunks: [Data] = []
     private var terminalFlushTask: Task<Void, Never>?
     private let terminalFlushInterval: Duration = .milliseconds(8)
     init(server: ServerConfiguration) {
@@ -463,8 +463,15 @@ class TerminalSession: Identifiable, Hashable {
         }
     }
 
+    func drainTerminalInputChunks() -> [Data] {
+        guard !pendingTerminalInputChunks.isEmpty else { return [] }
+        let chunks = pendingTerminalInputChunks
+        pendingTerminalInputChunks.removeAll(keepingCapacity: true)
+        return chunks
+    }
+
     private func emitTerminalChunk(_ data: Data) {
-        terminalInputChunk = data
+        pendingTerminalInputChunks.append(data)
         terminalInputNonce &+= 1
     }
 
@@ -814,6 +821,13 @@ class SSHConnection {
         self.session = session
     }
 
+    nonisolated static func preferredPTYTerminalModes() -> SSHTerminalModes {
+        SSHTerminalModes([
+            // Keep shell line behavior intact while ensuring CR isn't rewritten to NL.
+            .OCRNL: 0
+        ])
+    }
+
     func setPreferredTerminalSize(rows: Int, columns: Int) {
         terminalRows = max(8, rows)
         terminalColumns = max(20, columns)
@@ -946,7 +960,7 @@ class SSHConnection {
                 terminalRowHeight: terminalRows,
                 terminalPixelWidth: 0,
                 terminalPixelHeight: 0,
-                terminalModes: SSHTerminalModes([:])
+                terminalModes: Self.preferredPTYTerminalModes()
             )
             var mergedEnv = server.environmentVariables
             if mergedEnv["TERM"] == nil {
