@@ -6,6 +6,11 @@
 //
 
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 struct SettingsView: View {
     @Environment(SettingsManager.self) private var settingsManager
@@ -47,7 +52,10 @@ struct GeneralSettingsView: View {
     @Environment(SettingsManager.self) private var settingsManager
     @State private var serverManager = ServerManager(loadImmediately: false)
     @State private var showingAddSSHKey = false
+    @State private var showingGenerateSecureEnclaveKey = false
     @State private var editingSSHKey: StoredSSHKey?
+    @State private var keyPendingDeletion: StoredSSHKey?
+    @State private var keyCopyMessage: String?
     @State private var sshConfigText: String = ""
     @State private var importResultMessage: String?
     
@@ -106,6 +114,33 @@ struct GeneralSettingsView: View {
                 }
             }
 
+            Section("Secret Migration") {
+                if let status = settings.secretMigrationStatus {
+                    let stateText = status.needsMigration ? "Migration pending" : "No pending migration"
+                    Text("\(stateText) • v\(status.currentVersion)/v\(status.targetVersion)")
+                        .font(.subheadline)
+                    Text(
+                        "Passwords: \(status.passwordItemCount), Private keys: \(status.sshPrivateKeyItemCount), Passphrases: \(status.sshPassphraseItemCount)"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    if let lastCompletedAt = status.lastCompletedAt {
+                        Text("Last migration check: \(lastCompletedAt, format: .dateTime)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("Migration status unavailable.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Button("Refresh Migration Status") {
+                    settings.refreshSecretMigrationStatus()
+                }
+                .buttonStyle(.bordered)
+            }
+
             Section("SSH Keys") {
                 if settings.sshKeys.isEmpty {
                     Text("No SSH keys added yet.")
@@ -115,17 +150,21 @@ struct GeneralSettingsView: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(key.name)
-                                Text(key.algorithm)
+                                Text(key.keyTypeBadge)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
+                            Button("Copy Public Key") {
+                                copyPublicKey(for: key)
+                            }
+                            .buttonStyle(.bordered)
                             Button("Rename") {
                                 editingSSHKey = key
                             }
                             .buttonStyle(.bordered)
                             Button("Delete", role: .destructive) {
-                                settings.deleteSSHKey(key.id, serverManager: serverManager)
+                                keyPendingDeletion = key
                             }
                             .buttonStyle(.bordered)
                         }
@@ -138,6 +177,13 @@ struct GeneralSettingsView: View {
                     Label("Add SSH Key", systemImage: "plus.circle.fill")
                 }
                 .buttonStyle(.borderedProminent)
+
+                Button {
+                    showingGenerateSecureEnclaveKey = true
+                } label: {
+                    Label("Generate Secure Enclave Key", systemImage: "lock.shield")
+                }
+                .buttonStyle(.bordered)
             }
 
             Section("Import SSH Config") {
@@ -166,15 +212,75 @@ struct GeneralSettingsView: View {
         .padding()
         .task {
             serverManager.loadServersIfNeeded()
+            settingsManager.refreshSecretMigrationStatus()
         }
         .sheet(isPresented: $showingAddSSHKey) {
             AddSSHKeyView()
+                .environment(settingsManager)
+        }
+        .sheet(isPresented: $showingGenerateSecureEnclaveKey) {
+            GenerateSecureEnclaveSSHKeyView()
                 .environment(settingsManager)
         }
         .sheet(item: $editingSSHKey) { key in
             RenameSSHKeyView(key: key)
                 .environment(settingsManager)
         }
+        .alert(
+            "SSH Public Key",
+            isPresented: Binding(
+                get: { keyCopyMessage != nil },
+                set: { isPresented in
+                    if !isPresented { keyCopyMessage = nil }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {
+                keyCopyMessage = nil
+            }
+        } message: {
+            Text(keyCopyMessage ?? "")
+        }
+        .confirmationDialog(
+            "Delete SSH Key?",
+            isPresented: Binding(
+                get: { keyPendingDeletion != nil },
+                set: { isPresented in
+                    if !isPresented { keyPendingDeletion = nil }
+                }
+            ),
+            titleVisibility: .visible,
+            presenting: keyPendingDeletion
+        ) { key in
+            Button("Delete \(key.name)", role: .destructive) {
+                settingsManager.deleteSSHKey(key.id, serverManager: serverManager)
+                keyPendingDeletion = nil
+            }
+            Button("Cancel", role: .cancel) {
+                keyPendingDeletion = nil
+            }
+        } message: { key in
+            Text("This removes '\(key.name)' from secure storage and unassigns it from any servers currently using it.")
+        }
+    }
+
+    private func copyPublicKey(for key: StoredSSHKey) {
+        do {
+            let value = try settingsManager.openSSHPublicKey(for: key.id)
+            copyToClipboard(value)
+            keyCopyMessage = "Copied public key for '\(key.name)'."
+        } catch {
+            keyCopyMessage = "Failed to export public key for '\(key.name)': \(error.localizedDescription)"
+        }
+    }
+
+    private func copyToClipboard(_ value: String) {
+        #if canImport(UIKit)
+        UIPasteboard.general.string = value
+        #elseif canImport(AppKit)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+        #endif
     }
 }
 
@@ -745,7 +851,7 @@ struct AddSSHKeyView: View {
                 Section("Key Details") {
                     TextField("Key name", text: $name)
                     SecureField("Passphrase (optional)", text: $passphrase)
-                    Text("ED25519 is supported now. RSA key auth support is coming soon.")
+                    Text("RSA and ED25519 private keys are supported.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -786,6 +892,52 @@ struct AddSSHKeyView: View {
                         name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                             || privateKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     )
+                }
+            }
+        }
+    }
+}
+
+struct GenerateSecureEnclaveSSHKeyView: View {
+    @Environment(SettingsManager.self) private var settingsManager
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var name: String = ""
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Key Details") {
+                    TextField("Key name", text: $name)
+                    Text("Generates an ECDSA P-256 key wrapped with a device-bound Secure Enclave key.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let errorMessage {
+                    Section {
+                        Text(errorMessage)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle("Generate Key")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Generate") {
+                        do {
+                            _ = try settingsManager.generateSecureEnclaveP256Key(name: name)
+                            dismiss()
+                        } catch {
+                            errorMessage = error.localizedDescription
+                        }
+                    }
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }

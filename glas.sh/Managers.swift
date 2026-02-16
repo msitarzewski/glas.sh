@@ -9,6 +9,12 @@ import SwiftUI
 import Foundation
 import Security
 import Observation
+#if canImport(CryptoKit)
+import CryptoKit
+#endif
+#if canImport(NIOSSH)
+import NIOSSH
+#endif
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -34,12 +40,389 @@ struct StoredSSHKey: Codable, Identifiable, Hashable {
     let id: UUID
     var name: String
     let algorithm: String
+    var storageKind: SSHKeyStorageKind
+    var algorithmKind: SSHKeyAlgorithmKind
+    var migrationState: SSHKeyMigrationState
+    var keyTag: String?
     let createdAt: Date
+
+    init(
+        id: UUID,
+        name: String,
+        algorithm: String,
+        storageKind: SSHKeyStorageKind = .imported,
+        algorithmKind: SSHKeyAlgorithmKind = .unknown,
+        migrationState: SSHKeyMigrationState = .notNeeded,
+        keyTag: String? = nil,
+        createdAt: Date
+    ) {
+        self.id = id
+        self.name = name
+        self.algorithm = algorithm
+        self.storageKind = storageKind
+        self.algorithmKind = algorithmKind
+        self.migrationState = migrationState
+        self.keyTag = keyTag
+        self.createdAt = createdAt
+    }
+
+    var keyTypeBadge: String {
+        "\(storageKind.badgePrefix) \(algorithmKind.badgeName)"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case algorithm
+        case storageKind
+        case algorithmKind
+        case migrationState
+        case keyTag
+        case createdAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        algorithm = try container.decode(String.self, forKey: .algorithm)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        storageKind = try container.decodeIfPresent(SSHKeyStorageKind.self, forKey: .storageKind) ?? .legacy
+        algorithmKind =
+            try container.decodeIfPresent(SSHKeyAlgorithmKind.self, forKey: .algorithmKind)
+            ?? SSHKeyAlgorithmKind.fromLegacyDescription(algorithm)
+        migrationState = try container.decodeIfPresent(SSHKeyMigrationState.self, forKey: .migrationState) ?? .notNeeded
+        keyTag = try container.decodeIfPresent(String.self, forKey: .keyTag)
+    }
 }
 
 struct SSHKeyMaterial {
     let privateKey: String
     let passphrase: String?
+}
+
+enum SSHKeyStorageKind: String, Codable, CaseIterable {
+    case legacy
+    case imported
+    case secureEnclave
+
+    var badgePrefix: String {
+        switch self {
+        case .legacy:
+            return "Legacy"
+        case .imported:
+            return "Imported"
+        case .secureEnclave:
+            return "Secure Enclave"
+        }
+    }
+}
+
+enum SSHKeyAlgorithmKind: String, Codable, CaseIterable {
+    case rsa
+    case ed25519
+    case ecdsaP256
+    case ecdsaP384
+    case ecdsaP521
+    case unknown
+
+    var badgeName: String {
+        switch self {
+        case .rsa:
+            return "RSA"
+        case .ed25519:
+            return "ED25519"
+        case .ecdsaP256:
+            return "P-256"
+        case .ecdsaP384:
+            return "P-384"
+        case .ecdsaP521:
+            return "P-521"
+        case .unknown:
+            return "Unknown"
+        }
+    }
+
+    static func fromLegacyDescription(_ value: String) -> SSHKeyAlgorithmKind {
+        switch value.lowercased() {
+        case "rsa":
+            return .rsa
+        case "ed25519":
+            return .ed25519
+        case "ecdsa p-256", "ecdsa-p256", "ecdsa_p256":
+            return .ecdsaP256
+        case "ecdsa p-384", "ecdsa-p384", "ecdsa_p384":
+            return .ecdsaP384
+        case "ecdsa p-521", "ecdsa-p521", "ecdsa_p521":
+            return .ecdsaP521
+        default:
+            return .unknown
+        }
+    }
+}
+
+enum SSHKeyMigrationState: String, Codable, CaseIterable {
+    case notNeeded
+    case pending
+    case migrated
+    case failed
+}
+
+protocol SecretStore {
+    func savePassword(_ password: String, for server: ServerConfiguration) throws
+    func retrievePassword(for server: ServerConfiguration) throws -> String
+    func deletePassword(for server: ServerConfiguration) throws
+    func saveSSHKey(_ privateKey: String, passphrase: String?, for keyID: UUID) throws
+    func retrieveSSHKey(for keyID: UUID) throws -> SSHKeyMaterial
+    func deleteSSHKey(for keyID: UUID) throws
+    func runMigrationsIfNeeded()
+}
+
+enum SecretStoreConstants {
+    static let migrationMarkerComment = "sh.glas.secretstore.v1"
+    static let accessibility = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+}
+
+enum SecretStoreFactory {
+    static let shared: SecretStore = KeychainSecretStore()
+}
+
+final class KeychainSecretStore: SecretStore {
+    func savePassword(_ password: String, for server: ServerConfiguration) throws {
+        try KeychainManager.savePassword(password, for: server)
+    }
+
+    func retrievePassword(for server: ServerConfiguration) throws -> String {
+        try KeychainManager.retrievePassword(for: server)
+    }
+
+    func deletePassword(for server: ServerConfiguration) throws {
+        try KeychainManager.deletePassword(for: server)
+    }
+
+    func saveSSHKey(_ privateKey: String, passphrase: String?, for keyID: UUID) throws {
+        try KeychainManager.saveSSHKey(privateKey, passphrase: passphrase, for: keyID)
+    }
+
+    func retrieveSSHKey(for keyID: UUID) throws -> SSHKeyMaterial {
+        try KeychainManager.retrieveSSHKey(for: keyID)
+    }
+
+    func deleteSSHKey(for keyID: UUID) throws {
+        try KeychainManager.deleteSSHKey(for: keyID)
+    }
+
+    func runMigrationsIfNeeded() {
+        _ = SecretStoreMigrationManager.shared.runScaffoldIfNeeded()
+    }
+}
+
+struct SecretStoreMigrationReport: Codable {
+    let fromVersion: Int
+    let toVersion: Int
+    let discoveredPasswordItemCount: Int
+    let discoveredSSHPrivateKeyItemCount: Int
+    let discoveredSSHPassphraseItemCount: Int
+    let migratedItemCount: Int
+    let failedItemCount: Int
+    let completedAt: Date
+
+    init(
+        fromVersion: Int,
+        toVersion: Int,
+        discoveredPasswordItemCount: Int,
+        discoveredSSHPrivateKeyItemCount: Int,
+        discoveredSSHPassphraseItemCount: Int,
+        migratedItemCount: Int,
+        failedItemCount: Int,
+        completedAt: Date
+    ) {
+        self.fromVersion = fromVersion
+        self.toVersion = toVersion
+        self.discoveredPasswordItemCount = discoveredPasswordItemCount
+        self.discoveredSSHPrivateKeyItemCount = discoveredSSHPrivateKeyItemCount
+        self.discoveredSSHPassphraseItemCount = discoveredSSHPassphraseItemCount
+        self.migratedItemCount = migratedItemCount
+        self.failedItemCount = failedItemCount
+        self.completedAt = completedAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case fromVersion
+        case toVersion
+        case discoveredPasswordItemCount
+        case discoveredSSHPrivateKeyItemCount
+        case discoveredSSHPassphraseItemCount
+        case migratedItemCount
+        case failedItemCount
+        case completedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        fromVersion = try container.decode(Int.self, forKey: .fromVersion)
+        toVersion = try container.decode(Int.self, forKey: .toVersion)
+        discoveredPasswordItemCount = try container.decode(Int.self, forKey: .discoveredPasswordItemCount)
+        discoveredSSHPrivateKeyItemCount = try container.decode(Int.self, forKey: .discoveredSSHPrivateKeyItemCount)
+        discoveredSSHPassphraseItemCount = try container.decode(Int.self, forKey: .discoveredSSHPassphraseItemCount)
+        migratedItemCount = try container.decodeIfPresent(Int.self, forKey: .migratedItemCount) ?? 0
+        failedItemCount = try container.decodeIfPresent(Int.self, forKey: .failedItemCount) ?? 0
+        completedAt = try container.decode(Date.self, forKey: .completedAt)
+    }
+}
+
+struct SecretStoreMigrationStatus {
+    let currentVersion: Int
+    let targetVersion: Int
+    let passwordItemCount: Int
+    let sshPrivateKeyItemCount: Int
+    let sshPassphraseItemCount: Int
+    let lastCompletedAt: Date?
+
+    var pendingItemCount: Int {
+        passwordItemCount + sshPrivateKeyItemCount + sshPassphraseItemCount
+    }
+
+    var needsMigration: Bool {
+        pendingItemCount > 0
+    }
+}
+
+final class SecretStoreMigrationManager {
+    static let shared = SecretStoreMigrationManager()
+
+    private let defaults = UserDefaults.standard
+    private let migrationVersionKey = "secretStoreMigrationVersion"
+    private let migrationReportKey = "secretStoreMigrationReport"
+    private let scaffoldVersion = 1
+
+    private init() {}
+
+    @discardableResult
+    func runScaffoldIfNeeded() -> SecretStoreMigrationReport? {
+        let previousVersion = defaults.integer(forKey: migrationVersionKey)
+        guard previousVersion < scaffoldVersion else { return nil }
+        let migrationResult = runLegacyMigration()
+
+        let report = SecretStoreMigrationReport(
+            fromVersion: previousVersion,
+            toVersion: scaffoldVersion,
+            discoveredPasswordItemCount: keychainItemCount(for: "sh.glas.passwords", legacyOnly: true),
+            discoveredSSHPrivateKeyItemCount: keychainItemCount(for: "sh.glas.sshkeys.private", legacyOnly: true),
+            discoveredSSHPassphraseItemCount: keychainItemCount(for: "sh.glas.sshkeys.passphrase", legacyOnly: true),
+            migratedItemCount: migrationResult.migrated,
+            failedItemCount: migrationResult.failed,
+            completedAt: Date()
+        )
+
+        if let data = try? JSONEncoder().encode(report) {
+            defaults.set(data, forKey: migrationReportKey)
+        }
+        defaults.set(scaffoldVersion, forKey: migrationVersionKey)
+        return report
+    }
+
+    func currentStatus() -> SecretStoreMigrationStatus {
+        let report: SecretStoreMigrationReport?
+        if let data = defaults.data(forKey: migrationReportKey) {
+            report = try? JSONDecoder().decode(SecretStoreMigrationReport.self, from: data)
+        } else {
+            report = nil
+        }
+
+        return SecretStoreMigrationStatus(
+            currentVersion: defaults.integer(forKey: migrationVersionKey),
+            targetVersion: scaffoldVersion,
+            passwordItemCount: keychainItemCount(for: "sh.glas.passwords", legacyOnly: true),
+            sshPrivateKeyItemCount: keychainItemCount(for: "sh.glas.sshkeys.private", legacyOnly: true),
+            sshPassphraseItemCount: keychainItemCount(for: "sh.glas.sshkeys.passphrase", legacyOnly: true),
+            lastCompletedAt: report?.completedAt
+        )
+    }
+
+    private func runLegacyMigration() -> (migrated: Int, failed: Int) {
+        var migrated = 0
+        var failed = 0
+        let services = [
+            "sh.glas.passwords",
+            "sh.glas.sshkeys.private",
+            "sh.glas.sshkeys.passphrase"
+        ]
+        for service in services {
+            let result = migrateServiceToMarkedItems(service: service)
+            migrated += result.migrated
+            failed += result.failed
+        }
+        return (migrated, failed)
+    }
+
+    private func migrateServiceToMarkedItems(service: String) -> (migrated: Int, failed: Int) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+            kSecReturnAttributes as String: true,
+            kSecReturnData as String: true
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess else { return (0, 0) }
+
+        guard let items = result as? [[String: Any]] else { return (0, 0) }
+        var migrated = 0
+        var failed = 0
+        for item in items {
+            let comment = item[kSecAttrComment as String] as? String
+            if comment == SecretStoreConstants.migrationMarkerComment {
+                continue
+            }
+            guard
+                let account = item[kSecAttrAccount as String] as? String,
+                let data = item[kSecValueData as String] as? Data
+            else {
+                failed += 1
+                continue
+            }
+
+            let updateQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrAccount as String: account,
+                kSecAttrService as String: service
+            ]
+            let updateValues: [String: Any] = [
+                kSecValueData as String: data,
+                kSecAttrAccessible as String: SecretStoreConstants.accessibility,
+                kSecAttrComment as String: SecretStoreConstants.migrationMarkerComment
+            ]
+            let updateStatus = SecItemUpdate(updateQuery as CFDictionary, updateValues as CFDictionary)
+            if updateStatus == errSecSuccess {
+                migrated += 1
+            } else {
+                failed += 1
+            }
+        }
+        return (migrated, failed)
+    }
+
+    private func keychainItemCount(for service: String, legacyOnly: Bool) -> Int {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+            kSecReturnAttributes as String: true
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess else { return 0 }
+        guard let items = result as? [[String: Any]] else { return 0 }
+        if !legacyOnly {
+            return items.count
+        }
+        return items.filter { item in
+            let comment = item[kSecAttrComment as String] as? String
+            return comment != SecretStoreConstants.migrationMarkerComment
+        }.count
+    }
 }
 
 struct SSHConfigImportResult {
@@ -391,7 +774,9 @@ class SettingsManager {
     var showInfoPanelByDefault: Bool = false
     var sidebarPosition: String = "Left"
     var sessionOverrides: [String: TerminalSessionOverride] = [:]
+    var secretMigrationStatus: SecretStoreMigrationStatus?
     private var hasLoadedPersistentState = false
+    private let secretStore: SecretStore = SecretStoreFactory.shared
     
     init(loadImmediately: Bool = true) {
         if loadImmediately {
@@ -467,6 +852,8 @@ class SettingsManager {
         loadSnippets()
         loadTrustedHostKeys()
         loadSSHKeys()
+        secretStore.runMigrationsIfNeeded()
+        refreshSecretMigrationStatus()
     }
     
     // Manually save when properties change
@@ -542,6 +929,10 @@ class SettingsManager {
         }
     }
 
+    func refreshSecretMigrationStatus() {
+        secretMigrationStatus = SecretStoreMigrationManager.shared.currentStatus()
+    }
+
     private func saveSSHKeys() {
         do {
             let data = try JSONEncoder().encode(sshKeys)
@@ -553,22 +944,48 @@ class SettingsManager {
 
     func addSSHKey(name: String, privateKey: String, passphrase: String?) throws -> StoredSSHKey {
         let keyType = try SSHKeyDetection.detectPrivateKeyType(from: privateKey)
-        if keyType == .rsa {
-            throw KeychainManager.KeychainError.rsaSupportComingSoon
-        }
-        guard keyType == .ed25519 else {
+        guard keyType == .ed25519 || keyType == .rsa else {
             throw KeychainManager.KeychainError.unsupportedSSHKeyType
         }
         let key = StoredSSHKey(
             id: UUID(),
             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
             algorithm: keyType.description,
+            storageKind: .imported,
+            algorithmKind: SSHKeyAlgorithmKind.fromLegacyDescription(keyType.description),
+            migrationState: .pending,
             createdAt: Date()
         )
-        try KeychainManager.saveSSHKey(privateKey, passphrase: passphrase, for: key.id)
+        try secretStore.saveSSHKey(privateKey, passphrase: passphrase, for: key.id)
         sshKeys.append(key)
         saveSSHKeys()
         return key
+    }
+
+    func generateSecureEnclaveP256Key(name: String) throws -> StoredSSHKey {
+        #if canImport(CryptoKit)
+        let keyID = UUID()
+        let keyTag = SecureEnclaveKeyManager.keyTag(for: keyID)
+        let p256PrivateKey = P256.Signing.PrivateKey()
+        let sealedPayload = try SecureEnclaveKeyManager.wrap(data: p256PrivateKey.rawRepresentation, keyTag: keyTag)
+        try KeychainManager.saveSecureEnclaveWrappedP256(sealedPayload, keyTag: keyTag, for: keyID)
+
+        let key = StoredSSHKey(
+            id: keyID,
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            algorithm: SSHKeyType.ecdsaP256.description,
+            storageKind: .secureEnclave,
+            algorithmKind: .ecdsaP256,
+            migrationState: .migrated,
+            keyTag: keyTag,
+            createdAt: Date()
+        )
+        sshKeys.append(key)
+        saveSSHKeys()
+        return key
+        #else
+        throw KeychainManager.KeychainError.secureEnclaveUnavailable
+        #endif
     }
 
     func renameSSHKey(_ keyID: UUID, name: String) {
@@ -577,9 +994,42 @@ class SettingsManager {
         saveSSHKeys()
     }
 
+    func openSSHPublicKey(for keyID: UUID) throws -> String {
+        guard let keyMetadata = sshKeys.first(where: { $0.id == keyID }) else {
+            throw KeychainManager.KeychainError.notFound
+        }
+
+        let keyMaterial = try secretStore.retrieveSSHKey(for: keyID)
+        let passphraseData = keyMaterial.passphrase?.data(using: .utf8)
+
+        let publicKey: NIOSSHPublicKey
+        if keyMaterial.privateKey.hasPrefix("SECURE_ENCLAVE_P256:") {
+            let payload = String(keyMaterial.privateKey.dropFirst("SECURE_ENCLAVE_P256:".count))
+            guard let rawData = Data(base64Encoded: payload) else {
+                throw KeychainManager.KeychainError.unsupportedSSHKeyType
+            }
+            let p256 = try P256.Signing.PrivateKey(rawRepresentation: rawData)
+            publicKey = NIOSSHPrivateKey(p256Key: p256).publicKey
+        } else {
+            let keyType = try SSHKeyDetection.detectPrivateKeyType(from: keyMaterial.privateKey)
+            switch keyType {
+            case .rsa:
+                let rsa = try Insecure.RSA.PrivateKey(sshRsa: keyMaterial.privateKey, decryptionKey: passphraseData)
+                publicKey = NIOSSHPrivateKey(custom: rsa).publicKey
+            case .ed25519:
+                let ed = try Curve25519.Signing.PrivateKey(sshEd25519: keyMaterial.privateKey, decryptionKey: passphraseData)
+                publicKey = NIOSSHPrivateKey(ed25519Key: ed).publicKey
+            default:
+                throw KeychainManager.KeychainError.unsupportedSSHKeyType
+            }
+        }
+
+        return "\(String(openSSHPublicKey: publicKey)) \(keyMetadata.name)"
+    }
+
     func deleteSSHKey(_ keyID: UUID, serverManager: ServerManager? = nil) {
         sshKeys.removeAll { $0.id == keyID }
-        try? KeychainManager.deleteSSHKey(for: keyID)
+        try? secretStore.deleteSSHKey(for: keyID)
 
         if let serverManager {
             for i in serverManager.servers.indices {
@@ -755,9 +1205,104 @@ class SettingsManager {
     }
 }
 
+enum SecureEnclaveKeyManager {
+    static func keyTag(for keyID: UUID) -> String {
+        "sh.glas.secureenclave.p256.\(keyID.uuidString)"
+    }
+
+    static func wrap(data: Data, keyTag: String) throws -> Data {
+        guard let privateKey = try secureEnclavePrivateKey(keyTag: keyTag, createIfMissing: true) else {
+            throw KeychainManager.KeychainError.secureEnclaveUnavailable
+        }
+        guard let publicKey = SecKeyCopyPublicKey(privateKey) else {
+            throw KeychainManager.KeychainError.secureEnclaveOperationFailed
+        }
+        let algorithm: SecKeyAlgorithm = .eciesEncryptionCofactorVariableIVX963SHA256AESGCM
+        guard SecKeyIsAlgorithmSupported(publicKey, .encrypt, algorithm) else {
+            throw KeychainManager.KeychainError.secureEnclaveOperationFailed
+        }
+        var error: Unmanaged<CFError>?
+        guard let wrapped = SecKeyCreateEncryptedData(publicKey, algorithm, data as CFData, &error) as Data? else {
+            throw (error?.takeRetainedValue() as Error?) ?? KeychainManager.KeychainError.secureEnclaveOperationFailed
+        }
+        return wrapped
+    }
+
+    static func unwrap(wrapped: Data, keyTag: String) throws -> Data {
+        guard let privateKey = try secureEnclavePrivateKey(keyTag: keyTag, createIfMissing: false) else {
+            throw KeychainManager.KeychainError.secureEnclaveUnavailable
+        }
+        let algorithm: SecKeyAlgorithm = .eciesEncryptionCofactorVariableIVX963SHA256AESGCM
+        guard SecKeyIsAlgorithmSupported(privateKey, .decrypt, algorithm) else {
+            throw KeychainManager.KeychainError.secureEnclaveOperationFailed
+        }
+        var error: Unmanaged<CFError>?
+        guard let unwrapped = SecKeyCreateDecryptedData(privateKey, algorithm, wrapped as CFData, &error) as Data? else {
+            throw (error?.takeRetainedValue() as Error?) ?? KeychainManager.KeychainError.secureEnclaveOperationFailed
+        }
+        return unwrapped
+    }
+
+    static func deleteKeyIfPresent(keyTag: String) {
+        let tagData = keyTag.data(using: .utf8) ?? Data()
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassKey,
+            kSecAttrApplicationTag as String: tagData,
+            kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+
+    private static func secureEnclavePrivateKey(keyTag: String, createIfMissing: Bool) throws -> SecKey? {
+        let tagData = keyTag.data(using: .utf8) ?? Data()
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassKey,
+            kSecAttrApplicationTag as String: tagData,
+            kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+            kSecReturnRef as String: true
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecSuccess, let key = result as! SecKey? {
+            return key
+        }
+        if !createIfMissing {
+            return nil
+        }
+
+        var error: Unmanaged<CFError>?
+        let access = SecAccessControlCreateWithFlags(
+            nil,
+            SecretStoreConstants.accessibility,
+            [.privateKeyUsage, .userPresence],
+            &error
+        )
+        guard let access else {
+            throw (error?.takeRetainedValue() as Error?) ?? KeychainManager.KeychainError.secureEnclaveOperationFailed
+        }
+
+        let attributes: [String: Any] = [
+            kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeySizeInBits as String: 256,
+            kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
+            kSecPrivateKeyAttrs as String: [
+                kSecAttrIsPermanent as String: true,
+                kSecAttrApplicationTag as String: tagData,
+                kSecAttrAccessControl as String: access
+            ]
+        ]
+        guard let created = SecKeyCreateRandomKey(attributes as CFDictionary, &error) else {
+            throw (error?.takeRetainedValue() as Error?) ?? KeychainManager.KeychainError.secureEnclaveUnavailable
+        }
+        return created
+    }
+}
+
 // MARK: - Keychain Manager
 
 enum KeychainManager {
+    private static let secureEnclaveSealedService = "sh.glas.sshkeys.sealedp256"
+    private static let secureEnclaveTagService = "sh.glas.sshkeys.sealedp256.tag"
     
     static func savePassword(_ password: String, for server: ServerConfiguration) throws {
         let account = "\(server.username)@\(server.host):\(server.port)"
@@ -767,6 +1312,8 @@ enum KeychainManager {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: account,
             kSecAttrService as String: "sh.glas.passwords",
+            kSecAttrAccessible as String: SecretStoreConstants.accessibility,
+            kSecAttrComment as String: SecretStoreConstants.migrationMarkerComment,
             kSecValueData as String: data
         ]
         
@@ -828,14 +1375,39 @@ enum KeychainManager {
     }
 
     static func retrieveSSHKey(for keyID: UUID) throws -> SSHKeyMaterial {
-        let privateKey = try retrieveGenericPassword(account: keyID.uuidString, service: "sh.glas.sshkeys.private")
-        let passphrase = try? retrieveGenericPassword(account: keyID.uuidString, service: "sh.glas.sshkeys.passphrase")
-        return SSHKeyMaterial(privateKey: privateKey, passphrase: passphrase)
+        if let privateKey = try? retrieveGenericPassword(account: keyID.uuidString, service: "sh.glas.sshkeys.private") {
+            let passphrase = try? retrieveGenericPassword(account: keyID.uuidString, service: "sh.glas.sshkeys.passphrase")
+            return SSHKeyMaterial(privateKey: privateKey, passphrase: passphrase)
+        }
+
+        if let (wrapped, keyTag) = try? retrieveSecureEnclaveWrappedP256(for: keyID) {
+            let raw = try SecureEnclaveKeyManager.unwrap(wrapped: wrapped, keyTag: keyTag)
+            let marker = "SECURE_ENCLAVE_P256:\(raw.base64EncodedString())"
+            return SSHKeyMaterial(privateKey: marker, passphrase: nil)
+        }
+
+        throw KeychainError.notFound
     }
 
     static func deleteSSHKey(for keyID: UUID) throws {
         try deleteGenericPassword(account: keyID.uuidString, service: "sh.glas.sshkeys.private")
         try? deleteGenericPassword(account: keyID.uuidString, service: "sh.glas.sshkeys.passphrase")
+        if let keyTag = try? retrieveGenericPassword(account: keyID.uuidString, service: secureEnclaveTagService) {
+            SecureEnclaveKeyManager.deleteKeyIfPresent(keyTag: keyTag)
+        }
+        try? deleteGenericData(account: keyID.uuidString, service: secureEnclaveSealedService)
+        try? deleteGenericPassword(account: keyID.uuidString, service: secureEnclaveTagService)
+    }
+
+    static func saveSecureEnclaveWrappedP256(_ wrapped: Data, keyTag: String, for keyID: UUID) throws {
+        try saveGenericData(wrapped, account: keyID.uuidString, service: secureEnclaveSealedService)
+        try saveGenericPassword(keyTag, account: keyID.uuidString, service: secureEnclaveTagService)
+    }
+
+    static func retrieveSecureEnclaveWrappedP256(for keyID: UUID) throws -> (wrapped: Data, keyTag: String) {
+        let wrapped = try retrieveGenericData(account: keyID.uuidString, service: secureEnclaveSealedService)
+        let keyTag = try retrieveGenericPassword(account: keyID.uuidString, service: secureEnclaveTagService)
+        return (wrapped, keyTag)
     }
 
     private static func saveGenericPassword(_ value: String, account: String, service: String) throws {
@@ -844,6 +1416,8 @@ enum KeychainManager {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: account,
             kSecAttrService as String: service,
+            kSecAttrAccessible as String: SecretStoreConstants.accessibility,
+            kSecAttrComment as String: SecretStoreConstants.migrationMarkerComment,
             kSecValueData as String: data
         ]
         SecItemDelete(query as CFDictionary)
@@ -871,7 +1445,51 @@ enum KeychainManager {
         return value
     }
 
+    private static func saveGenericData(_ data: Data, account: String, service: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: account,
+            kSecAttrService as String: service,
+            kSecAttrAccessible as String: SecretStoreConstants.accessibility,
+            kSecAttrComment as String: SecretStoreConstants.migrationMarkerComment,
+            kSecValueData as String: data
+        ]
+        SecItemDelete(query as CFDictionary)
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw KeychainError.unableToSave
+        }
+    }
+
+    private static func retrieveGenericData(account: String, service: String) throws -> Data {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: account,
+            kSecAttrService as String: service,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data else {
+            throw KeychainError.notFound
+        }
+        return data
+    }
+
     private static func deleteGenericPassword(account: String, service: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: account,
+            kSecAttrService as String: service
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainError.unableToDelete
+        }
+    }
+
+    private static func deleteGenericData(account: String, service: String) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: account,
@@ -888,7 +1506,8 @@ enum KeychainManager {
         case notFound
         case unableToDelete
         case unsupportedSSHKeyType
-        case rsaSupportComingSoon
+        case secureEnclaveUnavailable
+        case secureEnclaveOperationFailed
     }
 }
 
@@ -902,9 +1521,11 @@ extension KeychainManager.KeychainError: LocalizedError {
         case .unableToDelete:
             return "Unable to delete secure item from Keychain."
         case .unsupportedSSHKeyType:
-            return "Unsupported SSH key type. Use ED25519."
-        case .rsaSupportComingSoon:
-            return "RSA key auth support is coming soon. Please use an ED25519 key for now."
+            return "Unsupported SSH key type. Use RSA or ED25519."
+        case .secureEnclaveUnavailable:
+            return "Secure Enclave is unavailable on this device."
+        case .secureEnclaveOperationFailed:
+            return "Secure Enclave operation failed."
         }
     }
 }
