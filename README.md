@@ -33,6 +33,8 @@ This README documents the **current implementation** in this repository.
   - terminal-local settings modal (`Terminal`, `Overrides`, `Port Forwarding`)
 - Session close on clean remote exit
 - Secure password retrieval via Keychain helper
+- SSH key authentication (RSA, Ed25519) with per-server key assignment
+- Secure Enclave-backed P-256 key generation with user-presence auth prompt
 
 ## Current Terminal Stack
 
@@ -94,7 +96,7 @@ To publish from this repository:
 
 ## Known Limitations
 
-- `SSH Key` and `SSH Agent` auth paths are present in UI, but connection auth still falls back to password-based auth.
+- `SSH Agent` auth path is present in UI, but connection auth still falls back to password-based auth for agent-based requests.
 - Port forwarding UI/state management exists, but start/stop forwarding is not yet wired to active SSH forwarding.
 
 ## Aspirational / In Progress
@@ -102,7 +104,7 @@ To publish from this repository:
 These are not fully shipped yet:
 
 - System close affordance interception/warning for active remote processes (only in-app close flows can currently be fully controlled).
-- Full SSH key-based and SSH agent-based authentication execution path.
+- SSH agent-based authentication execution path.
 - Active SSH port forwarding lifecycle (start/stop backing tunnel operations).
 - Additional terminal parity work (selection semantics, advanced key mapping, and edge-case TUI behavior).
 

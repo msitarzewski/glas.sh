@@ -3,44 +3,247 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>glas.sh | visionOS SSH terminal</title>
+    <title>glas.sh | Native visionOS SSH terminal</title>
     <meta
       name="description"
-      content="glas.sh is a native visionOS SSH terminal app with a glass-first UI and multi-window workflow."
+      content="glas.sh is a native visionOS SSH terminal with PTY sessions, SwiftTerm rendering, host-key trust prompts, and a glass-first multi-window workflow."
+    >
+    <meta name="theme-color" content="#0c141f">
+    <link rel="canonical" href="https://msitarzewski.github.io/glas.sh/">
+
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="glas.sh | Native visionOS SSH terminal">
+    <meta
+      property="og:description"
+      content="A native visionOS SSH terminal app with PTY sessions, host-key trust prompts, and a glass-first multi-window workflow."
+    >
+    <meta property="og:url" content="https://msitarzewski.github.io/glas.sh/">
+    <meta
+      property="og:image"
+      content="https://msitarzewski.github.io/glas.sh/images/hero-og.jpg"
+    >
+
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="glas.sh | Native visionOS SSH terminal">
+    <meta
+      name="twitter:description"
+      content="Native visionOS SSH terminal with PTY sessions, SwiftTerm rendering, and glass-first multi-window UX."
+    >
+    <meta
+      name="twitter:image"
+      content="https://msitarzewski.github.io/glas.sh/images/hero-og.jpg"
+    >
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
     >
     <link rel="stylesheet" href="./styles.css">
   </head>
   <body>
-    <main class="layout">
-      <section class="hero">
-        <p class="eyebrow">visionOS native</p>
-        <h1>glas.sh</h1>
-        <p class="lede">
-          A native visionOS SSH terminal app with a glass-first UI and multi-window workflow.
-        </p>
-        <div class="actions">
-          <a class="button primary" href="https://github.com/msitarzewski/glas.sh">View on GitHub</a>
-          <a class="button" href="https://github.com/sponsors/msitarzewski">Sponsor</a>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="shell nav-wrap">
+        <a class="brand" href="#top" aria-label="glas.sh home">
+          <span class="brand-dot" aria-hidden="true"></span>
+          glas.sh
+        </a>
+        <nav class="top-nav" aria-label="Primary">
+          <a href="#features">Features</a>
+          <a href="#workflow">Workflow</a>
+          <a href="#security">Security</a>
+        </nav>
+        <a class="button button-ghost" href="https://github.com/msitarzewski/glas.sh">GitHub</a>
+      </div>
+    </header>
+
+    <main id="main">
+      <section id="top" class="hero shell">
+        <div class="hero-copy">
+          <p class="eyebrow">visionOS native SSH</p>
+          <h1>A real terminal in spatial computing.</h1>
+          <p class="lede">
+            glas.sh brings interactive PTY sessions, SwiftTerm rendering, and trust-aware SSH onboarding to visionOS
+            with a glass-first interface built for multi-window workflows.
+          </p>
+          <div class="hero-cta">
+            <a class="button button-primary" href="https://github.com/msitarzewski/glas.sh">View source</a>
+            <a class="button button-ghost" href="https://github.com/sponsors/msitarzewski">Sponsor</a>
+          </div>
+          <ul class="signal-list" aria-label="Current capability highlights">
+            <li>PTY interactive sessions</li>
+            <li>Host-key trust prompts</li>
+            <li>Secure Enclave-backed P-256 keys</li>
+          </ul>
+        </div>
+
+        <div class="hero-art" aria-hidden="true">
+          <div class="orb orb-a"></div>
+          <div class="orb orb-b"></div>
+          <article class="mock-window">
+            <header class="mock-chrome">
+              <span></span><span></span><span></span>
+              <p>session: root@lab</p>
+            </header>
+            <div class="mock-body">
+              <p><span class="prompt">$</span> ssh ops@10.0.1.42</p>
+              <p class="muted">Host key fingerprint SHA-256 verified.</p>
+              <p><span class="prompt">$</span> top</p>
+              <p class="ok">Connected with PTY / xterm-256color</p>
+            </div>
+          </article>
         </div>
       </section>
 
-      <section class="panel">
-        <h2>Current implementation</h2>
-        <ul>
-          <li>Native SSH session flow using Citadel with PTY support</li>
-          <li>SwiftTerm-backed rendering for ANSI and truecolor terminal output</li>
-          <li>Multi-window layout for connections, sessions, previews, and settings</li>
-          <li>VisionOS ornaments for server context, tools, and session status</li>
-        </ul>
+      <section class="proof shell" aria-label="Proof points">
+        <article>
+          <h2>Native stack</h2>
+          <p>Swift + SwiftUI + SwiftTerm + Citadel on visionOS.</p>
+        </article>
+        <article>
+          <h2>Multi-window</h2>
+          <p>Connections, terminals, settings, preview, and forwarding surfaces.</p>
+        </article>
+        <article>
+          <h2>Operational clarity</h2>
+          <p>Host key verification modes, SSH key auth, and explicit trust diagnostics.</p>
+        </article>
       </section>
 
-      <section class="panel">
-        <h2>Project</h2>
-        <p>
-          Built in Swift for visionOS. Open <code>glas.sh.xcodeproj</code>, choose the
-          <code>glas.sh</code> scheme, select a visionOS simulator, and run.
-        </p>
+      <section id="features" class="shell section">
+        <div class="section-head">
+          <p class="eyebrow">Feature set</p>
+          <h2>Built for real shell work, not toy demos.</h2>
+        </div>
+        <div class="feature-grid">
+          <article class="card">
+            <h3>Interactive PTY sessions</h3>
+            <p>
+              Sessions run as interactive terminals with resize propagation, not one-off command execution.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Search + session controls</h3>
+            <p>
+              Footer-first terminal controls provide quick search, clear, preview, and in-window settings.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Session-level overrides</h3>
+            <p>
+              Tune per-session appearance and behavior without disturbing your global defaults.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Host trust workflow</h3>
+            <p>
+              Ask/Strict/Insecure verification modes and explicit fingerprint prompts for first-seen or changed keys.
+            </p>
+          </article>
+          <article class="card">
+            <h3>SSH key management</h3>
+            <p>
+              Import RSA/Ed25519 keys, generate Secure Enclave-backed P-256 keys, and assign keys per server.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Config import and mapping</h3>
+            <p>
+              Import OpenSSH config entries and map identity files to stored keys when possible.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section id="workflow" class="shell section split">
+        <div>
+          <p class="eyebrow">Workflow</p>
+          <h2>From connection to command loop in seconds.</h2>
+          <ol class="flow">
+            <li>
+              <h3>1. Select server</h3>
+              <p>Filter by favorites, recents, tags, or direct search.</p>
+            </li>
+            <li>
+              <h3>2. Verify trust</h3>
+              <p>Review host key fingerprint and choose trust behavior.</p>
+            </li>
+            <li>
+              <h3>3. Work in-terminal</h3>
+              <p>Use PTY shell sessions with dynamic resize and terminal-local controls.</p>
+            </li>
+          </ol>
+        </div>
+
+        <figure class="media-card">
+          <img
+            src="./images/workflow.jpg"
+            alt="Spatial multi-window SSH workspace with connection list, terminal session, and settings panel"
+            loading="lazy"
+            width="1800"
+            height="1200"
+          >
+          <figcaption>Multi-window spatial workflow: connections, terminal, and settings.</figcaption>
+        </figure>
+      </section>
+
+      <section id="security" class="shell section split reverse">
+        <figure class="media-card">
+          <img
+            src="./images/security.jpg"
+            alt="Abstract Secure Enclave chip geometry with translucent interface layers and circuit traces"
+            loading="lazy"
+            width="1800"
+            height="1200"
+          >
+          <figcaption>Secure Enclave-backed key generation and hardware trust.</figcaption>
+        </figure>
+        <div>
+          <p class="eyebrow">Security posture</p>
+          <h2>Direct about what ships now and what is in progress.</h2>
+          <ul class="status-list">
+            <li>
+              <span class="tag live">Live now</span>
+              <p>Password auth, SSH key auth (RSA/Ed25519), and Secure Enclave-backed P-256 key generation.</p>
+            </li>
+            <li>
+              <span class="tag live">Live now</span>
+              <p>Host-key verification modes (Ask / Strict / Insecure) with trust prompts and per-server trust storage.</p>
+            </li>
+            <li>
+              <span class="tag progress">In progress</span>
+              <p>SSH agent authentication path.</p>
+            </li>
+            <li>
+              <span class="tag progress">In progress</span>
+              <p>Active SSH forwarding lifecycle start/stop wiring.</p>
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="shell final-cta">
+        <h2>Try the project, shape the roadmap.</h2>
+        <p>glas.sh is open source and actively iterating toward deeper SSH parity.</p>
+        <div class="hero-cta">
+          <a class="button button-primary" href="https://github.com/msitarzewski/glas.sh">Open repository</a>
+          <a class="button button-ghost" href="https://github.com/msitarzewski/glas.sh/issues">Request feature</a>
+        </div>
       </section>
     </main>
+
+    <footer class="site-footer">
+      <div class="shell footer-row">
+        <p>glas.sh</p>
+        <div>
+          <a href="https://msitarzewski.github.io/glas.sh/">Website</a>
+          <a href="https://github.com/msitarzewski/glas.sh">GitHub</a>
+          <a href="https://github.com/sponsors/msitarzewski">Sponsor</a>
+        </div>
+      </div>
+    </footer>
   </body>
 </html>
