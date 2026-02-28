@@ -13,9 +13,29 @@ import Citadel
 import NIOCore
 import NIOSSH
 import RealityKitContent
+import os
+import GlasSecretStore
 #if canImport(CryptoKit)
 import CryptoKit
 #endif
+
+// MARK: - Host Key Verification
+
+enum HostKeyVerificationMode: String, Codable, CaseIterable {
+    case ask = "Ask"
+    case strict = "Strict"
+    case insecureAcceptAny = "Insecure (Accept Any)"
+}
+
+struct TrustedHostKeyEntry: Codable, Identifiable, Hashable {
+    var id: String { "\(host):\(port):\(algorithm):\(fingerprintSHA256)" }
+    let host: String
+    let port: Int
+    let algorithm: String
+    let fingerprintSHA256: String
+    let keyDataBase64: String
+    let addedAt: Date
+}
 
 // MARK: - Authentication
 
@@ -154,9 +174,8 @@ struct HostKeyTrustRequiredError: Error {
     let challenge: HostKeyTrustChallenge
 }
 
-final class PromptingHostKeyValidator: NIOSSHClientServerAuthenticationDelegate, @unchecked Sendable {
-    private static let challengeCacheQueue = DispatchQueue(label: "sh.glas.hostkey.challenge-cache")
-    private static var challengeCache: [String: HostKeyTrustChallenge] = [:]
+final class PromptingHostKeyValidator: NIOSSHClientServerAuthenticationDelegate, Sendable {
+    private static let challengeCache = OSAllocatedUnfairLock(initialState: [String: HostKeyTrustChallenge]())
 
     private let host: String
     private let port: Int
@@ -217,20 +236,20 @@ final class PromptingHostKeyValidator: NIOSSHClientServerAuthenticationDelegate,
     }
 
     private static func storeChallenge(_ challenge: HostKeyTrustChallenge) {
-        challengeCacheQueue.sync {
-            challengeCache[cacheKey(host: challenge.host, port: challenge.port)] = challenge
+        challengeCache.withLock {
+            $0[cacheKey(host: challenge.host, port: challenge.port)] = challenge
         }
     }
 
     static func takeLatestChallenge(host: String, port: Int) -> HostKeyTrustChallenge? {
-        challengeCacheQueue.sync {
-            challengeCache.removeValue(forKey: cacheKey(host: host, port: port))
+        challengeCache.withLock {
+            $0.removeValue(forKey: cacheKey(host: host, port: port))
         }
     }
 
     static func clearChallenge(host: String, port: Int) {
-        _ = challengeCacheQueue.sync {
-            challengeCache.removeValue(forKey: cacheKey(host: host, port: port))
+        challengeCache.withLock {
+            _ = $0.removeValue(forKey: cacheKey(host: host, port: port))
         }
     }
 
@@ -274,18 +293,24 @@ class TerminalSession: Identifiable, Hashable {
     
     // SSH Connection
     private var sshConnection: SSHConnection?
-    private var connectionTask: Task<Void, Never>?
-    private var outputTask: Task<Void, Never>?
+    nonisolated(unsafe) private var connectionTask: Task<Void, Never>?
+    nonisolated(unsafe) private var outputTask: Task<Void, Never>?
     private var pendingTerminalOutput = Data()
     private var pendingTerminalInputChunks: [Data] = []
-    private var terminalFlushTask: Task<Void, Never>?
+    nonisolated(unsafe) private var terminalFlushTask: Task<Void, Never>?
     private let terminalFlushInterval: Duration = .milliseconds(8)
     init(server: ServerConfiguration) {
         self.id = UUID()
         self.server = server
         self.sshConnection = SSHConnection(session: self)
     }
-    
+
+    deinit {
+        connectionTask?.cancel()
+        outputTask?.cancel()
+        terminalFlushTask?.cancel()
+    }
+
     // Hashable conformance
     static func == (lhs: TerminalSession, rhs: TerminalSession) -> Bool {
         lhs.id == rhs.id
@@ -328,7 +353,7 @@ class TerminalSession: Identifiable, Hashable {
                 pendingHostKeyChallenge = cachedChallenge
             }
             let mode = HostKeyVerificationMode(
-                rawValue: UserDefaults.standard.string(forKey: "hostKeyVerificationMode") ?? ""
+                rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.hostKeyVerificationMode) ?? ""
             ) ?? .ask
             let message: String
             if let challenge = pendingHostKeyChallenge {
@@ -343,7 +368,7 @@ class TerminalSession: Identifiable, Hashable {
             } else {
                 message = SSHConnection.userFacingMessage(for: error, server: server)
             }
-            print("SSH connect error (\(server.host):\(server.port)): \(error)")
+            Logger.ssh.error("SSH connect error (\(self.server.host):\(self.server.port)): \(error)")
             lastConnectionDiagnostics =
                 "Attempted: \(server.host):\(server.port)\nAuth method: \(server.authMethod.displayName)\nHost key mode: \(mode.rawValue)\nRaw error: \(String(describing: error))"
             connectionProgress = nil
@@ -377,7 +402,7 @@ class TerminalSession: Identifiable, Hashable {
             do {
                 try await sshConnection?.sendInput(key)
             } catch {
-                print("Error sending key: \(error)")
+                Logger.ssh.error("Error sending key: \(error)")
             }
         }
     }
@@ -387,7 +412,7 @@ class TerminalSession: Identifiable, Hashable {
             do {
                 try await sshConnection?.sendBytes(data)
             } catch {
-                print("Error sending terminal data: \(error)")
+                Logger.ssh.error("Error sending terminal data: \(error)")
             }
         }
     }
@@ -458,7 +483,7 @@ class TerminalSession: Identifiable, Hashable {
             do {
                 try await sshConnection?.resizeTerminal(rows: clampedRows, columns: clampedColumns)
             } catch {
-                print("Failed to resize remote PTY: \(error)")
+                Logger.ssh.error("Failed to resize remote PTY: \(error)")
             }
         }
     }
@@ -857,7 +882,7 @@ class SSHConnection {
                 throw SSHError.sshKeyNotFound
             }
             do {
-                let keyMaterial = try SecretStoreFactory.shared.retrieveSSHKey(for: keyID)
+                let keyMaterial = try KeychainManager.retrieveSSHKey(for: keyID)
                 let passphraseData = keyMaterial.passphrase?.data(using: .utf8)
 
                 if keyMaterial.privateKey.hasPrefix("SECURE_ENCLAVE_P256:") {
@@ -1008,14 +1033,14 @@ class SSHConnection {
         } catch is CancellationError {
             // Task cancelled during disconnect.
         } catch {
-            if String(describing: error).contains("ChannelError error 6") {
+            if Self.isChannelClosedError(error) {
                 await MainActor.run {
                     self.session?.handleCleanRemoteExit()
                 }
                 return
             }
             let message = Self.userFacingMessage(for: error, server: server)
-            print("SSH stream error (\(server.host):\(server.port)): \(error)")
+            Logger.ssh.error("SSH stream error (\(server.host):\(server.port)): \(error)")
             await MainActor.run {
                 if case .connected = self.session?.state {
                     self.session?.reportError(message)
@@ -1059,7 +1084,7 @@ class SSHConnection {
         do {
             try await client?.close()
         } catch {
-            print("Error during disconnect: \(error)")
+            Logger.ssh.error("Error during disconnect: \(error)")
         }
         
         client = nil
@@ -1125,15 +1150,11 @@ class SSHConnection {
             }
         }
 
-        let raw = String(describing: error)
-        if raw.localizedCaseInsensitiveContains("keyexchangenegotiationfailure")
-            || raw.localizedCaseInsensitiveContains("key exchange negotiation failure")
-        {
+        if isKeyExchangeNegotiationFailure(error) {
             return "SSH handshake failed: no shared security algorithm was found with \(server.host):\(server.port)."
         }
-        if raw.contains("ChannelError error 0") {
-            return "A connection to \(server.host):\(server.port) is already in progress."
-        }
+
+        let raw = String(describing: error)
         if raw.localizedCaseInsensitiveContains("allauthenticationoptionsfailed")
             || raw.localizedCaseInsensitiveContains("all authentication options failed")
         {
@@ -1163,7 +1184,7 @@ class SSHConnection {
 
     private static func hostKeyVerificationMode() -> HostKeyVerificationMode {
         guard
-            let rawValue = UserDefaults.standard.string(forKey: "hostKeyVerificationMode"),
+            let rawValue = UserDefaults.standard.string(forKey: UserDefaultsKeys.hostKeyVerificationMode),
             let mode = HostKeyVerificationMode(rawValue: rawValue)
         else {
             return .ask
@@ -1182,7 +1203,7 @@ class SSHConnection {
         }
 
         // Backward-compatible fallback for previously stored global trust entries.
-        guard let data = UserDefaults.standard.data(forKey: "trustedHostKeys"),
+        guard let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.trustedHostKeys),
               let entries = try? JSONDecoder().decode([TrustedHostKeyEntry].self, from: data)
         else {
             return []
@@ -1213,7 +1234,7 @@ class SSHConnection {
         )
     }
 
-    private static func isKeyExchangeNegotiationFailure(_ error: Error) -> Bool {
+    static func isKeyExchangeNegotiationFailure(_ error: Error) -> Bool {
         if let nioError = error as? NIOSSHError, nioError.type == .keyExchangeNegotiationFailure {
             return true
         }
@@ -1221,6 +1242,14 @@ class SSHConnection {
         let raw = String(describing: error)
         return raw.localizedCaseInsensitiveContains("keyexchangenegotiationfailure")
             || raw.localizedCaseInsensitiveContains("key exchange negotiation failure")
+    }
+
+    static func isChannelClosedError(_ error: Error) -> Bool {
+        if let channelError = error as? ChannelError {
+            return channelError == .eof || channelError == .alreadyClosed
+                || channelError == .inputClosed || channelError == .outputClosed
+        }
+        return false
     }
 }
 

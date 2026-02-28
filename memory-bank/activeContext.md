@@ -8,6 +8,7 @@
 - Maintain clean repo structure for public open-source collaboration.
 
 ## Immediate Priorities
+- **Push + PR the code quality overhaul + keychain fix** on branch `claude-does-glas-sh`. All code is done, build passes, 25/25 tests pass. Includes password keychain persistence fixes (AutoFill suppression, error surfacing, pre-load, key migration).
 - Continue PR-based workflow on protected `main`.
 - Keep Connections manager aligned to native visionOS conventions (split view/list/search/toolbar), with lightweight filter chips for active tag filters.
 - Verify end-to-end auth behavior for RSA SHA-2 and ED25519 across existing server fleet.

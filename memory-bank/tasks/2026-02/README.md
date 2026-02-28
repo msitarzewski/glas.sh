@@ -75,3 +75,22 @@ Task records:
 - [260209_connections-window-recovery-and-terminal-footer-actions.md](./260209_connections-window-recovery-and-terminal-footer-actions.md)
 - [260209_terminal-performance-redraw-and-stream-coalescing.md](./260209_terminal-performance-redraw-and-stream-coalescing.md)
 - [260215_connections-native-ui-tag-search-filters-and-form-persistence.md](./260215_connections-native-ui-tag-search-filters-and-form-persistence.md)
+
+## 2026-02-28: Password keychain persistence fix
+- Suppressed visionOS AutoFill system dialog on password SecureFields via `.textContentType(.init(rawValue: ""))`.
+- Replaced silent `try?` keychain saves with `do/catch` + `Logger.keychain.error()` + user-facing alert in both AddServerView and EditServerView.
+- Added password pre-load in EditServerView so existing saved passwords are visible on edit.
+- Added keychain key migration: orphaned entries cleaned up when host/port/username change or auth method switches away from password.
+- See: [260228_password-keychain-persistence-fix.md](./260228_password-keychain-persistence-fix.md)
+
+## 2026-02-20: Code quality overhaul
+- Split 1,564-line `Managers.swift` into 10 focused single-responsibility files + deleted original.
+- Extracted ~25 magic strings into `Constants.swift` typed enums (`UserDefaultsKeys`, `KeychainServiceNames`).
+- Replaced 13 `print()` calls with structured `os.Logger` (subsystem `sh.glas`, 5 categories).
+- Fixed `@unchecked Sendable` on `PromptingHostKeyValidator` using `OSAllocatedUnfairLock`.
+- Added `deinit` to `TerminalSession` for task cleanup.
+- Fixed force cast (`as!`) in `SecureEnclaveKeyManager`.
+- Improved error classification: added `isChannelClosedError()` helper, consolidated key exchange detection, deduplicated string matching.
+- Expanded test suite from 3 to 25 tests (ServerManager, SettingsManager, Constants, error classification, TerminalSession lifecycle, SSH config parser edge cases).
+- **All code complete, build passes, 25/25 tests pass. Awaiting git commit + PR.**
+- See: [260220_code-quality-overhaul.md](./260220_code-quality-overhaul.md)

@@ -32,6 +32,15 @@
   - in-window session settings modal with local tabs
   - terminal-pane-only tint/translucency behavior (avoids text tint washout).
 
+- Password keychain persistence hardened:
+  - Suppressed visionOS AutoFill system dialog on credential-style SecureFields.
+  - Keychain save errors now logged + surfaced via alert instead of silently swallowed.
+  - EditServerView pre-loads existing saved password from keychain.
+  - Keychain key migration: orphaned entries cleaned up on host/port/username change or auth method switch.
+
+## In Progress
+- **Code quality overhaul + keychain fix** (branch `claude-does-glas-sh`): All code complete, build passes, 25/25 tests pass. Includes Managers.swift split, magic string elimination, structured logging, concurrency fixes, test expansion (3→25), and password keychain persistence fixes.
+
 ## Open Areas
 - Ongoing terminal UX parity polish for edge-case TUIs.
 - Final contrast tuning for modal/settings surfaces across varied scene lighting.
