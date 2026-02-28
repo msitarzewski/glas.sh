@@ -41,7 +41,9 @@ enum KeychainManager {
     // MARK: - SSH Keys
 
     static func saveSSHKey(_ privateKey: String, passphrase: String?, for keyID: UUID) throws {
-        try SSHKeyKeychainStore.save(privateKey: privateKey, passphrase: passphrase, for: keyID, config: config)
+        let secureKey = SecureBytes(Data(privateKey.utf8))
+        let securePassphrase = passphrase.map { SecureBytes(Data($0.utf8)) }
+        try SSHKeyKeychainStore.save(privateKey: secureKey, passphrase: securePassphrase, for: keyID, config: config)
     }
 
     static func retrieveSSHKey(for keyID: UUID) throws -> SSHKeyMaterial {

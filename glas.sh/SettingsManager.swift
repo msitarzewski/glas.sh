@@ -265,24 +265,25 @@ class SettingsManager {
         }
 
         let keyMaterial = try KeychainManager.retrieveSSHKey(for: keyID)
-        let passphraseData = keyMaterial.passphrase?.data(using: .utf8)
+        let privateKeyString = keyMaterial.privateKey.toUTF8String() ?? ""
+        let passphraseData = keyMaterial.passphrase?.toData()
 
         let publicKey: NIOSSHPublicKey
-        if keyMaterial.privateKey.hasPrefix("SECURE_ENCLAVE_P256:") {
-            let payload = String(keyMaterial.privateKey.dropFirst("SECURE_ENCLAVE_P256:".count))
+        if privateKeyString.hasPrefix("SECURE_ENCLAVE_P256:") {
+            let payload = String(privateKeyString.dropFirst("SECURE_ENCLAVE_P256:".count))
             guard let rawData = Data(base64Encoded: payload) else {
                 throw SecretStoreError.unsupportedSSHKeyType
             }
             let p256 = try P256.Signing.PrivateKey(rawRepresentation: rawData)
             publicKey = NIOSSHPrivateKey(p256Key: p256).publicKey
         } else {
-            let keyType = try SSHKeyDetection.detectPrivateKeyType(from: keyMaterial.privateKey)
+            let keyType = try SSHKeyDetection.detectPrivateKeyType(from: privateKeyString)
             switch keyType {
             case .rsa:
-                let rsa = try Insecure.RSA.PrivateKey(sshRsa: keyMaterial.privateKey, decryptionKey: passphraseData)
+                let rsa = try Insecure.RSA.PrivateKey(sshRsa: privateKeyString, decryptionKey: passphraseData)
                 publicKey = NIOSSHPrivateKey(custom: rsa).publicKey
             case .ed25519:
-                let ed = try Curve25519.Signing.PrivateKey(sshEd25519: keyMaterial.privateKey, decryptionKey: passphraseData)
+                let ed = try Curve25519.Signing.PrivateKey(sshEd25519: privateKeyString, decryptionKey: passphraseData)
                 publicKey = NIOSSHPrivateKey(ed25519Key: ed).publicKey
             default:
                 throw SecretStoreError.unsupportedSSHKeyType
