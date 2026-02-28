@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import GlasSecretStore
 #if canImport(UIKit)
 import UIKit
 #elseif canImport(AppKit)
@@ -117,18 +118,13 @@ struct GeneralSettingsView: View {
             Section("Secret Migration") {
                 if let status = settings.secretMigrationStatus {
                     let stateText = status.needsMigration ? "Migration pending" : "No pending migration"
-                    Text("\(stateText) • v\(status.currentVersion)/v\(status.targetVersion)")
+                    Text(stateText)
                         .font(.subheadline)
                     Text(
                         "Passwords: \(status.passwordItemCount), Private keys: \(status.sshPrivateKeyItemCount), Passphrases: \(status.sshPassphraseItemCount)"
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    if let lastCompletedAt = status.lastCompletedAt {
-                        Text("Last migration check: \(lastCompletedAt, format: .dateTime)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
                 } else {
                     Text("Migration status unavailable.")
                         .font(.caption)

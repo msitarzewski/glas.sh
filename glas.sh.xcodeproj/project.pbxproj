@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		4C2451562E71897700F37CC4 /* RealityKitContent in Frameworks */ = {isa = PBXBuildFile; productRef = 4C2451552E71897700F37CC4 /* RealityKitContent */; };
+		D1A2B3C4E5F6789000AABB01 /* GlasSecretStore in Frameworks */ = {isa = PBXBuildFile; productRef = D1A2B3C4E5F6789000AABB02 /* GlasSecretStore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -58,6 +59,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				4C2451562E71897700F37CC4 /* RealityKitContent in Frameworks */,
+				D1A2B3C4E5F6789000AABB01 /* GlasSecretStore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -119,6 +121,7 @@
 			name = glas.sh;
 			packageProductDependencies = (
 				4C2451552E71897700F37CC4 /* RealityKitContent */,
+				D1A2B3C4E5F6789000AABB02 /* GlasSecretStore */,
 			);
 			productName = glas.sh;
 			productReference = 4C2451502E71897700F37CC4 /* glas.sh.app */;
@@ -176,6 +179,7 @@
 			mainGroup = 4C2451472E71897700F37CC4;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				D1A2B3C4E5F6789000AABB03 /* XCLocalSwiftPackageReference "../GlasSecretStore" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4C2451512E71897700F37CC4 /* Products */;
@@ -236,6 +240,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "glas.sh/glas.sh.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
@@ -265,6 +270,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "glas.sh/glas.sh.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
@@ -488,10 +494,22 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		D1A2B3C4E5F6789000AABB03 /* XCLocalSwiftPackageReference "../GlasSecretStore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../GlasSecretStore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		4C2451552E71897700F37CC4 /* RealityKitContent */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = RealityKitContent;
+		};
+		D1A2B3C4E5F6789000AABB02 /* GlasSecretStore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D1A2B3C4E5F6789000AABB03 /* XCLocalSwiftPackageReference "../GlasSecretStore" */;
+			productName = GlasSecretStore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
