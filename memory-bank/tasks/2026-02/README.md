@@ -76,6 +76,12 @@ Task records:
 - [260209_terminal-performance-redraw-and-stream-coalescing.md](./260209_terminal-performance-redraw-and-stream-coalescing.md)
 - [260215_connections-native-ui-tag-search-filters-and-form-persistence.md](./260215_connections-native-ui-tag-search-filters-and-form-persistence.md)
 
+## 2026-02-28: Migrate SSH key operations to SecureBytes API
+- Migrated KeychainManager save boundary to wrap String → SecureBytes before calling SSHKeyKeychainStore.
+- Retrieve sites in SettingsManager and Models extract strings via `.toUTF8String()` / `.toData()`.
+- Public wrapper API unchanged — callers still pass and receive String.
+- Incremental step toward full secure memory handling for key material.
+
 ## 2026-02-28: Password keychain persistence fix
 - Suppressed visionOS AutoFill system dialog on password SecureFields via `.textContentType(.init(rawValue: ""))`.
 - Replaced silent `try?` keychain saves with `do/catch` + `Logger.keychain.error()` + user-facing alert in both AddServerView and EditServerView.
