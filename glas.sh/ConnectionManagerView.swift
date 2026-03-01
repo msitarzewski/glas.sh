@@ -7,6 +7,7 @@
 
 import SwiftUI
 import LocalAuthentication
+import GlasSecretStore
 
 struct ConnectionManagerView: View {
     @Environment(SessionManager.self) private var sessionManager
@@ -246,7 +247,7 @@ struct ConnectionManagerView: View {
             let password: String?
             if server.authMethod == .password {
                 do {
-                    password = try SecretStoreFactory.shared.retrievePassword(for: server)
+                    password = try KeychainManager.retrievePassword(for: server)
                 } catch {
                     connectionFailureMessage =
                         "No saved password found for \(server.username)@\(server.host):\(server.port).\n\nOpen Edit Server and save the password in Keychain, then try again."

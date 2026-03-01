@@ -1,6 +1,24 @@
 # Progress
 
 ## Latest Milestones
+- Code quality overhaul shipped:
+  - Split 1,564-line `Managers.swift` into 10 focused single-responsibility files + deleted original.
+  - Extracted ~25 magic strings into `Constants.swift` typed enums (`UserDefaultsKeys`, `KeychainServiceNames`).
+  - Replaced 13 `print()` calls with structured `os.Logger` (subsystem `sh.glas`, 5 categories).
+  - Fixed `@unchecked Sendable` on `PromptingHostKeyValidator` using `OSAllocatedUnfairLock`.
+  - Added `deinit` to `TerminalSession` for task cleanup.
+  - Fixed force cast (`as!`) in `SecureEnclaveKeyManager`.
+  - Improved error classification: added `isChannelClosedError()` helper, consolidated key exchange detection, deduplicated string matching.
+  - Expanded test suite from 3 to 25 tests (ServerManager, SettingsManager, Constants, error classification, TerminalSession lifecycle, SSH config parser edge cases).
+- Password keychain persistence hardened:
+  - Suppressed visionOS AutoFill system dialog on credential-style SecureFields.
+  - Keychain save errors now logged + surfaced via alert instead of silently swallowed.
+  - EditServerView pre-loads existing saved password from keychain.
+  - Keychain key migration: orphaned entries cleaned up on host/port/username change or auth method switch.
+- SSH key operations migrated to GlasSecretStore SecureBytes API:
+  - KeychainManager save boundary wraps String to SecureBytes before calling SSHKeyKeychainStore.
+  - Retrieve sites extract strings via `.toUTF8String()` / `.toData()`.
+  - Public wrapper API unchanged — callers still pass and receive String.
 - Terminal in-place progress/status rendering stabilized:
   - PTY terminal mode negotiation now disables only CR->NL rewriting (`OCRNL`) while preserving expected newline behavior.
   - Terminal stream handoff from session model to SwiftTerm host now drains queued chunks per UI nonce update, avoiding chunk overwrite loss under burst output.
