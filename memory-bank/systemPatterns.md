@@ -29,9 +29,17 @@
 
 ## UI Structure
 - Multi-window app model with terminal-focused windows.
-- Footer-first terminal action model (search/clear/preview/tools) instead of persistent side rails.
-- Terminal-local settings modal for session-scoped behavior (`Terminal`, `Overrides`, `Port Forwarding`).
+- Footer-first terminal action model (search/clear/preview/tools) via bottom ornament instead of inline bar or persistent side rails.
+- Terminal-local settings presented via system `.sheet()` (not custom modal overlays) for Liquid Glass styling, gesture dismissal, and accessibility.
 - Composition boundary: keep outer frame/chrome stable while applying tint/translucency at terminal display layer.
+- Liquid Glass material strategy:
+  - `.glassBackgroundEffect()` for window-level chrome (SettingsView, HTMLPreviewWindow).
+  - `.regularMaterial` for secondary surfaces (port forward rows, tag chip backgrounds, URL bars).
+  - `.ultraThinMaterial` retained only for terminal content area (blur-behind for readability).
+  - Never stack glass-on-glass.
+- All interactive targets must be >= 60pt for visionOS eye-tracking accuracy. Use `.frame(minWidth:minHeight:)` + `.contentShape()` to expand hit areas beyond visual size.
+- Scene management: disable restoration on ephemeral windows (terminal, html-preview); use `.defaultLaunchBehavior(.presented)` on primary window.
+- Hover effects: `.hoverEffect(.highlight)` for small controls; never `.hoverEffect(.lift)` on large compound views.
 
 ## Repo Layout Pattern
 - Runtime app code in `/Users/michael/Developer/glas.sh/glas.sh`.
@@ -63,3 +71,10 @@
 
 ## visionOS Form Pattern
 - SecureFields in Forms with username/host fields trigger visionOS AutoFill credential detection. Suppress with `.textContentType(.init(rawValue: ""))` on SecureFields that are app-managed credentials, not browser-style login forms.
+- Every form view that presents text fields MUST use `@FocusState` with `.focused()` modifier and set initial focus in `.onAppear`. Without this, visionOS default keyboard presentation adds 3-5 seconds of latency before typing is accepted.
+- For multi-field forms, use a `Field` enum with `@FocusState private var focusedField: Field?`. For single-field forms, use `@FocusState private var isNameFocused: Bool`.
+
+## Terminal Focus Pattern
+- Terminal keyboard focus uses `becomeFirstResponder()` retry loop (3 attempts × 50ms).
+- Do not add redundant delayed focus calls — the retry loop handles transient failures.
+- Single `focus()` call on `.onAppear` and `.onChange(of: scenePhase)` is sufficient.

@@ -32,11 +32,11 @@ public final class SwiftTermHostModel: ObservableObject {
             guard let self else { return }
             // First responder can fail transiently during window activation;
             // retry briefly to lock keyboard ownership.
-            for _ in 0..<4 {
+            for _ in 0..<3 {
                 if self.terminalView?.becomeFirstResponder() == true {
                     return
                 }
-                try? await Task.sleep(for: .milliseconds(120))
+                try? await Task.sleep(for: .milliseconds(50))
             }
         }
     }

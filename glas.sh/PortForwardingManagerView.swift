@@ -74,6 +74,7 @@ struct PortForwardingManagerView: View {
                     Label("Add Forward", systemImage: "plus.circle.fill")
                 }
                 .buttonStyle(.borderedProminent)
+                .accessibilityLabel("Add port forward")
             }
             .padding()
             
@@ -150,33 +151,36 @@ struct PortForwardRow: View {
             
             Spacer()
             
-            // Status and toggle
             HStack(spacing: 12) {
                 HStack(spacing: 6) {
                     Circle()
                         .fill(forward.isActive ? Color.green : Color.gray)
                         .frame(width: 8, height: 8)
-                    
+
                     Text(forward.isActive ? "Active" : "Inactive")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Status: \(forward.isActive ? "Active" : "Inactive")")
+
                 Toggle("", isOn: Binding(
                     get: { forward.isActive },
                     set: { _ in onToggle() }
                 ))
                 .labelsHidden()
-                
+                .accessibilityLabel("Toggle \(forward.type.displayName) forward")
+
                 Button(role: .destructive, action: onDelete) {
                     Image(systemName: "trash")
                         .foregroundStyle(.red)
                 }
                 .buttonStyle(.bordered)
+                .accessibilityLabel("Delete forward")
             }
         }
         .padding()
-        .background(.ultraThinMaterial, in: .rect(cornerRadius: 12))
+        .background(.regularMaterial, in: .rect(cornerRadius: 12))
         .padding(.horizontal)
         .padding(.vertical, 4)
     }

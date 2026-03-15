@@ -7,6 +7,7 @@
 
 import SwiftUI
 import WebKit
+import os
 
 struct HTMLPreviewWindow: View {
     let context: HTMLPreviewContext
@@ -43,7 +44,7 @@ struct HTMLPreviewWindow: View {
                 }
             }
         }
-        .background(.ultraThinMaterial)
+        .glassBackgroundEffect(in: .rect(cornerRadius: 28))
         .onAppear {
             loadURL()
             setupAutoReload()
@@ -60,32 +61,14 @@ struct HTMLPreviewWindow: View {
     
     private var toolbar: some View {
         HStack(spacing: 16) {
-            // Navigation controls
-            HStack(spacing: 8) {
-                Button {
-                    // TODO: Implement back when WebPage API is available
-                } label: {
-                    Image(systemName: "chevron.left")
-                }
-                .buttonStyle(.bordered)
-                .disabled(true) // TODO: Enable when back/forward implemented
-                
-                Button {
-                    // TODO: Implement forward when WebPage API is available
-                } label: {
-                    Image(systemName: "chevron.right")
-                }
-                .buttonStyle(.bordered)
-                .disabled(true) // TODO: Enable when back/forward implemented
-                
-                Button {
-                    loadURL()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .symbolEffect(.rotate, isActive: isLoading)
-                }
-                .buttonStyle(.bordered)
+            Button {
+                loadURL()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .symbolEffect(.rotate, isActive: isLoading)
             }
+            .buttonStyle(.bordered)
+            .accessibilityLabel("Reload")
             
             // URL display
             Button {
@@ -110,14 +93,15 @@ struct HTMLPreviewWindow: View {
                 .padding(.vertical, 8)
             }
             .buttonStyle(.plain)
-            .background(.ultraThinMaterial, in: .capsule)
+            .background(.regularMaterial, in: .capsule)
             
-            // Auto-reload toggle
             Toggle(isOn: $autoReload) {
                 Label("Auto Reload", systemImage: "arrow.clockwise.circle")
             }
             .toggleStyle(.button)
             .buttonStyle(.bordered)
+            .accessibilityLabel("Auto reload")
+            .accessibilityValue(autoReload ? "On" : "Off")
             .onChange(of: autoReload) { _, newValue in
                 if newValue {
                     setupAutoReload()
@@ -126,42 +110,9 @@ struct HTMLPreviewWindow: View {
                 }
             }
             
-            // Tools menu
-            Menu {
-                Button {
-                    inspectElement()
-                } label: {
-                    Label("Inspect Element", systemImage: "magnifyingglass")
-                }
-                
-                Button {
-                    viewSource()
-                } label: {
-                    Label("View Source", systemImage: "doc.text")
-                }
-                
-                Divider()
-                
-                Button {
-                    takeScreenshot()
-                } label: {
-                    Label("Take Screenshot", systemImage: "camera")
-                }
-                
-                Button {
-                    exportPDF()
-                } label: {
-                    Label("Export as PDF", systemImage: "doc.richtext")
-                }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-            }
-            .buttonStyle(.bordered)
         }
         .padding()
     }
-    
-    @Namespace private var toolbarNamespace
     
     // MARK: - URL Editor Sheet
     
@@ -218,25 +169,6 @@ struct HTMLPreviewWindow: View {
         reloadTimer = nil
     }
     
-    private func inspectElement() {
-        // TODO: Open developer tools when API is available
-        print("Inspect element - API not yet implemented")
-    }
-    
-    private func viewSource() {
-        // TODO: Implement when WebPage JavaScript API is available
-        print("View source - API not yet implemented")
-    }
-    
-    private func takeScreenshot() {
-        // TODO: Implement when WebPage snapshot API is available
-        print("Screenshot - API not yet implemented")
-    }
-    
-    private func exportPDF() {
-        // TODO: Implement when WebPage PDF API is available
-        print("Export PDF - API not yet implemented")
-    }
 }
 
 #Preview {

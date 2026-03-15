@@ -1,6 +1,19 @@
 # Progress
 
 ## Latest Milestones
+- visionOS 26 UX compliance & focus latency fix shipped:
+  - Full Liquid Glass migration: `.glassBackgroundEffect()` on chrome, `.regularMaterial` on secondary surfaces, `.ultraThinMaterial` retained only for terminal content area.
+  - Terminal status bar moved to `.ornament(attachmentAnchor: .scene(.bottom))`.
+  - Custom ZStack modal replaced with system `.sheet()`.
+  - All interactive targets expanded to 60pt minimum (visionOS eye-tracking requirement).
+  - VoiceOver accessibility labels added to all interactive elements across all views.
+  - Scene management: `.restorationBehavior(.disabled)` on terminal/html-preview, `.defaultLaunchBehavior(.presented)` on Connections.
+  - WindowRecoveryManager simplified from UIKit `requestSceneSessionActivation` to SwiftUI `OpenWindowAction`.
+  - ~130 lines dead code removed (ServerCard, ConnectionTicker).
+  - HTMLPreviewWindow stub buttons and `print()` statements removed.
+  - SSH key Rename/Delete actions moved into context Menu.
+  - Focus latency fix: `@FocusState` added to 7 form views with auto-focus on first field.
+  - Terminal focus retry reduced from 4×120ms to 3×50ms; redundant delayed focus call removed.
 - Code quality overhaul shipped:
   - Split 1,564-line `Managers.swift` into 10 focused single-responsibility files + deleted original.
   - Extracted ~25 magic strings into `Constants.swift` typed enums (`UserDefaultsKeys`, `KeychainServiceNames`).
@@ -52,6 +65,5 @@
 
 ## Open Areas
 - Ongoing terminal UX parity polish for edge-case TUIs.
-- Final contrast tuning for modal/settings surfaces across varied scene lighting.
 - Follow-up hardening: move generated P-256 auth to true Secure Enclave signing semantics (no app-exportable raw private key at auth time).
 - Queued feature request: SSH agent auth/forwarding end-to-end support (model -> connection settings -> transport behavior).

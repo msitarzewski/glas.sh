@@ -18,6 +18,7 @@ struct TerminalWindowView: View {
     
     @State private var searchQuery: String = ""
     @State private var showingSearchOverlay = false
+    @FocusState private var isSearchFieldFocused: Bool
     @State private var showingTerminalSettings = false
     @State private var terminalSettingsTab: TerminalSettingsModalTab = .terminal
     @StateObject private var terminalHostModel = SwiftTermHostModel()
@@ -27,34 +28,23 @@ struct TerminalWindowView: View {
     @Environment(\.scenePhase) private var scenePhase
     
     var body: some View {
-        ZStack {
-            VStack(spacing: 0) {
-                terminalContent
-                    .padding(10)
-
-                bottomStatusBar
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 10)
-                    .padding(.top, 4)
-            }
-            .background(.ultraThinMaterial, in: .rect(cornerRadius: 24))
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.horizontal, 22)
-            .padding(.top, 34)
-            .padding(.bottom, 26)
-
-            if showingTerminalSettings {
-                Color.black.opacity(0.18)
-                    .ignoresSafeArea()
-                    .onTapGesture {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            showingTerminalSettings = false
-                        }
-                    }
-
-                terminalSettingsModal
-                    .transition(.scale(scale: 0.96).combined(with: .opacity))
-            }
+        VStack(spacing: 0) {
+            terminalContent
+                .padding(10)
+        }
+        .background(.ultraThinMaterial, in: .rect(cornerRadius: 24))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 22)
+        .padding(.top, 34)
+        .padding(.bottom, 26)
+        .ornament(attachmentAnchor: .scene(.bottom)) {
+            bottomStatusBar
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .glassBackgroundEffect(in: .capsule)
+        }
+        .sheet(isPresented: $showingTerminalSettings) {
+            terminalSettingsModal
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -67,6 +57,9 @@ struct TerminalWindowView: View {
         }
         .onDisappear {
             runCloseGooseCallIfNeeded()
+        }
+        .onChange(of: showingSearchOverlay) { _, showing in
+            if showing { isSearchFieldFocused = true }
         }
     }
     
@@ -110,10 +103,6 @@ struct TerminalWindowView: View {
                     let data = chunks.reduce(into: Data()) { $0.append($1) }
                     terminalHostModel.ingest(data: data, nonce: session.terminalInputNonce)
                 }
-            }
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(150))
-                terminalHostModel.focus()
             }
         }
         .onChange(of: session.terminalInputNonce) { _, nonce in
@@ -229,9 +218,7 @@ struct TerminalWindowView: View {
 
     private func openTerminalSettings() {
         terminalSettingsTab = .terminal
-        withAnimation(.easeInOut(duration: 0.2)) {
-            showingTerminalSettings = true
-        }
+        showingTerminalSettings = true
     }
 
     // MARK: - Bottom Status
@@ -246,10 +233,12 @@ struct TerminalWindowView: View {
                     .font(.caption)
                     .fontWeight(.medium)
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Connection status: \(session.state.displayName)")
 
             Divider()
                 .frame(height: 12)
-            
+
             Text(session.server.name)
                 .font(.caption2)
                 .fontWeight(.semibold)
@@ -263,6 +252,10 @@ struct TerminalWindowView: View {
             Text("TERM \(session.server.terminalType)")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+
+            FooterGlassIconButton(symbol: "rectangle.3.group", title: "Connections") {
+                openWindow(id: "main")
+            }
 
             Menu {
                 Button {
@@ -318,14 +311,7 @@ struct TerminalWindowView: View {
             .labelStyle(.iconOnly)
             .controlSize(.small)
             .help("Tools")
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .center) {
-            FooterGlassIconButton(symbol: "rectangle.3.group", title: "Connections") {
-                openWindow(id: "main")
-            }
+            .accessibilityLabel("Tools menu")
         }
     }
     
@@ -333,10 +319,13 @@ struct TerminalWindowView: View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
 
             TextField("Search terminal output", text: $searchQuery)
                 .textFieldStyle(.plain)
                 .submitLabel(.search)
+                .focused($isSearchFieldFocused)
+                .accessibilityLabel("Search terminal output")
 
             if !searchQuery.isEmpty {
                 Text("\(session.searchOutput(searchQuery).count)")
@@ -353,6 +342,9 @@ struct TerminalWindowView: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Circle())
+            .accessibilityLabel("Close search")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -361,37 +353,7 @@ struct TerminalWindowView: View {
     }
 
     private var terminalSettingsModal: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Text("Terminal Settings")
-                    .font(.headline)
-
-                Spacer()
-
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        showingTerminalSettings = false
-                    }
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 16)
-            .padding(.bottom, 12)
-
-            Picker("Settings Tab", selection: $terminalSettingsTab) {
-                Text("Terminal").tag(TerminalSettingsModalTab.terminal)
-                Text("Overrides").tag(TerminalSettingsModalTab.overrides)
-                Text("Port Forwarding").tag(TerminalSettingsModalTab.portForwarding)
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 20)
-            .padding(.bottom, 12)
-
+        NavigationStack {
             Group {
                 switch terminalSettingsTab {
                 case .terminal:
@@ -405,14 +367,26 @@ struct TerminalWindowView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .navigationTitle("Terminal Settings")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        showingTerminalSettings = false
+                    }
+                }
+
+                ToolbarItem(placement: .principal) {
+                    Picker("Settings Tab", selection: $terminalSettingsTab) {
+                        Text("Terminal").tag(TerminalSettingsModalTab.terminal)
+                        Text("Overrides").tag(TerminalSettingsModalTab.overrides)
+                        Text("Port Forwarding").tag(TerminalSettingsModalTab.portForwarding)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 360)
+                }
+            }
         }
         .frame(width: 760, height: 560)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .strokeBorder(.white.opacity(0.18), lineWidth: 1)
-        }
-        .shadow(radius: 20, y: 8)
     }
 }
 
@@ -455,27 +429,18 @@ struct FooterGlassIconButton: View {
     let title: String
     let action: () -> Void
 
-    @Environment(\.isFocused) private var isFocused
-    @State private var isHovered = false
-
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 24, height: 24)
-                .background {
-                    Circle()
-                        .fill((isHovered || isFocused) ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(Color.clear))
-                }
+                .frame(width: 60, height: 60)
+                .contentShape(Circle())
         }
-        .buttonStyle(.plain)
-        .focusable(true)
-        .onHover { hovering in
-            isHovered = hovering
-        }
-        .hoverEffect(.lift)
+        .buttonStyle(.borderless)
+        .hoverEffect(.highlight)
         .help(title)
+        .accessibilityLabel(title)
     }
 }
 
@@ -671,6 +636,7 @@ struct AddSessionPortForwardView: View {
     @State private var localPort = ""
     @State private var remoteHost = "localhost"
     @State private var remotePort = ""
+    @FocusState private var isLocalPortFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -686,6 +652,7 @@ struct AddSessionPortForwardView: View {
                 Section("Configuration") {
                     TextField("Local Port", text: $localPort)
                         .keyboardType(.numberPad)
+                        .focused($isLocalPortFocused)
 
                     if forwardType != .dynamic {
                         TextField("Remote Host", text: $remoteHost)
@@ -698,6 +665,7 @@ struct AddSessionPortForwardView: View {
                 }
             }
             .navigationTitle("Add Port Forward")
+            .onAppear { isLocalPortFocused = true }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
