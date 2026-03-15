@@ -32,11 +32,11 @@ public final class SwiftTermHostModel: ObservableObject {
             guard let self else { return }
             // First responder can fail transiently during window activation;
             // retry briefly to lock keyboard ownership.
-            for _ in 0..<4 {
+            for _ in 0..<3 {
                 if self.terminalView?.becomeFirstResponder() == true {
                     return
                 }
-                try? await Task.sleep(for: .milliseconds(120))
+                try? await Task.sleep(for: .milliseconds(50))
             }
         }
     }
@@ -127,6 +127,16 @@ public struct SwiftTermHostView: UIViewRepresentable {
         terminal.layer.masksToBounds = true
         applyTheme(theme, to: terminal)
         context.coordinator.lastTheme = theme
+
+        // Dismiss the deprecated UIMenuController on any tap — it gets stuck on visionOS
+        // because the eye+hand input model doesn't reliably trigger dismissal events.
+        let dismissMenuTap = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.dismissEditMenu)
+        )
+        dismissMenuTap.cancelsTouchesInView = false
+        terminal.addGestureRecognizer(dismissMenuTap)
+
         model.attach(terminal)
         return terminal
     }
@@ -181,6 +191,10 @@ public struct SwiftTermHostView: UIViewRepresentable {
             self.onSendData = onSendData
             self.onResize = onResize
             self.onTitleChanged = onTitleChanged
+        }
+
+        @objc func dismissEditMenu() {
+            UIMenuController.shared.hideMenu()
         }
 
         public func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {

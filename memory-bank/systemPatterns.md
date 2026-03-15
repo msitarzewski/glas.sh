@@ -12,6 +12,7 @@
 - Stream delivery policy between SSH session and SwiftTerm host:
   - never use single-value overwrite semantics for terminal chunk handoff
   - queue/drain pending output chunks and emit by nonce to avoid dropping control-byte updates under high-frequency output bursts.
+- SwiftTerm context menu workaround: the library uses deprecated `UIMenuController.shared` which gets stuck on visionOS (eye+hand input doesn't reliably dismiss it). A `UITapGestureRecognizer` with `cancelsTouchesInView=false` is added in `makeUIView` to call `hideMenu()` on every tap.
 
 ## SSH Secret Handling Pattern
 - App-facing secret API routes through a `SecretStore` abstraction (currently keychain-backed).
@@ -29,9 +30,20 @@
 
 ## UI Structure
 - Multi-window app model with terminal-focused windows.
-- Footer-first terminal action model (search/clear/preview/tools) instead of persistent side rails.
-- Terminal-local settings modal for session-scoped behavior (`Terminal`, `Overrides`, `Port Forwarding`).
+- Terminal window ornament layout:
+  - **Top ornament**: Connection label (server name + user@host:port) as a glass capsule — informational only, outside the window.
+  - **Bottom ornament**: Status indicator + server list button + gear tools menu (search/clear/preview/duplicate/reconnect/settings) as a glass capsule.
+  - Ornament buttons use standard `.buttonStyle(.borderless)` — let the system handle sizing per visionOS conventions. Do not hardcode icon frame sizes in ornaments.
+- Terminal-local settings presented via system `.sheet()` (not custom modal overlays) for Liquid Glass styling, gesture dismissal, and accessibility.
 - Composition boundary: keep outer frame/chrome stable while applying tint/translucency at terminal display layer.
+- Liquid Glass material strategy:
+  - `.glassBackgroundEffect()` for window-level chrome (SettingsView, HTMLPreviewWindow).
+  - `.regularMaterial` for secondary surfaces (port forward rows, tag chip backgrounds, URL bars).
+  - `.ultraThinMaterial` retained only for terminal content area (blur-behind for readability).
+  - Never stack glass-on-glass.
+- All interactive targets must be >= 60pt for visionOS eye-tracking accuracy. Use `.frame(minWidth:minHeight:)` + `.contentShape()` to expand hit areas beyond visual size.
+- Scene management: disable restoration on ephemeral windows (terminal, html-preview); use `.defaultLaunchBehavior(.presented)` on primary window.
+- Hover effects: `.hoverEffect(.highlight)` for small controls; never `.hoverEffect(.lift)` on large compound views.
 
 ## Repo Layout Pattern
 - Runtime app code in `/Users/michael/Developer/glas.sh/glas.sh`.
@@ -63,3 +75,10 @@
 
 ## visionOS Form Pattern
 - SecureFields in Forms with username/host fields trigger visionOS AutoFill credential detection. Suppress with `.textContentType(.init(rawValue: ""))` on SecureFields that are app-managed credentials, not browser-style login forms.
+- Every form view that presents text fields MUST use `@FocusState` with `.focused()` modifier and set initial focus in `.onAppear`. Without this, visionOS default keyboard presentation adds 3-5 seconds of latency before typing is accepted.
+- For multi-field forms, use a `Field` enum with `@FocusState private var focusedField: Field?`. For single-field forms, use `@FocusState private var isNameFocused: Bool`.
+
+## Terminal Focus Pattern
+- Terminal keyboard focus uses `becomeFirstResponder()` retry loop (3 attempts × 50ms).
+- Do not add redundant delayed focus calls — the retry loop handles transient failures.
+- Single `focus()` call on `.onAppear` and `.onChange(of: scenePhase)` is sufficient.

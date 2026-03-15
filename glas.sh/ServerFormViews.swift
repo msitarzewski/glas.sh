@@ -31,6 +31,9 @@ struct AddServerView: View {
     @State private var showingAddSSHKey = false
     @State private var keychainSaveError: String?
 
+    private enum Field: Hashable { case name, host, port, username, password }
+    @FocusState private var focusedField: Field?
+
     private var isFormValid: Bool {
         guard !name.isEmpty, !host.isEmpty, !username.isEmpty, Int(port) != nil else {
             return false
@@ -50,13 +53,17 @@ struct AddServerView: View {
             Form {
                 Section("Connection") {
                     TextField("Display Name", text: $name)
+                        .focused($focusedField, equals: .name)
                     TextField("Host", text: $host)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .focused($focusedField, equals: .host)
                     TextField("Port", text: $port)
+                        .focused($focusedField, equals: .port)
                     TextField("Username", text: $username)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .focused($focusedField, equals: .username)
                 }
 
                 Section("Authentication") {
@@ -69,6 +76,7 @@ struct AddServerView: View {
                     if authMethod == .password {
                         SecureField("Password", text: $password)
                             .textContentType(.init(rawValue: ""))
+                            .focused($focusedField, equals: .password)
                     } else if authMethod == .sshKey {
                         if settingsManager.sshKeys.isEmpty {
                             Text("No SSH keys available. Add one to continue.")
@@ -103,7 +111,7 @@ struct AddServerView: View {
                                 } label: {
                                     Circle()
                                         .fill(tag.color)
-                                        .frame(width: 32, height: 32)
+                                        .frame(width: 44, height: 44)
                                         .overlay {
                                             if colorTag == tag {
                                                 Circle()
@@ -112,6 +120,10 @@ struct AddServerView: View {
                                         }
                                 }
                                 .buttonStyle(.plain)
+                                .frame(minWidth: 60, minHeight: 60)
+                                .contentShape(Circle())
+                                .accessibilityLabel("\(tag.rawValue) color")
+                                .accessibilityAddTraits(colorTag == tag ? .isSelected : [])
                             }
                         }
                     }
@@ -143,11 +155,12 @@ struct AddServerView: View {
                                             .foregroundStyle(.blue)
                                     }
                                     .buttonStyle(.plain)
+                                    .accessibilityLabel("Add tag")
                                 }
                             }
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
-                            .background(.ultraThinMaterial, in: .capsule)
+                            .background(.regularMaterial, in: .capsule)
                         }
                     }
                 }
@@ -187,6 +200,7 @@ struct AddServerView: View {
         }
         .onAppear {
             normalizeSelectedSSHKey()
+            focusedField = .name
         }
         .onChange(of: authMethod) { _, _ in
             normalizeSelectedSSHKey()
@@ -274,6 +288,9 @@ struct EditServerView: View {
     @State private var showingAddSSHKey = false
     @State private var keychainSaveError: String?
 
+    private enum Field: Hashable { case name, host, port, username, password }
+    @FocusState private var focusedField: Field?
+
     init(server: ServerConfiguration, serverManager: ServerManager) {
         self.server = server
         self.serverManager = serverManager
@@ -294,9 +311,13 @@ struct EditServerView: View {
             Form {
                 Section("Connection") {
                     TextField("Name", text: $name)
+                        .focused($focusedField, equals: .name)
                     TextField("Host", text: $host)
+                        .focused($focusedField, equals: .host)
                     TextField("Port", text: $port)
+                        .focused($focusedField, equals: .port)
                     TextField("Username", text: $username)
+                        .focused($focusedField, equals: .username)
                 }
 
                 Section("Authentication") {
@@ -309,6 +330,7 @@ struct EditServerView: View {
                     if authMethod == .password {
                         SecureField("Password", text: $password)
                             .textContentType(.init(rawValue: ""))
+                            .focused($focusedField, equals: .password)
                     } else if authMethod == .sshKey {
                         if settingsManager.sshKeys.isEmpty {
                             Text("No SSH keys available. Add one to continue.")
@@ -343,7 +365,7 @@ struct EditServerView: View {
                                 } label: {
                                     Circle()
                                         .fill(tag.color)
-                                        .frame(width: 32, height: 32)
+                                        .frame(width: 44, height: 44)
                                         .overlay {
                                             if colorTag == tag {
                                                 Circle()
@@ -352,6 +374,10 @@ struct EditServerView: View {
                                         }
                                 }
                                 .buttonStyle(.plain)
+                                .frame(minWidth: 60, minHeight: 60)
+                                .contentShape(Circle())
+                                .accessibilityLabel("\(tag.rawValue) color")
+                                .accessibilityAddTraits(colorTag == tag ? .isSelected : [])
                             }
                         }
                     }
@@ -383,11 +409,12 @@ struct EditServerView: View {
                                             .foregroundStyle(.blue)
                                     }
                                     .buttonStyle(.plain)
+                                    .accessibilityLabel("Add tag")
                                 }
                             }
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
-                            .background(.ultraThinMaterial, in: .capsule)
+                            .background(.regularMaterial, in: .capsule)
                         }
                     }
                 }
@@ -427,6 +454,7 @@ struct EditServerView: View {
         }
         .onAppear {
             normalizeSelectedSSHKey()
+            focusedField = .name
             if authMethod == .password {
                 if let saved = try? KeychainManager.retrievePassword(for: server) {
                     password = saved
@@ -523,10 +551,15 @@ struct TagChip: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Circle())
+            .accessibilityLabel("Remove \(tag)")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(.ultraThinMaterial, in: .capsule)
+        .background(.regularMaterial, in: .capsule)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Tag: \(tag)")
     }
 }
 
