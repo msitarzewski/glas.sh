@@ -155,14 +155,26 @@ struct GeneralSettingsView: View {
                                 copyPublicKey(for: key)
                             }
                             .buttonStyle(.bordered)
-                            Button("Rename") {
-                                editingSSHKey = key
+                            .accessibilityLabel("Copy public key for \(key.name)")
+
+                            Menu {
+                                Button {
+                                    editingSSHKey = key
+                                } label: {
+                                    Label("Rename", systemImage: "pencil")
+                                }
+
+                                Button(role: .destructive) {
+                                    keyPendingDeletion = key
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
+                                    .font(.title3)
                             }
                             .buttonStyle(.bordered)
-                            Button("Delete", role: .destructive) {
-                                keyPendingDeletion = key
-                            }
-                            .buttonStyle(.bordered)
+                            .accessibilityLabel("More actions for \(key.name)")
                         }
                     }
                 }
@@ -321,16 +333,18 @@ struct TerminalSettingsView: View {
                         VStack(spacing: 4) {
                             Circle()
                                 .fill(color)
-                                .frame(width: 24, height: 24)
+                                .frame(width: 32, height: 32)
                                 .overlay {
                                     Circle()
                                         .strokeBorder(.secondary.opacity(0.3), lineWidth: 1)
                                 }
-                            
+
                             Text(name)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("\(name) color preview")
                     }
                 }
             }
@@ -633,11 +647,12 @@ struct AddSnippetView: View {
                                         .foregroundStyle(.blue)
                                 }
                                 .buttonStyle(.plain)
+                                .accessibilityLabel("Add tag")
                             }
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
-                        .background(.ultraThinMaterial, in: .capsule)
+                        .background(.regularMaterial, in: .capsule)
                     }
                 }
             }
@@ -729,14 +744,15 @@ struct EditSnippetView: View {
                                         .foregroundStyle(.blue)
                                 }
                                 .buttonStyle(.plain)
+                                .accessibilityLabel("Add tag")
                             }
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
-                        .background(.ultraThinMaterial, in: .capsule)
+                        .background(.regularMaterial, in: .capsule)
                     }
                 }
-                
+
                 Section("Statistics") {
                     LabeledContent("Times used", value: "\(snippet.useCount)")
                     if let lastUsed = snippet.lastUsed {
@@ -840,12 +856,14 @@ struct AddSSHKeyView: View {
     @State private var privateKey: String = ""
     @State private var passphrase: String = ""
     @State private var errorMessage: String?
+    @FocusState private var isNameFocused: Bool
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Key Details") {
                     TextField("Key name", text: $name)
+                        .focused($isNameFocused)
                     SecureField("Passphrase (optional)", text: $passphrase)
                     Text("RSA and ED25519 private keys are supported.")
                         .font(.caption)
@@ -867,6 +885,7 @@ struct AddSSHKeyView: View {
                 }
             }
             .navigationTitle("Add SSH Key")
+            .onAppear { isNameFocused = true }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -900,12 +919,14 @@ struct GenerateSecureEnclaveSSHKeyView: View {
 
     @State private var name: String = ""
     @State private var errorMessage: String?
+    @FocusState private var isNameFocused: Bool
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Key Details") {
                     TextField("Key name", text: $name)
+                        .focused($isNameFocused)
                     Text("Generates an ECDSA P-256 key wrapped with a device-bound Secure Enclave key.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -920,6 +941,7 @@ struct GenerateSecureEnclaveSSHKeyView: View {
                 }
             }
             .navigationTitle("Generate Key")
+            .onAppear { isNameFocused = true }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -946,6 +968,7 @@ struct RenameSSHKeyView: View {
 
     let key: StoredSSHKey
     @State private var name: String
+    @FocusState private var isNameFocused: Bool
 
     init(key: StoredSSHKey) {
         self.key = key
@@ -957,9 +980,11 @@ struct RenameSSHKeyView: View {
             Form {
                 Section("Rename") {
                     TextField("Key name", text: $name)
+                        .focused($isNameFocused)
                 }
             }
             .navigationTitle("Rename SSH Key")
+            .onAppear { isNameFocused = true }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }

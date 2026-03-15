@@ -8,15 +8,17 @@
 import SwiftUI
 import Observation
 import os
-#if canImport(UIKit)
-import UIKit
-#endif
 
 @MainActor
 @Observable
 class WindowRecoveryManager {
     private(set) var visibleWindowKeys: Set<String> = []
     private var recoveryTask: Task<Void, Never>?
+    private var openWindowAction: OpenWindowAction?
+
+    func setOpenWindowAction(_ action: OpenWindowAction) {
+        openWindowAction = action
+    }
 
     func markWindowVisible(_ key: String) {
         visibleWindowKeys.insert(key)
@@ -35,22 +37,8 @@ class WindowRecoveryManager {
         recoveryTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(220))
             guard visibleWindowKeys.isEmpty else { return }
-            requestWindowActivation(id: "main")
+            openWindowAction?(id: "main")
         }
-    }
-
-    private func requestWindowActivation(id: String) {
-        #if canImport(UIKit)
-        let activity = NSUserActivity(activityType: id)
-        activity.targetContentIdentifier = id
-        UIApplication.shared.requestSceneSessionActivation(
-            nil,
-            userActivity: activity,
-            options: nil
-        ) { error in
-            Logger.app.error("Window recovery activation failed for \(id): \(error)")
-        }
-        #endif
     }
 }
 

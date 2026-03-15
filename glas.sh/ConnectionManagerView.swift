@@ -64,12 +64,14 @@ struct ConnectionManagerView: View {
                         } label: {
                             Image(systemName: "plus")
                         }
+                        .accessibilityLabel("Add server")
 
                         Button {
                             openWindow(id: "settings")
                         } label: {
                             Image(systemName: "gearshape")
                         }
+                        .accessibilityLabel("Settings")
                     }
                 }
         }
@@ -162,16 +164,23 @@ struct ConnectionManagerView: View {
                                 .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Circle())
+                        .accessibilityLabel("Remove \(tag) filter")
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 12)
                     .background(.regularMaterial, in: .capsule)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Tag filter: \(tag)")
+                    .accessibilityAddTraits(.isButton)
                 }
 
                 Button("Clear") {
                     activeTagFilters.removeAll()
                 }
                 .buttonStyle(.bordered)
+                .accessibilityLabel("Clear all tag filters")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -444,8 +453,12 @@ private struct ServerListRow: View {
                     .font(.title3)
             }
             .frame(width: 32, alignment: .trailing)
+            .accessibilityLabel("Actions for \(server.name)")
         }
         .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(server.name), \(server.username) at \(server.host), \(server.authMethod.displayName)")
+        .accessibilityHint("Double tap to connect")
     }
 }
 
@@ -606,225 +619,6 @@ enum ConnectionSection: Hashable, Identifiable, CaseIterable {
     var isTag: Bool {
         if case .tag = self { return true }
         return false
-    }
-}
-
-// MARK: - Server Card
-
-struct ServerCard: View {
-    let server: ServerConfiguration
-    let session: TerminalSession?
-    let onConnect: () -> Void
-    let onEdit: () -> Void
-    let onToggleFavorite: () -> Void
-    let onDelete: () -> Void
-    
-    @State private var isHovering = false
-    @State private var pulsePhase = false
-
-    private var isConnecting: Bool {
-        guard let state = session?.state else { return false }
-        switch state {
-        case .connecting, .reconnecting:
-            return true
-        default:
-            return false
-        }
-    }
-    
-    var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack {
-                Circle()
-                    .fill(server.colorTag.color)
-                    .frame(width: 12, height: 12)
-                
-                Text(server.name)
-                    .font(.headline)
-                    .fontWeight(.semibold)
-                    .lineLimit(1)
-                
-                Spacer()
-                
-                if server.isFavorite {
-                    Image(systemName: "heart.fill")
-                        .font(.caption)
-                        .foregroundStyle(.pink)
-                }
-            }
-            .padding()
-            
-            Divider()
-            
-            // Body
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 8) {
-                    Image(systemName: "person.circle.fill")
-                        .foregroundStyle(.secondary)
-                    Text(server.username)
-                        .font(.subheadline)
-                        .lineLimit(1)
-                }
-                
-                HStack(spacing: 8) {
-                    Image(systemName: "network")
-                        .foregroundStyle(.secondary)
-                    Text(server.host)
-                        .font(.subheadline)
-                        .lineLimit(1)
-                    Text(":\(server.port)")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-                
-                HStack(spacing: 8) {
-                    Image(systemName: server.authMethod.icon)
-                        .foregroundStyle(.secondary)
-                    Text(server.authMethod.displayName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                if isConnecting, let progress = session?.connectionProgress {
-                    ConnectionTicker(stage: progress, port: server.port)
-                }
-                
-                if let lastConnected = server.lastConnected {
-                    HStack(spacing: 8) {
-                        Image(systemName: "clock.fill")
-                            .foregroundStyle(.tertiary)
-                        Text("Last: \(lastConnected, formatter: relativeDateFormatter)")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                
-                if !server.tags.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(server.tags, id: \.self) { tag in
-                                Text(tag)
-                                    .font(.caption2)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(.ultraThinMaterial, in: .capsule)
-                            }
-                        }
-                    }
-                }
-            }
-            .padding()
-            
-            Divider()
-            
-            // Actions
-            HStack(spacing: 8) {
-                Button(action: onConnect) {
-                    HStack {
-                        Image(systemName: isConnecting ? "arrow.triangle.2.circlepath.circle.fill" : "bolt.fill")
-                        Text(isConnecting ? "Connecting…" : "Connect")
-                            .fontWeight(.medium)
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(isConnecting)
-                
-                Menu {
-                    Button(action: onEdit) {
-                        Label("Edit", systemImage: "pencil")
-                    }
-                    
-                    Button(action: onToggleFavorite) {
-                        Label(
-                            server.isFavorite ? "Remove from Favorites" : "Add to Favorites",
-                            systemImage: server.isFavorite ? "heart.slash" : "heart"
-                        )
-                    }
-                    
-                    Divider()
-                    
-                    Button(role: .destructive, action: onDelete) {
-                        Label("Delete", systemImage: "trash")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.title3)
-                }
-                .buttonStyle(.bordered)
-            }
-            .padding()
-        }
-        .background(.ultraThinMaterial, in: .rect(cornerRadius: 20))
-        .overlay {
-            RoundedRectangle(cornerRadius: 20)
-                .strokeBorder(
-                    isConnecting ? server.colorTag.color.opacity(0.75) : server.colorTag.color.opacity(0.3),
-                    lineWidth: isConnecting ? 2.6 : 2
-                )
-        }
-        .hoverEffect(.lift)
-        .scaleEffect(isConnecting && pulsePhase ? 1.012 : 1.0)
-        .shadow(
-            color: isConnecting ? server.colorTag.color.opacity(0.25) : .black.opacity(0.1),
-            radius: isConnecting ? 14 : 10,
-            x: 0,
-            y: isConnecting ? 8 : 5
-        )
-        .onAppear {
-            updatePulseAnimation()
-        }
-        .onChange(of: isConnecting) { _, _ in
-            updatePulseAnimation()
-        }
-    }
-
-    private func updatePulseAnimation() {
-        if isConnecting {
-            pulsePhase = false
-            withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) {
-                pulsePhase = true
-            }
-        } else {
-            pulsePhase = false
-        }
-    }
-}
-
-private struct ConnectionTicker: View {
-    let stage: ConnectionProgressStage
-    let port: Int
-
-    private var labels: [String] {
-        ["DNS", "Connecting:\(port)", "Negotiating", "Auth", "Shell"]
-    }
-
-    var body: some View {
-        let active = stage.flowIndex
-        VStack(alignment: .leading, spacing: 6) {
-            Text(stage.tickerLabel)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.primary)
-                .contentTransition(.numericText())
-
-            HStack(spacing: 6) {
-                ForEach(Array(labels.enumerated()), id: \.offset) { index, label in
-                    Text(label)
-                        .font(.caption2)
-                        .foregroundStyle(index <= active ? .primary : .tertiary)
-                    if index < labels.count - 1 {
-                        Image(systemName: "chevron.right")
-                            .font(.caption2)
-                            .foregroundStyle(index < active ? .primary : .tertiary)
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(.regularMaterial, in: .rect(cornerRadius: 10))
     }
 }
 

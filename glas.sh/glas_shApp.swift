@@ -23,6 +23,7 @@ struct glas_shApp: App {
         }
         .windowStyle(.plain)
         .defaultSize(width: 1320, height: 760)
+        .defaultLaunchBehavior(.presented)
         .handlesExternalEvents(matching: ["main"])
         
         // Main terminal windows (can open multiple)
@@ -42,6 +43,7 @@ struct glas_shApp: App {
         }
         .windowStyle(.plain)
         .defaultSize(width: 1200, height: 800)
+        .restorationBehavior(.disabled)
         
         // HTML Preview window
         WindowGroup(id: "html-preview", for: HTMLPreviewContext.self) { $context in
@@ -59,6 +61,7 @@ struct glas_shApp: App {
         }
         .windowStyle(.plain)
         .defaultSize(width: 1000, height: 800)
+        .restorationBehavior(.disabled)
         
         // Port forwarding manager
         Window("Port Forwarding", id: "port-forwarding") {
@@ -99,10 +102,12 @@ struct MainBootstrapView: View {
 private struct WindowPresenceTrackingModifier: ViewModifier {
     let key: String
     let recovery: WindowRecoveryManager
+    @Environment(\.openWindow) private var openWindow
 
     func body(content: Content) -> some View {
         content
             .onAppear {
+                recovery.setOpenWindowAction(openWindow)
                 recovery.markWindowVisible(key)
             }
             .onDisappear {
