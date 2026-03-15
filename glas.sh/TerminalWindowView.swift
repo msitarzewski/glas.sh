@@ -9,6 +9,7 @@ import SwiftUI
 #if canImport(UIKit)
 import UIKit
 #endif
+import AudioToolbox
 import RealityKitContent
 
 struct TerminalWindowView: View {
@@ -20,6 +21,9 @@ struct TerminalWindowView: View {
     @State private var showingSearchOverlay = false
     @FocusState private var isSearchFieldFocused: Bool
     @State private var showingTerminalSettings = false
+    @State private var showingCloseConfirmation = false
+    @State private var showVisualBell = false
+    @State private var showingSnippetPicker = false
     @State private var terminalSettingsTab: TerminalSettingsModalTab = .terminal
     @StateObject private var terminalHostModel = SwiftTermHostModel()
     @State private var didRunCloseGooseCall = false
@@ -47,6 +51,18 @@ struct TerminalWindowView: View {
         }
         .sheet(isPresented: $showingTerminalSettings) {
             terminalSettingsModal
+        }
+        .sheet(isPresented: $showingSnippetPicker) {
+            snippetPicker
+        }
+        .alert("Close Connection?", isPresented: $showingCloseConfirmation) {
+            Button("Disconnect", role: .destructive) {
+                session.disconnect()
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You have an active SSH connection to \(session.server.name).")
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -105,9 +121,21 @@ struct TerminalWindowView: View {
                 },
                 onResize: { cols, rows in
                     session.updateTerminalGeometry(rows: rows, columns: cols)
+                },
+                onBell: {
+                    guard settingsManager.bellEnabled else { return }
+                    if settingsManager.visualBell {
+                        withAnimation(.easeInOut(duration: 0.1)) { showVisualBell = true }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                            withAnimation(.easeInOut(duration: 0.1)) { showVisualBell = false }
+                        }
+                    } else {
+                        AudioServicesPlaySystemSound(1007)
+                    }
                 }
             )
             .background(Color.clear)
+            .overlay(Color.white.opacity(showVisualBell ? 0.3 : 0).allowsHitTesting(false))
             .padding(10)
         }
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -290,6 +318,13 @@ struct TerminalWindowView: View {
                     Label("HTML Preview", systemImage: "safari")
                 }
 
+                Button {
+                    showingSnippetPicker = true
+                } label: {
+                    Label("Snippets", systemImage: "text.page")
+                }
+                .disabled(session.state != .connected || settingsManager.snippets.isEmpty)
+
                 Divider()
 
                 Button {
@@ -302,6 +337,18 @@ struct TerminalWindowView: View {
                     reconnectSession()
                 } label: {
                     Label("Reconnect", systemImage: "arrow.clockwise")
+                }
+                .disabled(session.state != .connected)
+
+                Button(role: .destructive) {
+                    if settingsManager.confirmBeforeClosing && session.state == .connected {
+                        showingCloseConfirmation = true
+                    } else {
+                        session.disconnect()
+                        dismiss()
+                    }
+                } label: {
+                    Label("Disconnect", systemImage: "xmark.circle")
                 }
                 .disabled(session.state != .connected)
 
@@ -361,6 +408,37 @@ struct TerminalWindowView: View {
         .background(.ultraThinMaterial, in: .capsule)
     }
 
+    private var snippetPicker: some View {
+        NavigationStack {
+            List(settingsManager.snippets) { snippet in
+                Button {
+                    session.sendCommand(snippet.command)
+                    settingsManager.useSnippet(snippet.id)
+                    showingSnippetPicker = false
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(snippet.name).font(.headline)
+                        Text(snippet.command)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                        if !snippet.description.isEmpty {
+                            Text(snippet.description)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Snippets")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { showingSnippetPicker = false }
+                }
+            }
+        }
+    }
+
     private var terminalSettingsModal: some View {
         NavigationStack {
             Group {
@@ -399,59 +477,6 @@ struct TerminalWindowView: View {
     }
 }
 
-
-// MARK: - Supporting Views
-
-struct TerminalLineView: View {
-    let line: TerminalLine
-    let theme: TerminalTheme
-    
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text(line.timestamp, format: .dateTime.hour().minute().second())
-                .font(.system(size: theme.fontSize - 2, design: .monospaced))
-                .foregroundStyle(.secondary.opacity(0.5))
-                .frame(width: 80, alignment: .trailing)
-            
-            Text(line.text)
-                .font(.system(size: theme.fontSize, design: .monospaced))
-                .foregroundStyle(colorForLineStyle(line.style))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-    
-    private func colorForLineStyle(_ style: TerminalLine.LineStyle) -> Color {
-        switch style {
-        case .output: return theme.foreground.color
-        case .input: return theme.blue.color
-        case .error: return theme.red.color
-        case .system: return theme.yellow.color
-        case .prompt: return theme.green.color
-        }
-    }
-}
-
-struct FooterGlassIconButton: View {
-    let symbol: String
-    let title: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 60, height: 60)
-                .contentShape(Circle())
-        }
-        .buttonStyle(.borderless)
-        .hoverEffect(.highlight)
-        .help(title)
-        .accessibilityLabel(title)
-    }
-}
 
 private enum TerminalSettingsModalTab: Hashable {
     case terminal

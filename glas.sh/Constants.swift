@@ -31,3 +31,23 @@ enum UserDefaultsKeys {
     static let theme = "theme"
     static let snippets = "snippets"
 }
+
+enum SharedDefaults {
+    static let suiteName = "group.sh.glas.shared"
+    static let defaults = UserDefaults(suiteName: suiteName)!
+
+    private static let migrationSentinel = "sharedDefaultsMigrationComplete"
+
+    static func migrateIfNeeded() {
+        let standard = UserDefaults.standard
+        guard !standard.bool(forKey: migrationSentinel) else { return }
+
+        for key in [UserDefaultsKeys.servers, UserDefaultsKeys.sshKeys, UserDefaultsKeys.trustedHostKeys] {
+            if let data = standard.data(forKey: key), defaults.data(forKey: key) == nil {
+                defaults.set(data, forKey: key)
+            }
+        }
+
+        standard.set(true, forKey: migrationSentinel)
+    }
+}

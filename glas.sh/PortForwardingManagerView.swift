@@ -54,13 +54,26 @@ struct PortForwardingManagerView: View {
     
     private func forwardsList(for session: TerminalSession) -> some View {
         VStack(spacing: 0) {
+            // Coming Soon banner
+            HStack(spacing: 8) {
+                Image(systemName: "info.circle.fill")
+                Text("Port forwarding is coming in a future update. Configuration is saved for when it becomes available.")
+                    .font(.caption)
+            }
+            .foregroundStyle(.secondary)
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.ultraThinMaterial, in: .rect(cornerRadius: 8))
+            .padding(.horizontal)
+            .padding(.top, 8)
+
             // Header
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Port Forwards")
                         .font(.title2)
                         .fontWeight(.bold)
-                    
+
                     Text("Manage port forwarding for \(session.server.name)")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -169,6 +182,7 @@ struct PortForwardRow: View {
                     set: { _ in onToggle() }
                 ))
                 .labelsHidden()
+                .disabled(true)
                 .accessibilityLabel("Toggle \(forward.type.displayName) forward")
 
                 Button(role: .destructive, action: onDelete) {

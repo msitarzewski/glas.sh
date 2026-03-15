@@ -29,3 +29,21 @@
 - Used standard `.buttonStyle(.borderless)` for ornament buttons (system-managed sizing)
 - Fixed stuck visionOS context menu: added UITapGestureRecognizer to dismiss deprecated UIMenuController on tap
 - Files: TerminalWindowView.swift, SwiftTermHostView.swift
+
+### 2026-03-15: Shared App Group defaults migration
+- Migrated servers, sshKeys, trustedHostKeys from `UserDefaults.standard` to shared App Group suite (`group.sh.glas.shared`)
+- Added App Group entitlement to glas.sh, `SharedDefaults` enum with migration logic
+- All 20+ UI settings remain on `.standard`
+- See: [260315_shared-defaults-migration.md](./260315_shared-defaults-migration.md)
+
+### 2026-03-15: SSH channel writability fix (terminal input freeze)
+- Fixed critical bug: `parentChannelWritabilityChanged` existed on SSHChildChannel but was never called
+- Added `channelWritabilityChanged` handler to NIOSSHHandler + propagation through SSHChannelMultiplexer
+- Terminal input no longer freezes after transient network backpressure
+- See: [260315_ssh-channel-writability-fix.md](./260315_ssh-channel-writability-fix.md)
+
+### 2026-03-15: Comprehensive audit fix — unwired code & dead code cleanup
+- Fixed 7 package-level wiring bugs (NIOSSH + Citadel): channelInactive forwarding, remoteAddress0 copy-paste, GlueHandler close propagation, channelHandlers discarded, inboundChannelHandler ignored, ExecOutputHandler.onExit, SFTP initialized promise
+- Wired 6 inert app-layer features: confirmBeforeClosing dialog, closeAllSessions on background, terminal bell (visual + audio), forwardAgent/compression marked Coming Soon, snippet execution picker, port forwarding Coming Soon banner
+- Removed 7 dead code items across 4 files (SystemInfo, sendKeyPress, feedTerminalText, TerminalLineView, FooterGlassIconButton, Logger.app, isTag)
+- See: [260315_comprehensive-audit-fix.md](./260315_comprehensive-audit-fix.md)

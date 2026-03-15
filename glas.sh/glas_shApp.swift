@@ -86,6 +86,7 @@ struct glas_shApp: App {
 struct MainBootstrapView: View {
     @Environment(SessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
+    @Environment(\.scenePhase) private var scenePhase
     @State private var didBootstrap = false
 
     var body: some View {
@@ -93,8 +94,14 @@ struct MainBootstrapView: View {
         .task {
             guard !didBootstrap else { return }
             didBootstrap = true
+            SharedDefaults.migrateIfNeeded()
             settingsManager.loadPersistentStateIfNeeded()
             sessionManager.preloadPersistentStateIfNeeded()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background {
+                sessionManager.closeAllSessions()
+            }
         }
     }
 }

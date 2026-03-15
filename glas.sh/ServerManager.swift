@@ -30,7 +30,7 @@ class ServerManager {
     }
 
     func loadServers() {
-        guard let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.servers) else {
+        guard let data = SharedDefaults.defaults.data(forKey: UserDefaultsKeys.servers) else {
             servers = []
             return
         }
@@ -46,7 +46,7 @@ class ServerManager {
     func saveServers() {
         do {
             let data = try JSONEncoder().encode(servers)
-            UserDefaults.standard.set(data, forKey: UserDefaultsKeys.servers)
+            SharedDefaults.defaults.set(data, forKey: UserDefaultsKeys.servers)
         } catch {
             Logger.servers.error("Failed to save servers: \(error)")
         }

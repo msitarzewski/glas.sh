@@ -176,6 +176,7 @@ final class ExecHandler: ChannelDuplexHandler {
         }.whenComplete { result in
             switch result {
             case .success:
+                handler.onExit?(ExecExitContext())
                 channel.close(promise: nil)
             case .failure:
                 if event.wantReply {

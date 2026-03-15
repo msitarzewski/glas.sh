@@ -30,11 +30,12 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
     
     func initialize(command: SFTPMessage.Initialize, context: ChannelHandlerContext) {
         guard command.version >= .v3 else {
+            initialized.fail(SFTPError.connectionClosed)
             return context.channel.triggerUserOutboundEvent(ChannelFailureEvent()).whenComplete { _ in
                 context.channel.close(promise: nil)
             }
         }
-        
+
         context.writeAndFlush(
             NIOAny(SFTPMessage.version(
                 .init(
@@ -44,6 +45,7 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
             )),
             promise: nil
         )
+        initialized.succeed(())
     }
     
     func makeContext() -> SSHContext {
