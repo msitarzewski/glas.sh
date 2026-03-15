@@ -24,6 +24,8 @@ struct ConnectionManagerView: View {
     @State private var pendingTrustChallenge: HostKeyTrustChallenge?
     @State private var pendingConnectPassword: String?
     @State private var connectionFailureMessage: String?
+    @State private var quickConnectPasswordPrompt: ServerConfiguration?
+    @State private var quickConnectPassword: String = ""
     
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
@@ -55,7 +57,11 @@ struct ConnectionManagerView: View {
                 .navigationTitle(selectedSection.title)
                 .searchable(text: $searchQuery, prompt: "Search servers...")
                 .onSubmit(of: .search) {
-                    applySearchAsTagFilterIfPossible()
+                    if let config = quickConnectConfig {
+                        quickConnectPasswordPrompt = config
+                    } else {
+                        applySearchAsTagFilterIfPossible()
+                    }
                 }
                 .toolbar {
                     ToolbarItemGroup(placement: .primaryAction) {
@@ -112,6 +118,32 @@ struct ConnectionManagerView: View {
         } message: {
             Text(connectionFailureMessage ?? "Unable to connect.")
         }
+        .alert("Enter Password", isPresented: quickConnectPasswordPromptBinding) {
+            SecureField("Password", text: $quickConnectPassword)
+            Button("Connect") {
+                if let config = quickConnectPasswordPrompt {
+                    let password = quickConnectPassword
+                    quickConnectPassword = ""
+                    Task { @MainActor in
+                        let session = await sessionManager.createSession(for: config, password: password)
+                        if session.state == .connected {
+                            openWindow(id: "terminal", value: session.id)
+                            dismissWindow(id: "main")
+                        } else if case .error(let message) = session.state {
+                            connectionFailureMessage = message
+                            sessionManager.closeSession(session)
+                        }
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                quickConnectPassword = ""
+            }
+        } message: {
+            if let config = quickConnectPasswordPrompt {
+                Text("Enter password for \(config.username)@\(config.host):\(config.port)")
+            }
+        }
         .task {
             serverManager.loadServersIfNeeded()
         }
@@ -120,7 +152,36 @@ struct ConnectionManagerView: View {
     private var availableTags: [String] {
         Array(Set(serverManager.servers.flatMap { $0.tags })).sorted()
     }
-    
+
+    private var quickConnectConfig: ServerConfiguration? {
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query.contains("@") else { return nil }
+        let parts = query.split(separator: "@", maxSplits: 1)
+        guard parts.count == 2 else { return nil }
+        let username = String(parts[0])
+        let hostPart = String(parts[1])
+
+        let host: String
+        let port: Int
+        if hostPart.contains(":"), let colonIndex = hostPart.lastIndex(of: ":") {
+            host = String(hostPart[hostPart.startIndex..<colonIndex])
+            port = Int(hostPart[hostPart.index(after: colonIndex)...]) ?? 22
+        } else {
+            host = hostPart
+            port = 22
+        }
+
+        guard !username.isEmpty, !host.isEmpty else { return nil }
+
+        return ServerConfiguration(
+            name: "\(username)@\(host)",
+            host: host,
+            port: port,
+            username: username,
+            authMethod: .password
+        )
+    }
+
     // MARK: - Detail View
     
     private var detailView: some View {
@@ -129,23 +190,52 @@ struct ConnectionManagerView: View {
                 activeTagFilterBar
             }
 
-            List(filteredServers) { server in
-                ServerListRow(
-                    server: server,
-                    session: sessionForServer(server),
-                    onView: {
-                        viewingServer = server
-                    },
-                    onEdit: {
-                        editingServer = server
-                    },
-                    onDelete: {
-                        serverManager.deleteServer(server)
+            List {
+                if let config = quickConnectConfig {
+                    Section {
+                        HStack(spacing: 12) {
+                            Image(systemName: "bolt.fill")
+                                .foregroundStyle(.green)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Quick Connect")
+                                    .font(.subheadline.weight(.semibold))
+                                Text("\(config.username)@\(config.host):\(config.port)")
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "arrow.right.circle.fill")
+                                .foregroundStyle(.green)
+                        }
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            quickConnectPasswordPrompt = config
+                        }
                     }
-                )
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    connectToServer(server)
+                }
+
+                ForEach(filteredServers) { server in
+                    ServerListRow(
+                        server: server,
+                        session: sessionForServer(server),
+                        onView: {
+                            viewingServer = server
+                        },
+                        onEdit: {
+                            editingServer = server
+                        },
+                        onDelete: {
+                            serverManager.deleteServer(server)
+                        },
+                        onToggleFavorite: {
+                            serverManager.toggleFavorite(server)
+                        }
+                    )
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        connectToServer(server)
+                    }
                 }
             }
         }
@@ -192,6 +282,8 @@ struct ConnectionManagerView: View {
         let servers: [ServerConfiguration]
         
         switch selectedSection {
+        case .favorites:
+            servers = serverManager.favoriteServers
         case .all:
             servers = serverManager.servers
         case .tags:
@@ -343,6 +435,18 @@ struct ConnectionManagerView: View {
         )
     }
 
+    private var quickConnectPasswordPromptBinding: Binding<Bool> {
+        Binding(
+            get: { quickConnectPasswordPrompt != nil },
+            set: { isPresented in
+                if !isPresented {
+                    quickConnectPasswordPrompt = nil
+                    quickConnectPassword = ""
+                }
+            }
+        )
+    }
+
     private func retryPendingConnection() {
         guard let session = pendingTrustSession else { return }
         let password = pendingConnectPassword
@@ -376,6 +480,7 @@ private struct ServerListRow: View {
     let onView: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
+    let onToggleFavorite: () -> Void
 
     private var rawConnection: String {
         "\(server.username)@\(server.host):\(server.port)"
@@ -401,6 +506,13 @@ private struct ServerListRow: View {
                 Text(server.name)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
+
+                if server.isFavorite {
+                    Image(systemName: "heart.fill")
+                        .font(.caption)
+                        .foregroundStyle(.pink)
+                        .accessibilityLabel("Favorite")
+                }
             }
             .frame(minWidth: 180, alignment: .leading)
 
@@ -459,6 +571,36 @@ private struct ServerListRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(server.name), \(server.username) at \(server.host), \(server.authMethod.displayName)")
         .accessibilityHint("Double tap to connect")
+        .contextMenu {
+            Button {
+                onToggleFavorite()
+            } label: {
+                Label(
+                    server.isFavorite ? "Remove from Favorites" : "Add to Favorites",
+                    systemImage: server.isFavorite ? "heart.slash" : "heart"
+                )
+            }
+
+            Button {
+                onView()
+            } label: {
+                Label("View", systemImage: "eye")
+            }
+
+            Button {
+                onEdit()
+            } label: {
+                Label("Edit", systemImage: "pencil")
+            }
+
+            Divider()
+
+            Button(role: .destructive) {
+                onDelete()
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
     }
 }
 
@@ -571,49 +713,54 @@ private struct ServerInfoView: View {
 // MARK: - Connection Section
 
 enum ConnectionSection: Hashable, Identifiable, CaseIterable {
+    case favorites
     case all
     case tags
     case recent
     case tag(String)
-    
+
     var id: String {
         switch self {
+        case .favorites: return "favorites"
         case .all: return "all"
         case .tags: return "tags"
         case .recent: return "recent"
         case .tag(let tag): return "tag-\(tag)"
         }
     }
-    
+
     var title: String {
         switch self {
+        case .favorites: return "Favorites"
         case .all: return "All Servers"
         case .tags: return "Tags"
         case .recent: return "Recent"
         case .tag(let tag): return tag
         }
     }
-    
+
     var icon: String {
         switch self {
+        case .favorites: return "heart.fill"
         case .all: return "server.rack"
         case .tags: return "tag"
         case .recent: return "clock.fill"
         case .tag: return "tag.fill"
         }
     }
-    
+
     var color: Color {
         switch self {
+        case .favorites: return .pink
         case .all: return .blue
         case .tags: return .orange
         case .recent: return .purple
         case .tag: return .orange
         }
     }
-    
+
     static var allCases: [ConnectionSection] {
-        [.all, .tags, .recent]
+        [.favorites, .all, .tags, .recent]
     }
 
 }

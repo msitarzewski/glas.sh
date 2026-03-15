@@ -54,19 +54,6 @@ struct PortForwardingManagerView: View {
     
     private func forwardsList(for session: TerminalSession) -> some View {
         VStack(spacing: 0) {
-            // Coming Soon banner
-            HStack(spacing: 8) {
-                Image(systemName: "info.circle.fill")
-                Text("Port forwarding is coming in a future update. Configuration is saved for when it becomes available.")
-                    .font(.caption)
-            }
-            .foregroundStyle(.secondary)
-            .padding()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.ultraThinMaterial, in: .rect(cornerRadius: 8))
-            .padding(.horizontal)
-            .padding(.top, 8)
-
             // Header
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
@@ -113,7 +100,7 @@ struct PortForwardingManagerView: View {
                         PortForwardRow(
                             forward: forward,
                             onToggle: {
-                                portForwardManager.toggleForward(forward, in: session.id)
+                                portForwardManager.toggleForward(forward, in: session.id, session: session)
                             },
                             onDelete: {
                                 portForwardManager.removeForward(forward, from: session.id)
@@ -147,53 +134,100 @@ struct PortForwardRow: View {
     let forward: PortForward
     let onToggle: () -> Void
     let onDelete: () -> Void
-    
-    var body: some View {
-        HStack(spacing: 16) {
-            // Type indicator
-            VStack(alignment: .leading, spacing: 4) {
-                Text(forward.type.displayName)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                
-                Text(forward.displayString)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                    .lineLimit(1)
-            }
-            
-            Spacer()
-            
-            HStack(spacing: 12) {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(forward.isActive ? Color.green : Color.gray)
-                        .frame(width: 8, height: 8)
 
-                    Text(forward.isActive ? "Active" : "Inactive")
+    /// Remote and dynamic forwards are not yet implemented.
+    private var isToggleDisabled: Bool {
+        forward.type != .local
+    }
+
+    private var statusColor: Color {
+        switch forward.status {
+        case .active: return .green
+        case .starting: return .orange
+        case .error: return .red
+        case .stopping: return .yellow
+        case .inactive: return .gray
+        }
+    }
+
+    private var statusLabel: String {
+        switch forward.status {
+        case .active: return "Active"
+        case .starting: return "Starting"
+        case .error: return "Error"
+        case .stopping: return "Stopping"
+        case .inactive: return "Inactive"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 16) {
+                // Type indicator
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(forward.type.displayName)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Status: \(forward.isActive ? "Active" : "Inactive")")
 
-                Toggle("", isOn: Binding(
-                    get: { forward.isActive },
-                    set: { _ in onToggle() }
-                ))
-                .labelsHidden()
-                .disabled(true)
-                .accessibilityLabel("Toggle \(forward.type.displayName) forward")
-
-                Button(role: .destructive, action: onDelete) {
-                    Image(systemName: "trash")
-                        .foregroundStyle(.red)
+                    Text(forward.displayString)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .lineLimit(1)
                 }
-                .buttonStyle(.bordered)
-                .accessibilityLabel("Delete forward")
+
+                Spacer()
+
+                HStack(spacing: 12) {
+                    HStack(spacing: 6) {
+                        if forward.status == .starting {
+                            ProgressView()
+                                .controlSize(.mini)
+                        } else {
+                            Circle()
+                                .fill(statusColor)
+                                .frame(width: 8, height: 8)
+                        }
+
+                        Text(statusLabel)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Status: \(statusLabel)")
+
+                    Toggle("", isOn: Binding(
+                        get: { forward.isActive },
+                        set: { _ in onToggle() }
+                    ))
+                    .labelsHidden()
+                    .disabled(isToggleDisabled)
+                    .help(isToggleDisabled ? "Remote and dynamic forwarding coming in a future update." : "")
+                    .accessibilityLabel("Toggle \(forward.type.displayName) forward")
+
+                    Button(role: .destructive, action: onDelete) {
+                        Image(systemName: "trash")
+                            .foregroundStyle(.red)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(forward.isActive)
+                    .accessibilityLabel("Delete forward")
+                }
+            }
+            .padding()
+
+            // Error message display
+            if forward.status == .error, let errorMessage = forward.errorMessage {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                    Text(errorMessage)
+                        .font(.caption)
+                }
+                .foregroundStyle(.red)
+                .padding(.horizontal)
+                .padding(.bottom, 8)
             }
         }
-        .padding()
         .background(.regularMaterial, in: .rect(cornerRadius: 12))
         .padding(.horizontal)
         .padding(.vertical, 4)

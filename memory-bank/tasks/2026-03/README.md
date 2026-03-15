@@ -47,3 +47,14 @@
 - Wired 6 inert app-layer features: confirmBeforeClosing dialog, closeAllSessions on background, terminal bell (visual + audio), forwardAgent/compression marked Coming Soon, snippet execution picker, port forwarding Coming Soon banner
 - Removed 7 dead code items across 4 files (SystemInfo, sendKeyPress, feedTerminalText, TerminalLineView, FooterGlassIconButton, Logger.app, isTag)
 - See: [260315_comprehensive-audit-fix.md](./260315_comprehensive-audit-fix.md)
+
+### 2026-03-15: Sprint 1 — Command Center release table-stakes features
+- Implemented 6 features closing critical gaps vs competitors
+- **Auto-reconnect**: Exponential backoff (5 attempts), cancel button, reconnect UI in connection label
+- **Port forwarding (local)**: Real SSH tunnels via NIO ServerBootstrap + Citadel DirectTCPIP, status indicators
+- **Jump host / ProxyJump**: `jumpHostID` on ServerConfiguration, Citadel `SSHClient.jump(to:)`, "Connect via" picker in forms
+- **SFTP file browser**: Full browser with directory listing, download/upload, create/rename/delete, new window scene
+- **Favorites section**: Heart icon toggle, favorites-first sidebar section, context menu toggle
+- **Quick connect bar**: Search bar parses `user@host:port`, password prompt, instant session creation
+- Files: Models.swift, TerminalWindowView.swift, ConnectionManagerView.swift, PortForwardManager.swift, PortForwardingManagerView.swift, SessionManager.swift, ServerFormViews.swift, glas_shApp.swift, new SFTPBrowserView.swift
+- See: [260315_sprint1-command-center.md](./260315_sprint1-command-center.md)

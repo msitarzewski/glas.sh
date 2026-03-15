@@ -63,6 +63,22 @@ struct glas_shApp: App {
         .defaultSize(width: 1000, height: 800)
         .restorationBehavior(.disabled)
         
+        // SFTP file browser
+        WindowGroup(id: "sftp", for: SFTPBrowserContext.self) { $context in
+            if let context,
+               let _ = sessionManager.session(for: context.sessionID) {
+                SFTPBrowserView(sessionID: context.sessionID)
+                    .environment(sessionManager)
+                    .environment(settingsManager)
+            } else {
+                SFTPBrowserNotFoundView()
+                    .trackWindowPresence(key: "sftp-missing", recovery: windowRecoveryManager)
+            }
+        }
+        .windowStyle(.plain)
+        .defaultSize(width: 700, height: 500)
+        .restorationBehavior(.disabled)
+
         // Port forwarding manager
         Window("Port Forwarding", id: "port-forwarding") {
             PortForwardingManagerView()
@@ -147,6 +163,34 @@ struct SessionNotFoundView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
+
+            Button("Open Connections") {
+                openWindow(id: "main")
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(32)
+    }
+}
+
+struct SFTPBrowserNotFoundView: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "folder.fill.badge.questionmark")
+                .font(.system(size: 44))
+                .foregroundStyle(.secondary)
+
+            Text("SFTP browser unavailable")
+                .font(.title3)
+                .fontWeight(.semibold)
+
+            Text("This SFTP window was restored, but its source session is no longer active.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 460)
 
             Button("Open Connections") {
                 openWindow(id: "main")

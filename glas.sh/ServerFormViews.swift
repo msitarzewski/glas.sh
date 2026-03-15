@@ -27,6 +27,7 @@ struct AddServerView: View {
     @State private var tags: [String] = []
     @State private var newTag: String = ""
     @State private var isFavorite: Bool = false
+    @State private var jumpHostID: UUID?
 
     @State private var showingAddSSHKey = false
     @State private var keychainSaveError: String?
@@ -96,6 +97,15 @@ struct AddServerView: View {
                             Label("Add SSH Key", systemImage: "plus.circle")
                         }
                         .buttonStyle(.bordered)
+                    }
+                }
+
+                Section("Routing") {
+                    Picker("Connect via", selection: $jumpHostID) {
+                        Text("Direct").tag(UUID?.none)
+                        ForEach(serverManager.servers) { server in
+                            Text(server.name).tag(Optional(server.id))
+                        }
                     }
                 }
 
@@ -225,7 +235,8 @@ struct AddServerView: View {
             sshKeyID: authMethod == .sshKey ? sshKeyID : nil,
             isFavorite: isFavorite,
             colorTag: colorTag,
-            tags: tags
+            tags: tags,
+            jumpHostID: jumpHostID
         )
 
         serverManager.addServer(server)
@@ -284,6 +295,7 @@ struct EditServerView: View {
     @State private var colorTag: ServerColorTag
     @State private var tags: [String]
     @State private var isFavorite: Bool
+    @State private var jumpHostID: UUID?
     @State private var newTag: String = ""
     @State private var showingAddSSHKey = false
     @State private var keychainSaveError: String?
@@ -304,6 +316,7 @@ struct EditServerView: View {
         _colorTag = State(initialValue: server.colorTag)
         _tags = State(initialValue: server.tags)
         _isFavorite = State(initialValue: server.isFavorite)
+        _jumpHostID = State(initialValue: server.jumpHostID)
     }
 
     var body: some View {
@@ -350,6 +363,15 @@ struct EditServerView: View {
                             Label("Add SSH Key", systemImage: "plus.circle")
                         }
                         .buttonStyle(.bordered)
+                    }
+                }
+
+                Section("Routing") {
+                    Picker("Connect via", selection: $jumpHostID) {
+                        Text("Direct").tag(UUID?.none)
+                        ForEach(serverManager.servers.filter { $0.id != server.id }) { s in
+                            Text(s.name).tag(Optional(s.id))
+                        }
                     }
                 }
 
@@ -485,6 +507,7 @@ struct EditServerView: View {
         updatedServer.colorTag = colorTag
         updatedServer.tags = tags
         updatedServer.isFavorite = isFavorite
+        updatedServer.jumpHostID = jumpHostID
 
         serverManager.updateServer(updatedServer)
 

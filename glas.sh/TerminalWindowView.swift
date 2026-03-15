@@ -85,18 +85,37 @@ struct TerminalWindowView: View {
 
     private var connectionLabel: some View {
         HStack(spacing: 8) {
-            Text(session.server.name)
-                .font(.caption)
-                .fontWeight(.semibold)
+            if session.state == .reconnecting {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Reconnecting... (\(session.reconnectAttemptCount)/5)")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.yellow)
+                Button {
+                    session.cancelReconnect()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Cancel reconnect")
+            } else {
+                Text(session.server.name)
+                    .font(.caption)
+                    .fontWeight(.semibold)
 
-            Text("\(session.server.username)@\(session.server.host):\(session.server.port)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Text("\(session.server.username)@\(session.server.host):\(session.server.port)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(session.server.name), \(session.server.username) at \(session.server.host) port \(session.server.port)")
+        .accessibilityLabel(session.state == .reconnecting
+            ? "Reconnecting, attempt \(session.reconnectAttemptCount) of 5"
+            : "\(session.server.name), \(session.server.username) at \(session.server.host) port \(session.server.port)")
     }
 
     // MARK: - Terminal Content
@@ -257,6 +276,7 @@ struct TerminalWindowView: View {
     }
 
     private func reconnectSession() {
+        session.cancelReconnect()
         Task {
             session.disconnect()
             try? await Task.sleep(for: .seconds(1))
@@ -319,6 +339,14 @@ struct TerminalWindowView: View {
                 }
 
                 Button {
+                    let context = SFTPBrowserContext(sessionID: session.id)
+                    openWindow(id: "sftp", value: context)
+                } label: {
+                    Label("SFTP Browser", systemImage: "folder.fill")
+                }
+                .disabled(session.state != .connected)
+
+                Button {
                     showingSnippetPicker = true
                 } label: {
                     Label("Snippets", systemImage: "text.page")
@@ -338,19 +366,27 @@ struct TerminalWindowView: View {
                 } label: {
                     Label("Reconnect", systemImage: "arrow.clockwise")
                 }
-                .disabled(session.state != .connected)
+                .disabled(session.state == .connecting || session.state == .reconnecting)
 
-                Button(role: .destructive) {
-                    if settingsManager.confirmBeforeClosing && session.state == .connected {
-                        showingCloseConfirmation = true
-                    } else {
-                        session.disconnect()
-                        dismiss()
+                if session.state == .reconnecting {
+                    Button(role: .destructive) {
+                        session.cancelReconnect()
+                    } label: {
+                        Label("Cancel Reconnect", systemImage: "stop.circle")
                     }
-                } label: {
-                    Label("Disconnect", systemImage: "xmark.circle")
+                } else {
+                    Button(role: .destructive) {
+                        if settingsManager.confirmBeforeClosing && session.state == .connected {
+                            showingCloseConfirmation = true
+                        } else {
+                            session.disconnect()
+                            dismiss()
+                        }
+                    } label: {
+                        Label("Disconnect", systemImage: "xmark.circle")
+                    }
+                    .disabled(session.state == .disconnected)
                 }
-                .disabled(session.state != .connected)
 
                 Divider()
 
@@ -654,7 +690,7 @@ struct TerminalPortForwardingSettingsView: View {
 
     private func setForwardActive(_ id: UUID, isActive: Bool) {
         guard let index = session.portForwards.firstIndex(where: { $0.id == id }) else { return }
-        session.portForwards[index].isActive = isActive
+        session.portForwards[index].status = isActive ? .active : .inactive
     }
 
     private func removeForward(_ id: UUID) {

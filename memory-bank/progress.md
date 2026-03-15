@@ -1,6 +1,13 @@
 # Progress
 
 ## Latest Milestones
+- Sprint 1 "Command Center" shipped (2026-03-15):
+  - **Auto-reconnect**: Exponential backoff (1s/2s/4s/8s/16s, 5 attempts), triggers on unexpected disconnect/keepalive timeout, cancel button in connection label ornament.
+  - **Port forwarding (local -L)**: NIO ServerBootstrap + Citadel DirectTCPIP bidirectional pipe. TunnelStatus enum with UI indicators. Remote/dynamic deferred.
+  - **Jump host / ProxyJump**: `jumpHostID` on ServerConfiguration, Citadel `SSHClient.jump(to:)`, "Connect via" picker in server forms. Single hop.
+  - **SFTP file browser**: New SFTPBrowserView with directory listing, download/upload, create/rename/delete. Separate window scene for spatial workflow.
+  - **Favorites section**: `.favorites` ConnectionSection, heart toggle in context menu, first in sidebar.
+  - **Quick connect bar**: Search bar parses `user@host:port`, password prompt alert, instant session.
 - Comprehensive audit fix shipped (2026-03-15):
   - **Package wiring fixes (7)**: NIOSSHHandler channelInactive forwarding, SSHChildChannel remoteAddress0 copy-paste bug, GlueHandler partner close no-ops uncommented, ClientSession channelHandlers pipeline insertion, ClientSession inboundChannelHandler passthrough, ExecOutputHandler.onExit invocation, SFTPServerInboundHandler.initialized promise.
   - **App feature wiring (6)**: confirmBeforeClosing dialog on Disconnect button, closeAllSessions on scene background, terminal bell (visual flash + audio), forwardAgent/compression defaults changed to false and marked "Coming Soon", snippet execution picker from toolbar menu, port forwarding "Coming Soon" banner with disabled toggle.
@@ -75,10 +82,9 @@
   - terminal-pane-only tint/translucency behavior (avoids text tint washout).
 
 ## Open Areas
-- Ongoing terminal UX parity polish for edge-case TUIs.
-- Follow-up hardening: move generated P-256 auth to true Secure Enclave signing semantics (no app-exportable raw private key at auth time).
-- SSH agent auth/forwarding end-to-end support (forwardAgent now marked "Coming Soon" in UI).
-- Port forwarding implementation: UI exists with Coming Soon banner, needs DirectTCPIP SSH tunnel wiring.
-- Auto-reconnect implementation: `SessionState.reconnecting` exists in model but no behavioral wiring.
+- Sprint 2 (Tier 2 — Spatial Leap): AI command assistant (Foundation Models), error explainer, spatial audio alerts, persistent layouts, spatial widgets.
+- Sprint 3 (Tier 3 — Command Center): Tailscale integration, session recording + AI summary, immersive focus environment, notification overlays, SharePlay.
+- Port forwarding: Remote (-R) and dynamic/SOCKS (-D) still deferred.
+- Jump hosts: Multi-hop chains deferred (single hop implemented).
+- Follow-up hardening: true Secure Enclave signing semantics.
 - glassdb follow-up: read servers/keys from shared App Group suite.
-- Favorites UI section: `favoriteServers` computed property exists, needs ConnectionManagerView section.
