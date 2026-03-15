@@ -12,6 +12,7 @@
 - Stream delivery policy between SSH session and SwiftTerm host:
   - never use single-value overwrite semantics for terminal chunk handoff
   - queue/drain pending output chunks and emit by nonce to avoid dropping control-byte updates under high-frequency output bursts.
+- SwiftTerm context menu workaround: the library uses deprecated `UIMenuController.shared` which gets stuck on visionOS (eye+hand input doesn't reliably dismiss it). A `UITapGestureRecognizer` with `cancelsTouchesInView=false` is added in `makeUIView` to call `hideMenu()` on every tap.
 
 ## SSH Secret Handling Pattern
 - App-facing secret API routes through a `SecretStore` abstraction (currently keychain-backed).
@@ -29,7 +30,10 @@
 
 ## UI Structure
 - Multi-window app model with terminal-focused windows.
-- Footer-first terminal action model (search/clear/preview/tools) via bottom ornament instead of inline bar or persistent side rails.
+- Terminal window ornament layout:
+  - **Top ornament**: Connection label (server name + user@host:port) as a glass capsule — informational only, outside the window.
+  - **Bottom ornament**: Status indicator + server list button + gear tools menu (search/clear/preview/duplicate/reconnect/settings) as a glass capsule.
+  - Ornament buttons use standard `.buttonStyle(.borderless)` — let the system handle sizing per visionOS conventions. Do not hardcode icon frame sizes in ornaments.
 - Terminal-local settings presented via system `.sheet()` (not custom modal overlays) for Liquid Glass styling, gesture dismissal, and accessibility.
 - Composition boundary: keep outer frame/chrome stable while applying tint/translucency at terminal display layer.
 - Liquid Glass material strategy:

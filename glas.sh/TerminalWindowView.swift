@@ -37,10 +37,12 @@ struct TerminalWindowView: View {
         .padding(.horizontal, 22)
         .padding(.top, 34)
         .padding(.bottom, 26)
+        .ornament(attachmentAnchor: .scene(.top)) {
+            connectionLabel
+                .glassBackgroundEffect(in: .capsule)
+        }
         .ornament(attachmentAnchor: .scene(.bottom)) {
             bottomStatusBar
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
                 .glassBackgroundEffect(in: .capsule)
         }
         .sheet(isPresented: $showingTerminalSettings) {
@@ -63,8 +65,26 @@ struct TerminalWindowView: View {
         }
     }
     
+    // MARK: - Connection Label (top ornament)
+
+    private var connectionLabel: some View {
+        HStack(spacing: 8) {
+            Text(session.server.name)
+                .font(.caption)
+                .fontWeight(.semibold)
+
+            Text("\(session.server.username)@\(session.server.host):\(session.server.port)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(session.server.name), \(session.server.username) at \(session.server.host) port \(session.server.port)")
+    }
+
     // MARK: - Terminal Content
-    
+
     private var terminalContent: some View {
         ZStack {
             terminalDisplayBackground
@@ -224,7 +244,7 @@ struct TerminalWindowView: View {
     // MARK: - Bottom Status
 
     private var bottomStatusBar: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             HStack(spacing: 8) {
                 Circle()
                     .fill(session.state.color)
@@ -236,26 +256,14 @@ struct TerminalWindowView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Connection status: \(session.state.displayName)")
 
-            Divider()
-                .frame(height: 12)
-
-            Text(session.server.name)
-                .font(.caption2)
-                .fontWeight(.semibold)
-
-            Text("\(session.server.username)@\(session.server.host)")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            Spacer(minLength: 0)
-
-            Text("TERM \(session.server.terminalType)")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            FooterGlassIconButton(symbol: "rectangle.3.group", title: "Connections") {
+            Button {
                 openWindow(id: "main")
+            } label: {
+                Image(systemName: "server.rack")
             }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Connections")
+            .help("Connections")
 
             Menu {
                 Button {
@@ -305,14 +313,15 @@ struct TerminalWindowView: View {
                     Label("Settings", systemImage: "gearshape")
                 }
             } label: {
-                Label("Tools", systemImage: "gearshape")
+                Image(systemName: "gearshape")
             }
             .menuStyle(.button)
-            .labelStyle(.iconOnly)
-            .controlSize(.small)
+            .buttonStyle(.borderless)
             .help("Tools")
             .accessibilityLabel("Tools menu")
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
     }
     
     private var terminalSearchOverlay: some View {

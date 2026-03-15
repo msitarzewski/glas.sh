@@ -20,3 +20,12 @@
 - Fixed input focus latency: added `@FocusState` to all form views, reduced terminal focus retry from 4×120ms to 3×50ms, removed redundant delayed focus calls
 - Files: TerminalWindowView, glas_shApp, ConnectionManagerView, ServerFormViews, SettingsView, HTMLPreviewWindow, WindowRecoveryManager, PortForwardingManagerView, SwiftTermHostView
 - See: [260315_visionos26-ux-compliance.md](./260315_visionos26-ux-compliance.md)
+
+### 2026-03-15: Terminal layout restructure & context menu fix
+- Moved connection string (server name + user@host:port) to a top glass ornament label outside the window
+- Simplified bottom ornament to: status indicator + server list button + gear tools menu
+- Removed TERM type display from status bar
+- Restored all tools (Search, Clear, HTML Preview, Duplicate, Reconnect, Settings) under gear icon
+- Used standard `.buttonStyle(.borderless)` for ornament buttons (system-managed sizing)
+- Fixed stuck visionOS context menu: added UITapGestureRecognizer to dismiss deprecated UIMenuController on tap
+- Files: TerminalWindowView.swift, SwiftTermHostView.swift
