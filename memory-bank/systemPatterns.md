@@ -4,6 +4,7 @@
 - SSH transport via Citadel and `withPTY` interactive sessions.
 - Terminal rendering via SwiftTerm host view.
 - Resize loop: UI geometry -> PTY rows/cols -> remote window change.
+- Terminal bell: SwiftTerm fires `bell(source:)` delegate -> `onBell` callback -> visual flash (white overlay) or system audio (sound 1007) based on `bellEnabled`/`visualBell` settings.
 - Auth diagnostics surfaced through user-facing + raw error messaging to reduce field debugging time.
 - PTY mode policy for in-place progress behavior:
   - explicitly disable CR->NL output translation (`OCRNL=0`)
@@ -64,7 +65,8 @@
   - `PortForwardManager.swift` — port forwarding state
   - `Models.swift` — data models, `SSHConnection`, `TerminalSession`
 - **Typed constants**: All UserDefaults keys and Keychain service names go through `UserDefaultsKeys` / `KeychainServiceNames` enums. No bare string literals.
-- **Structured logging**: Use `Logger.ssh`, `Logger.servers`, `Logger.settings`, `Logger.keychain`, `Logger.app`. No `print()` in production code.
+- **Shared defaults**: `SharedDefaults` enum in `Constants.swift` manages `UserDefaults(suiteName: "group.sh.glas.shared")` for cross-app data (servers, sshKeys, trustedHostKeys). All UI/terminal settings stay on `UserDefaults.standard`.
+- **Structured logging**: Use `Logger.ssh`, `Logger.servers`, `Logger.settings`, `Logger.keychain`. No `print()` in production code.
 - **Concurrency safety**: Use `OSAllocatedUnfairLock` for thread-safe caches accessed from non-actor contexts. Use `nonisolated(unsafe)` only for `deinit` access to actor-isolated task properties.
 
 ## Keychain Lifecycle Pattern
@@ -82,3 +84,16 @@
 - Terminal keyboard focus uses `becomeFirstResponder()` retry loop (3 attempts × 50ms).
 - Do not add redundant delayed focus calls — the retry loop handles transient failures.
 - Single `focus()` call on `.onAppear` and `.onChange(of: scenePhase)` is sufficient.
+
+## NIO ChannelHandler Propagation Pattern
+- Every `ChannelDuplexHandler` that handles a lifecycle event (channelActive, channelInactive, channelWritabilityChanged, etc.) MUST forward the event downstream via `context.fire*()` after its own processing. Omitting this silently breaks handlers later in the pipeline.
+- The NIOSSHHandler -> SSHChannelMultiplexer -> SSHChildChannel chain must propagate: readComplete, inactive, writabilityChanged. All three are now correctly wired.
+- GlueHandler pairs (used for exec pipe bridging) must propagate close events bidirectionally — `partnerCloseFull()` and `partnerWriteEOF()` must actually close the partner's context.
+
+## App Lifecycle Pattern
+- `MainBootstrapView` monitors `scenePhase` — calls `sessionManager.closeAllSessions()` on `.background` to ensure SSH connections are cleanly terminated on app quit.
+- Terminal session close respects `settingsManager.confirmBeforeClosing` — shows alert before disconnecting active sessions (via toolbar "Disconnect" button).
+
+## Snippet Execution Pattern
+- Snippets (CommandSnippet) are managed via SettingsManager CRUD.
+- Execution: toolbar menu -> snippet picker sheet -> `session.sendCommand(snippet.command)` sends command + newline via TTY writer -> `settingsManager.useSnippet(id)` tracks usage stats.

@@ -170,6 +170,12 @@ extension SSHChannelMultiplexer {
         }
     }
 
+    func parentChannelWritabilityChanged(_ newValue: Bool) {
+        for channel in self.channels.values {
+            channel.parentChannelWritabilityChanged(newValue: newValue)
+        }
+    }
+
     func parentChannelInactive() {
         self.canCreateNewChannels = false
         for channel in self.channels.values {

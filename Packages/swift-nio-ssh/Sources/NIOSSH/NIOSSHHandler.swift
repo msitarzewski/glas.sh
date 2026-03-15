@@ -151,8 +151,14 @@ extension NIOSSHHandler: ChannelDuplexHandler {
         }
     }
 
+    public func channelWritabilityChanged(context: ChannelHandlerContext) {
+        self.multiplexer?.parentChannelWritabilityChanged(context.channel.isWritable)
+        context.fireChannelWritabilityChanged()
+    }
+
     public func channelInactive(context: ChannelHandlerContext) {
         self.multiplexer?.parentChannelInactive()
+        context.fireChannelInactive()
     }
 
     public func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -282,6 +288,18 @@ extension NIOSSHHandler {
     public func sendTCPForwardingRequest(_ request: GlobalRequest.TCPForwardingRequest, promise: EventLoopPromise<GlobalRequest.TCPForwardingResponse?>? = nil) {
         let message = SSHMessage.GlobalRequestMessage(wantReply: true, type: .init(request))
         self.pendingGlobalRequests.append((value: message, promise: promise.map { .tcpForwarding($0) }))
+        self.sendGlobalRequestsIfPossible()
+    }
+
+    /// Sends a keepalive@openssh.com global request to verify the remote end is still responsive.
+    /// Servers that recognise this request reply with SSH_MSG_REQUEST_FAILURE (which is fine —
+    /// any response proves liveness). This function is **not** thread-safe: call from the event loop.
+    public func sendKeepAlive() {
+        let message = SSHMessage.GlobalRequestMessage(
+            wantReply: true,
+            type: .unknown("keepalive@openssh.com", ByteBuffer())
+        )
+        self.pendingGlobalRequests.append((value: message, promise: nil))
         self.sendGlobalRequestsIfPossible()
     }
 

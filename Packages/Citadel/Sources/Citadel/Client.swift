@@ -365,6 +365,14 @@ public final class SSHClient {
         onNewSession(session)
     }
     
+    /// Sends a keepalive@openssh.com global request to keep the connection alive.
+    public func sendKeepAlive() async throws {
+        guard session.channel.isActive else { return }
+        try await session.channel.eventLoop.submit {
+            self.session.sshHandler.value.sendKeepAlive()
+        }.get()
+    }
+
     public func close() async throws {
         self.userInitiatedClose = true
         try await self.session.channel.close()

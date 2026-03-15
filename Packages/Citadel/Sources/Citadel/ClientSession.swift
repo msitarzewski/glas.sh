@@ -149,7 +149,7 @@ final class SSHClientSession: Sendable {
     ) -> EventLoopFuture<Void> {
         addHandlers(
             on: channel,
-            inboundChannelHandler: SSHClientInboundChannelHandler(),
+            inboundChannelHandler: inboundChannelHandler,
             settings: SSHClientSettings(
                 host: "127.0.0.1",
                 port: 22,
@@ -183,6 +183,9 @@ final class SSHClientSession: Sendable {
         }
         
         do {
+            for handler in settings.channelHandlers {
+                try channel.pipeline.syncOperations.addHandler(handler)
+            }
             try channel.pipeline.syncOperations.addHandlers(
                 NIOSSHHandler(
                     role: .client(clientConfiguration),

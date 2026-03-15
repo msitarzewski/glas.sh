@@ -159,7 +159,7 @@ class SettingsManager {
     }
 
     func loadTrustedHostKeys() {
-        guard let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.trustedHostKeys) else {
+        guard let data = SharedDefaults.defaults.data(forKey: UserDefaultsKeys.trustedHostKeys) else {
             trustedHostKeys = []
             return
         }
@@ -175,14 +175,14 @@ class SettingsManager {
     func saveTrustedHostKeys() {
         do {
             let data = try JSONEncoder().encode(trustedHostKeys)
-            UserDefaults.standard.set(data, forKey: UserDefaultsKeys.trustedHostKeys)
+            SharedDefaults.defaults.set(data, forKey: UserDefaultsKeys.trustedHostKeys)
         } catch {
             Logger.settings.error("Failed to save trusted host keys: \(error)")
         }
     }
 
     func loadSSHKeys() {
-        guard let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.sshKeys) else {
+        guard let data = SharedDefaults.defaults.data(forKey: UserDefaultsKeys.sshKeys) else {
             sshKeys = []
             return
         }
@@ -201,7 +201,7 @@ class SettingsManager {
     private func saveSSHKeys() {
         do {
             let data = try JSONEncoder().encode(sshKeys)
-            UserDefaults.standard.set(data, forKey: UserDefaultsKeys.sshKeys)
+            SharedDefaults.defaults.set(data, forKey: UserDefaultsKeys.sshKeys)
         } catch {
             Logger.settings.error("Failed to save ssh keys: \(error)")
         }

@@ -93,26 +93,30 @@ public struct SwiftTermHostView: UIViewRepresentable {
     let onSendData: (Data) -> Void
     let onResize: (Int, Int) -> Void
     let onTitleChanged: (String) -> Void
+    let onBell: () -> Void
 
     public init(
         model: SwiftTermHostModel,
         theme: SwiftTermTheme,
         onSendData: @escaping (Data) -> Void,
         onResize: @escaping (Int, Int) -> Void,
-        onTitleChanged: @escaping (String) -> Void = { _ in }
+        onTitleChanged: @escaping (String) -> Void = { _ in },
+        onBell: @escaping () -> Void = {}
     ) {
         self.model = model
         self.theme = theme
         self.onSendData = onSendData
         self.onResize = onResize
         self.onTitleChanged = onTitleChanged
+        self.onBell = onBell
     }
 
     public func makeCoordinator() -> Coordinator {
         Coordinator(
             onSendData: onSendData,
             onResize: onResize,
-            onTitleChanged: onTitleChanged
+            onTitleChanged: onTitleChanged,
+            onBell: onBell
         )
     }
 
@@ -181,16 +185,19 @@ public struct SwiftTermHostView: UIViewRepresentable {
         private let onSendData: (Data) -> Void
         private let onResize: (Int, Int) -> Void
         private let onTitleChanged: (String) -> Void
+        private let onBell: () -> Void
         fileprivate var lastTheme: SwiftTermTheme?
 
         init(
             onSendData: @escaping (Data) -> Void,
             onResize: @escaping (Int, Int) -> Void,
-            onTitleChanged: @escaping (String) -> Void
+            onTitleChanged: @escaping (String) -> Void,
+            onBell: @escaping () -> Void
         ) {
             self.onSendData = onSendData
             self.onResize = onResize
             self.onTitleChanged = onTitleChanged
+            self.onBell = onBell
         }
 
         @objc func dismissEditMenu() {
@@ -213,7 +220,7 @@ public struct SwiftTermHostView: UIViewRepresentable {
 
         public func scrolled(source: TerminalView, position: Double) {}
         public func requestOpenLink(source: TerminalView, link: String, params: [String : String]) {}
-        public func bell(source: TerminalView) {}
+        public func bell(source: TerminalView) { onBell() }
         public func clipboardCopy(source: TerminalView, content: Data) {}
         public func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {}
         public func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}

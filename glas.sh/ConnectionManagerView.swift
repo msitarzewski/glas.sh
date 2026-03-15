@@ -496,10 +496,10 @@ private struct ServerInfoView: View {
 
                 Section("Advanced") {
                     infoRow("TERM", server.terminalType)
-                    infoRow("Compression", server.compression ? "On" : "Off")
+                    infoRow("Compression", "Coming Soon")
                     infoRow("Keep Alive", "\(server.keepAliveInterval)s")
                     infoRow("PTY Requested", server.requestPTY ? "Yes" : "No")
-                    infoRow("Forward Agent", server.forwardAgent ? "Yes" : "No")
+                    infoRow("Forward Agent", "Coming Soon")
                 }
 
                 if !server.tags.isEmpty {
@@ -616,10 +616,6 @@ enum ConnectionSection: Hashable, Identifiable, CaseIterable {
         [.all, .tags, .recent]
     }
 
-    var isTag: Bool {
-        if case .tag = self { return true }
-        return false
-    }
 }
 
 private let relativeDateFormatter: RelativeDateTimeFormatter = {

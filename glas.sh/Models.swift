@@ -117,10 +117,10 @@ struct ServerConfiguration: Identifiable, Codable, Hashable {
         self.tags = tags
         
         // Defaults
-        self.compression = true
+        self.compression = false
         self.keepAliveInterval = 60
         self.serverAliveCountMax = 3
-        self.forwardAgent = true
+        self.forwardAgent = false
         self.requestPTY = true
         self.terminalType = "xterm-256color"
         self.environmentVariables = [:]
@@ -281,7 +281,6 @@ class TerminalSession: Identifiable, Hashable {
     var terminalInputNonce: UInt64 = 0
     var closeWindowNonce: UInt64 = 0
     var currentDirectory: String = "~"
-    var systemInfo: SystemInfo?
     var portForwards: [PortForward] = []
     var pendingHostKeyChallenge: HostKeyTrustChallenge?
     var lastConnectionDiagnostics: String?
@@ -397,16 +396,6 @@ class TerminalSession: Identifiable, Hashable {
         }
     }
     
-    func sendKeyPress(_ key: String) {
-        Task {
-            do {
-                try await sshConnection?.sendInput(key)
-            } catch {
-                Logger.ssh.error("Error sending key: \(error)")
-            }
-        }
-    }
-
     func sendTerminalData(_ data: Data) {
         Task {
             do {
@@ -466,11 +455,6 @@ class TerminalSession: Identifiable, Hashable {
         scheduleTerminalFlush()
     }
     
-    func feedTerminalText(_ text: String) {
-        guard let data = text.data(using: .utf8) else { return }
-        feedTerminalData(data)
-    }
-
     func updateTerminalGeometry(rows: Int, columns: Int) {
         let clampedRows = max(8, rows)
         let clampedColumns = max(20, columns)
@@ -616,16 +600,6 @@ struct TerminalLine: Identifiable {
         case system
         case prompt
     }
-}
-
-struct SystemInfo {
-    let hostname: String
-    let os: String
-    let kernel: String
-    let uptime: String
-    let cpuCores: Int
-    let totalMemory: String
-    let architecture: String
 }
 
 // MARK: - Port Forwarding
@@ -837,9 +811,11 @@ class SSHConnection {
     private var client: SSHClient?
     private var ttyWriter: TTYStdinWriter?
     private var ttyTask: Task<Void, Never>?
+    private var keepAliveTask: Task<Void, Never>?
+    private var missedKeepAlives: Int = 0
     private var terminalRows: Int = 40
     private var terminalColumns: Int = 140
-    
+
     weak var session: TerminalSession?
     
     init(session: TerminalSession) {
@@ -972,6 +948,12 @@ class SSHConnection {
         ttyTask = Task { [weak self] in
             await self?.runInteractiveTTY(client: client, server: server)
         }
+
+        startKeepAliveTimer(
+            client: client,
+            interval: server.keepAliveInterval,
+            maxMissed: server.serverAliveCountMax
+        )
     }
 
     private func runInteractiveTTY(client: SSHClient, server: ServerConfiguration) async {
@@ -1020,6 +1002,7 @@ class SSHConnection {
 
                     let data = Data(buffer.readableBytesView)
                     await MainActor.run {
+                        self.resetKeepAliveCounter()
                         self.session?.feedTerminalData(data)
                     }
                 }
@@ -1078,6 +1061,8 @@ class SSHConnection {
     
     /// Disconnect from SSH server
     func disconnect() async {
+        keepAliveTask?.cancel()
+        keepAliveTask = nil
         ttyTask?.cancel()
         ttyTask = nil
         ttyWriter = nil
@@ -1087,8 +1072,43 @@ class SSHConnection {
         } catch {
             Logger.ssh.error("Error during disconnect: \(error)")
         }
-        
+
         client = nil
+    }
+
+    /// Reset the missed-keepalive counter when we receive data from the server.
+    func resetKeepAliveCounter() {
+        missedKeepAlives = 0
+    }
+
+    private func startKeepAliveTimer(client: SSHClient, interval: Int, maxMissed: Int) {
+        guard interval > 0 else { return }
+        keepAliveTask?.cancel()
+        missedKeepAlives = 0
+
+        keepAliveTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(interval))
+                guard !Task.isCancelled else { break }
+                guard let self else { break }
+
+                do {
+                    try await client.sendKeepAlive()
+                    self.missedKeepAlives += 1
+                    Logger.ssh.debug("Keepalive sent (missed replies: \(self.missedKeepAlives)/\(maxMissed))")
+
+                    if self.missedKeepAlives > maxMissed {
+                        Logger.ssh.warning("Server not responding after \(maxMissed) keepalives — disconnecting")
+                        self.session?.reportError("Connection timed out (server not responding)")
+                        await self.disconnect()
+                        break
+                    }
+                } catch {
+                    Logger.ssh.debug("Keepalive send failed: \(error)")
+                    break
+                }
+            }
+        }
     }
     
     /// Resize terminal window
@@ -1204,7 +1224,7 @@ class SSHConnection {
         }
 
         // Backward-compatible fallback for previously stored global trust entries.
-        guard let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.trustedHostKeys),
+        guard let data = SharedDefaults.defaults.data(forKey: UserDefaultsKeys.trustedHostKeys),
               let entries = try? JSONDecoder().decode([TrustedHostKeyEntry].self, from: data)
         else {
             return []

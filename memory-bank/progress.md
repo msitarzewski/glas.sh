@@ -1,6 +1,17 @@
 # Progress
 
 ## Latest Milestones
+- Comprehensive audit fix shipped (2026-03-15):
+  - **Package wiring fixes (7)**: NIOSSHHandler channelInactive forwarding, SSHChildChannel remoteAddress0 copy-paste bug, GlueHandler partner close no-ops uncommented, ClientSession channelHandlers pipeline insertion, ClientSession inboundChannelHandler passthrough, ExecOutputHandler.onExit invocation, SFTPServerInboundHandler.initialized promise.
+  - **App feature wiring (6)**: confirmBeforeClosing dialog on Disconnect button, closeAllSessions on scene background, terminal bell (visual flash + audio), forwardAgent/compression defaults changed to false and marked "Coming Soon", snippet execution picker from toolbar menu, port forwarding "Coming Soon" banner with disabled toggle.
+  - **Dead code cleanup (7)**: Removed SystemInfo struct, sendKeyPress, feedTerminalText, TerminalLineView, FooterGlassIconButton, Logger.app, ConnectionSection.isTag.
+- SSH channel writability fix shipped (2026-03-15):
+  - Added channelWritabilityChanged handler to NIOSSHHandler + multiplexer propagation.
+  - Root cause: SSHChildChannel.parentChannelWritabilityChanged existed but was never called, causing terminal input to freeze after transient network backpressure.
+- Shared App Group defaults migration shipped (2026-03-15):
+  - Servers, SSH keys, trusted host keys moved from UserDefaults.standard to shared suite `group.sh.glas.shared`.
+  - Migration runs at bootstrap with per-app sentinel. Old data retained as backup.
+  - App Group entitlement added to glas.sh (glassdb already had it).
 - visionOS 26 UX compliance & focus latency fix shipped:
   - Full Liquid Glass migration: `.glassBackgroundEffect()` on chrome, `.regularMaterial` on secondary surfaces, `.ultraThinMaterial` retained only for terminal content area.
   - Terminal status bar moved to `.ornament(attachmentAnchor: .scene(.bottom))`.
@@ -66,4 +77,8 @@
 ## Open Areas
 - Ongoing terminal UX parity polish for edge-case TUIs.
 - Follow-up hardening: move generated P-256 auth to true Secure Enclave signing semantics (no app-exportable raw private key at auth time).
-- Queued feature request: SSH agent auth/forwarding end-to-end support (model -> connection settings -> transport behavior).
+- SSH agent auth/forwarding end-to-end support (forwardAgent now marked "Coming Soon" in UI).
+- Port forwarding implementation: UI exists with Coming Soon banner, needs DirectTCPIP SSH tunnel wiring.
+- Auto-reconnect implementation: `SessionState.reconnecting` exists in model but no behavioral wiring.
+- glassdb follow-up: read servers/keys from shared App Group suite.
+- Favorites UI section: `favoriteServers` computed property exists, needs ConnectionManagerView section.

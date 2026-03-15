@@ -46,11 +46,11 @@ extension GlueHandler {
     }
     
     private func partnerWriteEOF() {
-        //self.context?.close(mode: .output, promise: nil)
+        self.context?.close(mode: .output, promise: nil)
     }
-    
+
     private func partnerCloseFull() {
-        //self.context?.close(promise: nil)
+        self.context?.close(promise: nil)
     }
     
     private func partnerBecameWritable() {

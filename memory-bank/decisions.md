@@ -56,6 +56,36 @@
   - AutoFill no longer interferes with app-managed credential fields.
   - Edit flows show accurate saved state, preventing accidental password loss.
 
+## 2026-03-15: Shared App Group defaults for cross-app data sharing
+- Status: Approved
+- Context: glas.sh and glassdb share SSH credentials via Keychain access group, but server configs, SSH key metadata, and trusted host keys were stored in `UserDefaults.standard` (per-app sandboxed), making them invisible across apps.
+- Decision:
+  - Add App Group entitlement (`group.sh.glas.shared`) to glas.sh (glassdb already had it).
+  - Move `servers`, `sshKeys`, `trustedHostKeys` to `UserDefaults(suiteName: "group.sh.glas.shared")`.
+  - Run one-time migration at bootstrap with per-app sentinel in `.standard`.
+  - Keep all 20+ UI/terminal settings on `.standard` (app-specific by design).
+  - Do not delete old `.standard` data (inert backup for downgrade safety).
+- Consequences:
+  - Both apps can now read shared server/key data.
+  - Migration is idempotent and crash-safe.
+  - glassdb follow-up PR needed to read from shared suite.
+
+## 2026-03-15: Comprehensive audit fix — NIO lifecycle propagation and app feature wiring
+- Status: Approved
+- Context: Audit revealed 15+ instances of code that existed but wasn't connected — same class of bug as the terminal input freeze (parentChannelWritabilityChanged never called). Affected NIO event propagation, Citadel exec/SFTP lifecycle, and app-layer settings that had UI but no behavior.
+- Decision:
+  - Fix all NIO lifecycle propagation gaps (channelInactive, writabilityChanged, GlueHandler close).
+  - Fix Citadel API wiring (channelHandlers, inboundChannelHandler, onExit, SFTP initialized).
+  - Wire all inert app settings to actual behavior (confirmBeforeClosing, bell, snippets, closeAllSessions).
+  - Mark unimplementable features as "Coming Soon" (forwardAgent, compression, port forwarding) rather than showing false active state.
+  - Remove confirmed dead code; keep active scaffolding (favorites, progress stages, SE key retrieval).
+- Consequences:
+  - NIO pipeline events now propagate correctly end-to-end.
+  - Every user-visible setting has corresponding behavior.
+  - Users are no longer misled by features that don't work.
+  - Dead code removed reduces maintenance burden and confusion.
+- References: `tasks/2026-03/260315_comprehensive-audit-fix.md`
+
 ## 2026-02-28: Migrate SSH key operations to SecureBytes API
 - Status: Approved
 - Context: GlasSecretStore introduced `SecureBytes` type for secure memory handling. SSH key save/retrieve operations in `KeychainManager` and `SettingsManager` still used raw `String` internally at the keychain boundary.
