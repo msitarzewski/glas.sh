@@ -26,6 +26,12 @@ class SessionManager {
 
     func createSession(for server: ServerConfiguration, password: String? = nil) async -> TerminalSession {
         let session = TerminalSession(server: server)
+
+        // Resolve jump host configuration if the server uses ProxyJump
+        if let jumpID = server.jumpHostID {
+            session.jumpHostConfig = serverManager.server(for: jumpID)
+        }
+
         sessions.append(session)
         activeSessionID = session.id
 

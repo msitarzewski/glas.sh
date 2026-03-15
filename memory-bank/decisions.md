@@ -56,6 +56,22 @@
   - AutoFill no longer interferes with app-managed credential fields.
   - Edit flows show accurate saved state, preventing accidental password loss.
 
+## 2026-03-15: Sprint 1 "Command Center" — close table-stakes gaps
+- Status: Approved
+- Context: Competitive analysis showed glas.sh missing critical features vs La Terminal (spatial monitoring, cloud AI), Prompt 3 (Mosh, GPU rendering), and Termius (teams, SOC2). Sprint 1 closes the most impactful gaps.
+- Decision:
+  - Auto-reconnect with exponential backoff, reading setting directly from UserDefaults to avoid SettingsManager coupling.
+  - Local port forwarding only in Sprint 1; remote and dynamic deferred. Uses NIO ServerBootstrap + Citadel DirectTCPIP.
+  - Jump host via Citadel's existing `SSHClient.jump(to:)` — single hop only, multi-hop deferred.
+  - SFTP browser as separate window scene (not inline in terminal) for spatial workflow flexibility.
+  - Quick connect via search bar parsing (Option B) rather than separate text field — reuses existing UI.
+  - Favorites as first sidebar section with context menu toggle rather than dedicated view.
+- Consequences:
+  - All 6 table-stakes features ship together, building on existing Citadel infrastructure.
+  - Port forwarding, jump host, and SFTP all leverage APIs that were already in Citadel but unexposed.
+  - Auto-reconnect and quick connect have minimal dependency footprint (no new packages).
+- References: `tasks/2026-03/260315_sprint1-command-center.md`
+
 ## 2026-03-15: Shared App Group defaults for cross-app data sharing
 - Status: Approved
 - Context: glas.sh and glassdb share SSH credentials via Keychain access group, but server configs, SSH key metadata, and trusted host keys were stored in `UserDefaults.standard` (per-app sandboxed), making them invisible across apps.

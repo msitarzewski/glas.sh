@@ -97,3 +97,35 @@
 ## Snippet Execution Pattern
 - Snippets (CommandSnippet) are managed via SettingsManager CRUD.
 - Execution: toolbar menu -> snippet picker sheet -> `session.sendCommand(snippet.command)` sends command + newline via TTY writer -> `settingsManager.useSnippet(id)` tracks usage stats.
+
+## Auto-Reconnect Pattern
+- `TerminalSession.attemptAutoReconnect(autoReconnectEnabled:)` with exponential backoff (1s/2s/4s/8s/16s, 5 attempts).
+- Triggered from SSHConnection error paths (runInteractiveTTY catch-all, keepalive timeout).
+- NOT triggered from: clean remote exit (handleCleanRemoteExit), channel closed errors, user-initiated disconnect.
+- `userInitiatedDisconnect` flag set in `disconnect()` prevents reconnect on manual close.
+- `cancelReconnect()` cancels the reconnect task and sets state to `.disconnected`.
+- Reads `UserDefaults.standard.bool(forKey: .autoReconnect)` directly to avoid SettingsManager coupling.
+
+## Port Forwarding Pattern
+- Local forwarding: NIO `ServerBootstrap` binds to `127.0.0.1:localPort`, accepts connections, creates Citadel `DirectTCPIP` channel per connection, pipes data bidirectionally.
+- `TunnelStatus` enum (inactive/starting/active/error/stopping) tracks tunnel state.
+- `PortForwardManager` stores running `Task` per tunnel for lifecycle management.
+- `SSHConnection.createDirectTCPIPChannel(targetHost:targetPort:)` wraps Citadel API.
+- Bidirectional pipe pattern: `NIOAsyncChannel.executeThenClose` + `ThrowingTaskGroup` with two concurrent loops.
+
+## Jump Host Pattern
+- `ServerConfiguration.jumpHostID: UUID?` references another server config as jump host.
+- `SessionManager.createSession()` resolves jumpHostID to full config, stores on `session.jumpHostConfig`.
+- `SSHConnection.connect()` checks for jump host config: connects to jump host first, then calls `jumpClient.jump(to: targetSettings)`.
+- Auth resolution extracted into reusable static helpers: `resolveAuthMethod()`, `resolveHostKeyValidator()`, `connectWithFallback()`.
+
+## SFTP Browser Pattern
+- `SSHConnection.openSFTPClient()` wraps `client.openSFTP()` from Citadel.
+- `SFTPBrowserView` is a separate window scene ("sftp" WindowGroup, SFTPBrowserContext with sessionID).
+- Opened from terminal toolbar menu. Navigates directories, download/upload files, create/rename/delete.
+- `SFTPPathComponent` provides filename, longname, attributes (size, permissions, times).
+
+## Quick Connect Pattern
+- Search bar in ConnectionManagerView parses `user@host` or `user@host:port` via `quickConnectConfig` computed property.
+- Matching pattern shows "Quick Connect" row above server list.
+- Enter or tap triggers password prompt alert, creates transient ServerConfiguration (not saved), opens terminal window.
