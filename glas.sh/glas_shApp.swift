@@ -24,6 +24,7 @@ struct glas_shApp: App {
         .windowStyle(.plain)
         .defaultSize(width: 1320, height: 760)
         .defaultLaunchBehavior(.presented)
+        .restorationBehavior(.disabled)
         .handlesExternalEvents(matching: ["main"])
         
         // Main terminal windows (can open multiple)
