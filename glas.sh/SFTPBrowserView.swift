@@ -27,15 +27,28 @@ struct SFTPBrowserView: View {
     @State private var showingNewFolderAlert = false
     @State private var newFolderName = ""
     @State private var showingFileImporter = false
-    @State private var showingFileExporter = false
-    @State private var exportFileData: Data?
-    @State private var exportFileName: String?
+    @State private var showingFolderPicker = false
+    @State private var pendingDownloads: [SFTPPathComponent] = []
+    @State private var downloadProgress: Double = 0
+    @State private var downloadTotal: String = ""
     @State private var showingDeleteConfirmation = false
     @State private var entryToDelete: SFTPPathComponent?
     @State private var showingRenameAlert = false
     @State private var entryToRename: SFTPPathComponent?
     @State private var renameNewName = ""
     @State private var operationInProgress: String?
+
+    // Selection
+    @State private var selectedFilenames: Set<String> = []
+    @State private var showingFileInfo: SFTPPathComponent?
+    @State private var showingBatchDeleteConfirmation = false
+
+    // Filtering
+    @State private var showHiddenFiles = false
+    @State private var filterText = ""
+    @State private var isSearchingRemote = false
+    @State private var searchResults: [String] = []
+    @State private var showingSearchResults = false
 
     private var session: TerminalSession? {
         sessionManager.session(for: sessionID)
@@ -45,6 +58,20 @@ struct SFTPBrowserView: View {
         NavigationStack {
             content
                 .navigationTitle(currentPath)
+                .searchable(text: $filterText, prompt: "Filter files...")
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .onSubmit(of: .search) {
+                    if !filterText.isEmpty {
+                        Task { await remoteFind(filterText) }
+                    }
+                }
+                .onChange(of: filterText) { _, newValue in
+                    if newValue.isEmpty {
+                        showingSearchResults = false
+                        searchResults = []
+                    }
+                }
                 .toolbar { toolbarContent }
         }
         .task { await connectAndLoad() }
@@ -55,14 +82,12 @@ struct SFTPBrowserView: View {
         ) { result in
             Task { await handleFileImport(result) }
         }
-        .fileExporter(
-            isPresented: $showingFileExporter,
-            document: exportFileData.map { SFTPExportDocument(data: $0) },
-            contentType: .data,
-            defaultFilename: exportFileName ?? "download"
+        .fileImporter(
+            isPresented: $showingFolderPicker,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
         ) { result in
-            exportFileData = nil
-            exportFileName = nil
+            Task { await handleFolderSelection(result) }
         }
         .alert("New Folder", isPresented: $showingNewFolderAlert) {
             TextField("Folder name", text: $newFolderName)
@@ -105,6 +130,19 @@ struct SFTPBrowserView: View {
                 Text("Are you sure you want to delete \"\(entry.filename)\"? This cannot be undone.")
             }
         }
+        .alert("Delete \(selectedFilenames.count) Items?", isPresented: $showingBatchDeleteConfirmation) {
+            Button("Delete All", role: .destructive) {
+                Task { await deleteSelectedFiles() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Are you sure you want to delete \(selectedFilenames.count) selected items? This cannot be undone.")
+        }
+        .sheet(isPresented: fileInfoBinding) {
+            if let entry = showingFileInfo {
+                fileInfoSheet(for: entry)
+            }
+        }
     }
 
     // MARK: - Content
@@ -139,6 +177,10 @@ struct SFTPBrowserView: View {
 
     private var fileList: some View {
         List {
+            if showingSearchResults {
+                searchResultsSection
+            }
+
             if navigationStack.count > 1 {
                 Button {
                     navigateUp()
@@ -177,27 +219,80 @@ struct SFTPBrowserView: View {
         }
         .listStyle(.plain)
         .overlay(alignment: .bottom) {
-            if let op = operationInProgress {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(op)
-                        .font(.caption)
+            VStack(spacing: 8) {
+                if !selectedFilenames.isEmpty {
+                    selectionBar
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(.ultraThinMaterial, in: Capsule())
-                .padding(.bottom, 12)
+                if let op = operationInProgress {
+                    VStack(spacing: 6) {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(op)
+                                .font(.caption)
+                        }
+                        if downloadProgress > 0 {
+                            ProgressView(value: downloadProgress)
+                                .frame(maxWidth: 240)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
             }
+            .padding(.bottom, 12)
         }
         .refreshable {
             await loadDirectory()
         }
     }
 
+    private var selectionBar: some View {
+        HStack(spacing: 12) {
+            Text("\(selectedFilenames.count) selected")
+                .font(.caption.weight(.semibold))
+
+            Divider().frame(height: 16)
+
+            Button {
+                Task { await downloadSelectedFiles() }
+            } label: {
+                Label("Download", systemImage: "arrow.down.circle.fill")
+                    .font(.caption)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+
+            Button(role: .destructive) {
+                showingBatchDeleteConfirmation = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+                    .font(.caption)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Divider().frame(height: 16)
+
+            Button("Deselect All") {
+                selectedFilenames.removeAll()
+            }
+            .font(.caption)
+            .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial, in: Capsule())
+    }
+
     private var sortedEntries: [SFTPPathComponent] {
         entries
             .filter { $0.filename != "." && $0.filename != ".." }
+            .filter { showHiddenFiles || !$0.filename.hasPrefix(".") }
+            .filter {
+                filterText.isEmpty || $0.filename.localizedCaseInsensitiveContains(filterText)
+            }
             .sorted { lhs, rhs in
                 let lhsIsDir = isDirectory(lhs)
                 let rhsIsDir = isDirectory(rhs)
@@ -211,52 +306,92 @@ struct SFTPBrowserView: View {
     // MARK: - File Row
 
     private func fileRow(for entry: SFTPPathComponent) -> some View {
-        Button {
-            Task { await handleEntryTap(entry) }
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: iconName(for: entry))
+        let isDir = isDirectory(entry)
+        let isSelected = selectedFilenames.contains(entry.filename)
+
+        return HStack(spacing: 12) {
+            if !isDir {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
-                    .foregroundStyle(isDirectory(entry) ? .blue : .secondary)
-                    .frame(width: 28)
+                    .foregroundStyle(isSelected ? Color.blue : Color.gray.opacity(0.4))
+                    .frame(width: 24)
+            }
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(entry.filename)
-                        .font(.body)
-                        .lineLimit(1)
+            Image(systemName: iconName(for: entry))
+                .font(.title3)
+                .foregroundStyle(isDir ? .blue : .secondary)
+                .frame(width: 28)
 
-                    HStack(spacing: 8) {
-                        if let size = entry.attributes.size, !isDirectory(entry) {
-                            Text(formattedFileSize(size))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.filename)
+                    .font(.body)
+                    .lineLimit(1)
 
-                        if let permissions = entry.attributes.permissions {
-                            Text(formattedPermissions(permissions))
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.tertiary)
-                        }
+                HStack(spacing: 8) {
+                    if let size = entry.attributes.size, !isDir {
+                        Text(formattedFileSize(size))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
 
-                        if let time = entry.attributes.accessModificationTime {
-                            Text(formattedDate(time.modificationTime))
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
+                    if let permissions = entry.attributes.permissions {
+                        Text(formattedPermissions(permissions))
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    if let time = entry.attributes.accessModificationTime {
+                        Text(formattedDate(time.modificationTime))
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
                     }
                 }
-
-                Spacer()
-
-                if isDirectory(entry) {
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
             }
-            .contentShape(Rectangle())
+
+            Spacer()
+
+            if isDir {
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else {
+                Button {
+                    showingFileInfo = entry
+                } label: {
+                    Image(systemName: "info.circle")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Info for \(entry.filename)")
+
+                Button {
+                    startDownload(entry)
+                } label: {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.body)
+                        .foregroundStyle(.blue)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Download \(entry.filename)")
+            }
         }
-        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if isDir {
+                Task { await handleEntryTap(entry) }
+            } else {
+                toggleSelection(entry.filename)
+            }
+        }
+    }
+
+    private func toggleSelection(_ filename: String) {
+        if selectedFilenames.contains(filename) {
+            selectedFilenames.remove(filename)
+        } else {
+            selectedFilenames.insert(filename)
+        }
     }
 
     // MARK: - Toolbar
@@ -274,6 +409,26 @@ struct SFTPBrowserView: View {
 
         ToolbarItem(placement: .primaryAction) {
             Menu {
+                let selectableFiles = sortedEntries.filter { !isDirectory($0) }
+
+                if !selectableFiles.isEmpty {
+                    Button {
+                        selectedFilenames = Set(selectableFiles.map(\.filename))
+                    } label: {
+                        Label("Select All", systemImage: "checkmark.circle")
+                    }
+
+                    if !selectedFilenames.isEmpty {
+                        Button {
+                            selectedFilenames.removeAll()
+                        } label: {
+                            Label("Deselect All", systemImage: "circle")
+                        }
+                    }
+
+                    Divider()
+                }
+
                 Button {
                     newFolderName = ""
                     showingNewFolderAlert = true
@@ -285,6 +440,12 @@ struct SFTPBrowserView: View {
                     showingFileImporter = true
                 } label: {
                     Label("Upload File", systemImage: "square.and.arrow.up")
+                }
+
+                Divider()
+
+                Toggle(isOn: $showHiddenFiles) {
+                    Label("Show Hidden Files", systemImage: "eye")
                 }
 
                 Divider()
@@ -382,6 +543,7 @@ struct SFTPBrowserView: View {
 
     private func handleEntryTap(_ entry: SFTPPathComponent) async {
         if isDirectory(entry) {
+            selectedFilenames.removeAll()
             let newPath: String
             if currentPath.hasSuffix("/") {
                 newPath = currentPath + entry.filename
@@ -389,8 +551,6 @@ struct SFTPBrowserView: View {
                 newPath = currentPath + "/" + entry.filename
             }
             await navigateTo(newPath)
-        } else {
-            await downloadFile(entry)
         }
     }
 
@@ -404,12 +564,57 @@ struct SFTPBrowserView: View {
         guard navigationStack.count > 1 else { return }
         navigationStack.removeLast()
         currentPath = navigationStack.last ?? "/"
+        selectedFilenames.removeAll()
         Task { await loadDirectory() }
     }
 
     // MARK: - File Operations
 
-    private func downloadFile(_ entry: SFTPPathComponent) async {
+    private func downloadSelectedFiles() async {
+        let filesToDownload = sortedEntries.filter {
+            !isDirectory($0) && selectedFilenames.contains($0.filename)
+        }
+        guard !filesToDownload.isEmpty else { return }
+        pendingDownloads = filesToDownload
+        showingFolderPicker = true
+    }
+
+    private func startDownload(_ entry: SFTPPathComponent) {
+        pendingDownloads = [entry]
+        showingFolderPicker = true
+    }
+
+    private func deleteSelectedFiles() async {
+        let filesToDelete = sortedEntries.filter {
+            selectedFilenames.contains($0.filename)
+        }
+        for entry in filesToDelete {
+            await deleteEntry(entry)
+        }
+        selectedFilenames.removeAll()
+    }
+
+    private func handleFolderSelection(_ result: Result<[URL], Error>) async {
+        guard case .success(let urls) = result,
+              let folderURL = urls.first else { return }
+
+        guard folderURL.startAccessingSecurityScopedResource() else {
+            error = "Cannot access the selected folder."
+            return
+        }
+        defer { folderURL.stopAccessingSecurityScopedResource() }
+
+        let downloads = pendingDownloads
+        pendingDownloads = []
+
+        for (index, entry) in downloads.enumerated() {
+            await downloadFileToFolder(entry, folder: folderURL, current: index + 1, total: downloads.count)
+        }
+
+        selectedFilenames.removeAll()
+    }
+
+    private func downloadFileToFolder(_ entry: SFTPPathComponent, folder: URL, current: Int, total: Int) async {
         guard let client = sftpClient else { return }
 
         let filePath: String
@@ -419,21 +624,49 @@ struct SFTPBrowserView: View {
             filePath = currentPath + "/" + entry.filename
         }
 
-        operationInProgress = "Downloading \(entry.filename)..."
-        defer { operationInProgress = nil }
+        let fileSize = entry.attributes.size ?? 0
+        let fileSizeText = fileSize > 0 ? " (\(formattedFileSize(fileSize)))" : ""
+        let prefix = total > 1 ? "[\(current)/\(total)] " : ""
+        operationInProgress = "\(prefix)Downloading \(entry.filename)\(fileSizeText)..."
+        downloadProgress = 0
+        downloadTotal = formattedFileSize(fileSize)
 
         do {
             let file = try await client.openFile(filePath: filePath, flags: .read)
-            let buffer = try await file.readAll()
+
+            let chunkSize: UInt32 = 32768
+            var offset: UInt64 = 0
+            var allData = Data()
+
+            if fileSize > 0 {
+                allData.reserveCapacity(Int(fileSize))
+            }
+
+            while true {
+                let chunk = try await file.read(from: offset, length: chunkSize)
+                let bytes = chunk.readableBytes
+                if bytes == 0 { break }
+
+                allData.append(Data(buffer: chunk))
+                offset += UInt64(bytes)
+
+                if fileSize > 0 {
+                    downloadProgress = Double(offset) / Double(fileSize)
+                    operationInProgress = "\(prefix)Downloading \(entry.filename) — \(Int(downloadProgress * 100))%"
+                }
+            }
+
             try await file.close()
 
-            let data = Data(buffer: buffer)
-            exportFileName = entry.filename
-            exportFileData = data
-            showingFileExporter = true
+            let destinationURL = folder.appendingPathComponent(entry.filename)
+            try allData.write(to: destinationURL)
+
         } catch {
-            self.error = "Download failed: \(error.localizedDescription)"
+            self.error = "Download of \(entry.filename) failed: \(error.localizedDescription)"
         }
+
+        operationInProgress = nil
+        downloadProgress = 0
     }
 
     private func handleFileImport(_ result: Result<[URL], Error>) async {
@@ -563,6 +796,78 @@ struct SFTPBrowserView: View {
         }
     }
 
+    // MARK: - Remote Search
+
+    private var searchResultsSection: some View {
+        Section {
+            if isSearchingRemote {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Searching server...")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            } else if searchResults.isEmpty {
+                Text("No results found")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(searchResults, id: \.self) { path in
+                    Button {
+                        navigateToSearchResult(path)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .frame(width: 28)
+                            Text(path)
+                                .font(.subheadline.monospaced())
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        } header: {
+            Text("Search Results")
+        }
+    }
+
+    private func remoteFind(_ query: String) async {
+        guard let session = session,
+              let sshConnection = session.getSSHConnection() else { return }
+
+        isSearchingRemote = true
+        showingSearchResults = true
+        searchResults = []
+
+        do {
+            let escapedPath = currentPath.replacingOccurrences(of: "'", with: "'\\''")
+            let escapedQuery = query.replacingOccurrences(of: "'", with: "'\\''")
+            let command = "find '\(escapedPath)' -maxdepth 3 -iname '*\(escapedQuery)*' 2>/dev/null | head -50"
+            let output = try await sshConnection.executeRemoteCommand(command)
+            searchResults = output
+                .components(separatedBy: "\n")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        } catch {
+            self.error = "Search failed: \(error.localizedDescription)"
+        }
+
+        isSearchingRemote = false
+    }
+
+    private func navigateToSearchResult(_ path: String) {
+        let parentPath = (path as NSString).deletingLastPathComponent
+        guard !parentPath.isEmpty else { return }
+        showingSearchResults = false
+        searchResults = []
+        filterText = ""
+        Task { await navigateTo(parentPath) }
+    }
+
     // MARK: - Helpers
 
     private func isDirectory(_ entry: SFTPPathComponent) -> Bool {
@@ -646,24 +951,61 @@ struct SFTPBrowserView: View {
         let parts = components[1...index]
         return "/" + parts.joined(separator: "/")
     }
+
+    private var fileInfoBinding: Binding<Bool> {
+        Binding(
+            get: { showingFileInfo != nil },
+            set: { if !$0 { showingFileInfo = nil } }
+        )
+    }
+
+    private func fileInfoSheet(for entry: SFTPPathComponent) -> some View {
+        NavigationStack {
+            List {
+                Section("File") {
+                    LabeledContent("Name", value: entry.filename)
+                    if let size = entry.attributes.size {
+                        LabeledContent("Size", value: formattedFileSize(size))
+                    }
+                    let ext = (entry.filename as NSString).pathExtension
+                    if !ext.isEmpty {
+                        LabeledContent("Type", value: ext.uppercased())
+                    }
+                }
+
+                Section("Attributes") {
+                    if let permissions = entry.attributes.permissions {
+                        LabeledContent("Permissions", value: formattedPermissions(permissions))
+                    }
+                    if let uidGid = entry.attributes.uidgid {
+                        LabeledContent("Owner (UID)", value: "\(uidGid.userId)")
+                        LabeledContent("Group (GID)", value: "\(uidGid.groupId)")
+                    }
+                }
+
+                Section("Timestamps") {
+                    if let time = entry.attributes.accessModificationTime {
+                        LabeledContent("Modified", value: formattedDate(time.modificationTime))
+                        LabeledContent("Accessed", value: formattedDate(time.accessTime))
+                    }
+                }
+
+                if !entry.longname.isEmpty {
+                    Section("Raw Listing") {
+                        Text(entry.longname)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("File Info")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { showingFileInfo = nil }
+                }
+            }
+        }
+        .frame(width: 420, height: 400)
+    }
 }
 
-// MARK: - File Export Document
-
-struct SFTPExportDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.data] }
-
-    let data: Data
-
-    init(data: Data) {
-        self.data = data
-    }
-
-    init(configuration: ReadConfiguration) throws {
-        self.data = configuration.file.regularFileContents ?? Data()
-    }
-
-    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        FileWrapper(regularFileWithContents: data)
-    }
-}

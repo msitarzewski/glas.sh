@@ -43,8 +43,8 @@ struct glas_shApp: App {
         }
         .windowStyle(.plain)
         .defaultSize(width: 1200, height: 800)
-        .restorationBehavior(.disabled)
-        
+        .restorationBehavior(.automatic)
+
         // HTML Preview window
         WindowGroup(id: "html-preview", for: HTMLPreviewContext.self) { $context in
             if let context = context {
@@ -77,7 +77,7 @@ struct glas_shApp: App {
         }
         .windowStyle(.plain)
         .defaultSize(width: 700, height: 500)
-        .restorationBehavior(.disabled)
+        .restorationBehavior(.automatic)
 
         // Port forwarding manager
         Window("Port Forwarding", id: "port-forwarding") {
@@ -103,6 +103,7 @@ struct MainBootstrapView: View {
     @Environment(SessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openWindow) private var openWindow
     @State private var didBootstrap = false
 
     var body: some View {
@@ -117,6 +118,23 @@ struct MainBootstrapView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {
                 sessionManager.closeAllSessions()
+            }
+        }
+        .onOpenURL { url in
+            handleDeepLink(url)
+        }
+    }
+
+    private func handleDeepLink(_ url: URL) {
+        guard url.scheme == "glassh", url.host == "connect" else { return }
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let serverIDString = components.queryItems?.first(where: { $0.name == "serverID" })?.value,
+              let serverID = UUID(uuidString: serverIDString) else { return }
+
+        Task { @MainActor in
+            let session = await sessionManager.createSessionByServerID(serverID)
+            if let session, session.state == .connected {
+                openWindow(id: "terminal", value: session.id)
             }
         }
     }

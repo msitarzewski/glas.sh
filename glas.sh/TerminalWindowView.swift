@@ -9,7 +9,6 @@ import SwiftUI
 #if canImport(UIKit)
 import UIKit
 #endif
-import AudioToolbox
 import RealityKitContent
 
 struct TerminalWindowView: View {
@@ -24,9 +23,13 @@ struct TerminalWindowView: View {
     @State private var showingCloseConfirmation = false
     @State private var showVisualBell = false
     @State private var showingSnippetPicker = false
+    @State private var showingAIAssistant = false
+    @State private var showingErrorCard = false
+    @State private var aiAssistant = AIAssistant()
     @State private var terminalSettingsTab: TerminalSettingsModalTab = .terminal
     @StateObject private var terminalHostModel = SwiftTermHostModel()
     @State private var didRunCloseGooseCall = false
+    @State private var errorCheckTask: Task<Void, Never>?
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -54,6 +57,16 @@ struct TerminalWindowView: View {
         }
         .sheet(isPresented: $showingSnippetPicker) {
             snippetPicker
+        }
+        .sheet(isPresented: $showingAIAssistant) {
+            AIAssistantView(
+                aiAssistant: aiAssistant,
+                host: session.server.host,
+                username: session.server.username,
+                onRunCommand: { command in
+                    session.sendCommand(command)
+                }
+            )
         }
         .alert("Close Connection?", isPresented: $showingCloseConfirmation) {
             Button("Disconnect", role: .destructive) {
@@ -143,13 +156,12 @@ struct TerminalWindowView: View {
                 },
                 onBell: {
                     guard settingsManager.bellEnabled else { return }
+                    TerminalAudioManager.shared.playBell()
                     if settingsManager.visualBell {
                         withAnimation(.easeInOut(duration: 0.1)) { showVisualBell = true }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                             withAnimation(.easeInOut(duration: 0.1)) { showVisualBell = false }
                         }
-                    } else {
-                        AudioServicesPlaySystemSound(1007)
                     }
                 }
             )
@@ -178,6 +190,26 @@ struct TerminalWindowView: View {
                 let data = chunks.reduce(into: Data()) { $0.append($1) }
                 terminalHostModel.ingest(data: data, nonce: nonce)
             }
+
+            // Debounced error detection for AI explainer
+            if aiAssistant.isAvailable {
+                errorCheckTask?.cancel()
+                errorCheckTask = Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(800))
+                    guard !Task.isCancelled else { return }
+                    let lines = terminalHostModel.getVisibleText(lastNLines: 10)
+                    if detectErrorInTerminalOutput(lines) {
+                        await aiAssistant.explainError(
+                            terminalContext: lines,
+                            host: session.server.host,
+                            username: session.server.username
+                        )
+                        if aiAssistant.lastError != nil {
+                            withAnimation { showingErrorCard = true }
+                        }
+                    }
+                }
+            }
         }
         .overlay(alignment: .top) {
             if showingSearchOverlay {
@@ -185,6 +217,24 @@ struct TerminalWindowView: View {
                     .padding(.top, 14)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
+        }
+        .overlay(alignment: .bottom) {
+            if showingErrorCard, let errorInfo = aiAssistant.lastError {
+                AIErrorCard(
+                    error: errorInfo,
+                    onRunFix: { fix in
+                        session.sendCommand(fix)
+                    },
+                    onDismiss: {
+                        withAnimation { showingErrorCard = false }
+                    }
+                )
+                .padding(.bottom, 14)
+                .padding(.horizontal, 14)
+            }
+        }
+        .onAppear {
+            aiAssistant.checkAvailability()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -218,35 +268,37 @@ struct TerminalWindowView: View {
 
     @ViewBuilder
     private var terminalDisplayBackground: some View {
-        if effectiveBlurBackground {
-            Rectangle()
-                .fill(.ultraThinMaterial)
-                .opacity(effectiveWindowOpacity)
-        } else {
-            let bg = rgbaComponents(settingsManager.currentTheme.background.color)
-            Rectangle()
-                .fill(Color(red: bg.red, green: bg.green, blue: bg.blue, opacity: effectiveWindowOpacity))
-        }
+        // The window-level .ultraThinMaterial (line 42) blurs the passthrough.
+        // This background just provides the theme color overlay.
+        // Lower glassAmount = more solid color. Higher = more see-through to the
+        // window's frosted glass blur underneath.
+        let bg = rgbaComponents(settingsManager.currentTheme.background.color)
+        let glassAmount = effectiveBlurBackground
+
+        Rectangle()
+            .fill(Color(red: bg.red, green: bg.green, blue: bg.blue))
+            .opacity(effectiveWindowOpacity * (1.0 - glassAmount))
     }
 
     private var tintColor: Color? {
-        switch effectiveGlassTint {
-        case "Blue":
-            return .blue
-        case "Purple":
-            return .purple
-        case "Green":
-            return .green
-        default:
-            return nil
+        let tint = effectiveGlassTint
+        if tint == "None" || tint.isEmpty { return nil }
+        // Legacy named colors
+        switch tint {
+        case "Blue": return .blue
+        case "Purple": return .purple
+        case "Green": return .green
+        default: break
         }
+        // Hex color
+        return Color(hex: tint)
     }
 
     private var effectiveWindowOpacity: Double {
         settingsManager.sessionOverride(for: session.id)?.windowOpacity ?? settingsManager.windowOpacity
     }
 
-    private var effectiveBlurBackground: Bool {
+    private var effectiveBlurBackground: Double {
         settingsManager.sessionOverride(for: session.id)?.blurBackground ?? settingsManager.blurBackground
     }
 
@@ -313,6 +365,28 @@ struct TerminalWindowView: View {
             .accessibilityLabel("Connections")
             .help("Connections")
 
+            if aiAssistant.isAvailable {
+                Button {
+                    showingAIAssistant = true
+                } label: {
+                    Image(systemName: "sparkles")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("AI Assistant")
+                .help("AI Assistant")
+            }
+
+            Button {
+                let context = SFTPBrowserContext(sessionID: session.id)
+                openWindow(id: "sftp", value: context)
+            } label: {
+                Image(systemName: "folder.fill")
+            }
+            .buttonStyle(.borderless)
+            .disabled(session.state != .connected)
+            .accessibilityLabel("SFTP Browser")
+            .help("SFTP Browser")
+
             Menu {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
@@ -337,14 +411,6 @@ struct TerminalWindowView: View {
                 } label: {
                     Label("HTML Preview", systemImage: "safari")
                 }
-
-                Button {
-                    let context = SFTPBrowserContext(sessionID: session.id)
-                    openWindow(id: "sftp", value: context)
-                } label: {
-                    Label("SFTP Browser", systemImage: "folder.fill")
-                }
-                .disabled(session.state != .connected)
 
                 Button {
                     showingSnippetPicker = true
@@ -560,17 +626,26 @@ struct TerminalOverridesSettingsView: View {
                         .frame(width: 44, alignment: .trailing)
                 }
 
-                Toggle(
-                    "Blur background",
-                    isOn: Binding(
-                        get: { sessionOverride.blurBackground ?? settings.blurBackground },
-                        set: { newValue in
-                            settings.updateSessionOverride(for: session.id) { override in
-                                override.blurBackground = newValue
+                HStack {
+                    Text("Glass material")
+                    Spacer()
+                    Slider(
+                        value: Binding(
+                            get: { sessionOverride.blurBackground ?? settings.blurBackground },
+                            set: { newValue in
+                                settings.updateSessionOverride(for: session.id) { override in
+                                    override.blurBackground = newValue
+                                }
                             }
-                        }
+                        ),
+                        in: 0.0...1.0
                     )
-                )
+                    .frame(maxWidth: 220)
+                    Text("\(Int((sessionOverride.blurBackground ?? settings.blurBackground) * 100))%")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, alignment: .trailing)
+                }
 
                 Toggle(
                     "Interactive glass effects",
@@ -584,9 +659,8 @@ struct TerminalOverridesSettingsView: View {
                     )
                 )
 
-                Picker(
-                    "Glass tint",
-                    selection: Binding(
+                GlassTintPicker(
+                    value: Binding(
                         get: { sessionOverride.glassTint ?? settings.glassTint },
                         set: { newValue in
                             settings.updateSessionOverride(for: session.id) { override in
@@ -594,12 +668,7 @@ struct TerminalOverridesSettingsView: View {
                             }
                         }
                     )
-                ) {
-                    Text("None").tag("None")
-                    Text("Blue").tag("Blue")
-                    Text("Purple").tag("Purple")
-                    Text("Green").tag("Green")
-                }
+                )
 
                 Button("Reset Overrides", role: .destructive) {
                     settings.updateSessionOverride(for: session.id) { override in
@@ -768,13 +837,122 @@ struct AddSessionPortForwardView: View {
     }
 }
 
+// MARK: - Glass Tint Picker
+
+struct GlassTintPicker: View {
+    @Binding var value: String
+
+    private static let presets: [(String, Color)] = [
+        ("None", .clear),
+        ("#007AFF", .blue),
+        ("#AF52DE", .purple),
+        ("#34C759", .green),
+        ("#FF9500", .orange),
+        ("#FF2D55", .pink),
+        ("#5AC8FA", .cyan),
+        ("#FFD60A", .yellow),
+    ]
+
+    private var colorBinding: Binding<Color> {
+        Binding(
+            get: {
+                if value == "None" || value.isEmpty { return .blue }
+                return Color(hex: value) ?? .blue
+            },
+            set: { newColor in
+                value = newColor.hexString
+            }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Glass Tint")
+                Spacer()
+                if value != "None" && !value.isEmpty {
+                    Button("Clear") { value = "None" }
+                        .font(.caption)
+                }
+            }
+
+            HStack(spacing: 8) {
+                ForEach(Self.presets, id: \.0) { hex, color in
+                    Button {
+                        value = hex
+                    } label: {
+                        if hex == "None" {
+                            Circle()
+                                .strokeBorder(.secondary, lineWidth: 1.5)
+                                .frame(width: 28, height: 28)
+                                .overlay {
+                                    Image(systemName: "xmark")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                        } else {
+                            Circle()
+                                .fill(color)
+                                .frame(width: 28, height: 28)
+                                .overlay {
+                                    if value == hex {
+                                        Image(systemName: "checkmark")
+                                            .font(.caption2.bold())
+                                            .foregroundStyle(.white)
+                                    }
+                                }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(hex == "None" ? "No tint" : hex)
+                }
+
+                Divider().frame(height: 24)
+
+                ColorPicker("", selection: colorBinding, supportsOpacity: false)
+                    .labelsHidden()
+                    .frame(width: 28, height: 28)
+                    .accessibilityLabel("Custom tint color")
+            }
+        }
+    }
+}
+
+// MARK: - Color Hex Helpers
+
+extension Color {
+    init?(hex: String) {
+        var h = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if h.hasPrefix("#") { h.removeFirst() }
+        guard h.count == 6, let int = UInt64(h, radix: 16) else { return nil }
+        let r = Double((int >> 16) & 0xFF) / 255
+        let g = Double((int >> 8) & 0xFF) / 255
+        let b = Double(int & 0xFF) / 255
+        self.init(red: r, green: g, blue: b)
+    }
+
+    var hexString: String {
+        #if canImport(UIKit)
+        let uiColor = UIColor(self)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        uiColor.getRed(&r, green: &g, blue: &b, alpha: &a)
+        let ri = Int(round(r * 255))
+        let gi = Int(round(g * 255))
+        let bi = Int(round(b * 255))
+        return String(format: "#%02X%02X%02X", ri, gi, bi)
+        #else
+        return "#007AFF"
+        #endif
+    }
+}
+
 #Preview {
     let session = TerminalSession(server: ServerConfiguration(
         name: "Development Server",
         host: "dev.example.com",
         username: "developer"
     ))
-    
+
     return TerminalWindowView(session: session)
         .environment(SessionManager())
         .environment(SettingsManager())

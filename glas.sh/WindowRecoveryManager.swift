@@ -44,7 +44,8 @@ class WindowRecoveryManager {
 
 struct TerminalSessionOverride: Codable, Hashable {
     var windowOpacity: Double?
-    var blurBackground: Bool?
+    var blurBackground: Double?
+    var etchedBackground: Bool?
     var interactiveGlassEffects: Bool?
     var glassTint: String?
 }

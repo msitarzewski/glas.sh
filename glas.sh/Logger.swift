@@ -12,4 +12,6 @@ extension Logger {
     static let keychain = Logger(subsystem: "sh.glas", category: "keychain")
     static let settings = Logger(subsystem: "sh.glas", category: "settings")
     static let servers = Logger(subsystem: "sh.glas", category: "servers")
+    static let ai = Logger(subsystem: "sh.glas", category: "ai")
+    static let audio = Logger(subsystem: "sh.glas", category: "audio")
 }

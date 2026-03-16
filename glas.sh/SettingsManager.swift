@@ -35,13 +35,14 @@ class SettingsManager {
     var cursorStyle: String = "Block"
     var blinkingCursor: Bool = true
     var windowOpacity: Double = 0.95
-    var blurBackground: Bool = true
+    var blurBackground: Double = 1.0
     var interactiveGlassEffects: Bool = true
     var glassTint: String = "None"
     var showSidebarByDefault: Bool = true
     var showInfoPanelByDefault: Bool = false
     var sidebarPosition: String = "Left"
     var sessionOverrides: [String: TerminalSessionOverride] = [:]
+    var layoutPresets: [LayoutPreset] = []
     var secretMigrationStatus: SecretStoreMigrationStatus?
     private var hasLoadedPersistentState = false
 
@@ -88,7 +89,13 @@ class SettingsManager {
             windowOpacity = UserDefaults.standard.double(forKey: UserDefaultsKeys.windowOpacity)
         }
         if UserDefaults.standard.object(forKey: UserDefaultsKeys.blurBackground) != nil {
-            blurBackground = UserDefaults.standard.bool(forKey: UserDefaultsKeys.blurBackground)
+            let saved = UserDefaults.standard.double(forKey: UserDefaultsKeys.blurBackground)
+            // Migrate old bool (true=1.0) to slider value
+            if saved == 1.0 && UserDefaults.standard.object(forKey: UserDefaultsKeys.blurBackground) is Bool {
+                blurBackground = 0.5
+            } else {
+                blurBackground = saved
+            }
         }
         if UserDefaults.standard.object(forKey: UserDefaultsKeys.interactiveGlassEffects) != nil {
             interactiveGlassEffects = UserDefaults.standard.bool(forKey: UserDefaultsKeys.interactiveGlassEffects)
@@ -116,6 +123,7 @@ class SettingsManager {
 
         loadTheme()
         loadSnippets()
+        loadLayoutPresets()
         loadTrustedHostKeys()
         loadSSHKeys()
         KeychainManager.runMigrationsIfNeeded()
@@ -467,6 +475,47 @@ class SettingsManager {
             snippets[index].lastUsed = Date()
             snippets[index].useCount += 1
             saveSnippets()
+        }
+    }
+
+    // MARK: - Layout Presets
+
+    func loadLayoutPresets() {
+        guard let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.layoutPresets) else {
+            layoutPresets = []
+            return
+        }
+        do {
+            layoutPresets = try JSONDecoder().decode([LayoutPreset].self, from: data)
+        } catch {
+            Logger.settings.error("Failed to load layout presets: \(error)")
+            layoutPresets = []
+        }
+    }
+
+    func saveLayoutPresets() {
+        do {
+            let data = try JSONEncoder().encode(layoutPresets)
+            UserDefaults.standard.set(data, forKey: UserDefaultsKeys.layoutPresets)
+        } catch {
+            Logger.settings.error("Failed to save layout presets: \(error)")
+        }
+    }
+
+    func addLayoutPreset(_ preset: LayoutPreset) {
+        layoutPresets.append(preset)
+        saveLayoutPresets()
+    }
+
+    func deleteLayoutPreset(_ preset: LayoutPreset) {
+        layoutPresets.removeAll { $0.id == preset.id }
+        saveLayoutPresets()
+    }
+
+    func updateLayoutPresetLastUsed(_ presetID: UUID) {
+        if let index = layoutPresets.firstIndex(where: { $0.id == presetID }) {
+            layoutPresets[index].lastUsed = Date()
+            saveLayoutPresets()
         }
     }
 }

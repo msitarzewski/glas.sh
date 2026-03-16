@@ -45,6 +45,15 @@ public final class SwiftTermHostModel: ObservableObject {
         terminalView?.getTerminal().isCurrentBufferAlternate ?? false
     }
 
+    public func getVisibleText(lastNLines: Int = 20) -> [String] {
+        guard let terminal = terminalView?.getTerminal() else { return [] }
+        let buffer = terminal.getBufferAsData()
+        let fullText = String(data: buffer, encoding: .utf8) ?? ""
+        let allLines = fullText.components(separatedBy: "\n")
+        let nonEmpty = allLines.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return Array(nonEmpty.suffix(lastNLines))
+    }
+
     public func ingest(data: Data, nonce: UInt64) {
         guard nonce != lastNonce else { return }
         lastNonce = nonce

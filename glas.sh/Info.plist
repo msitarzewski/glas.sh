@@ -11,5 +11,14 @@
 		<key>UISceneConfigurations</key>
 		<dict/>
 	</dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>glassh</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

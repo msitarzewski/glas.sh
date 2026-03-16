@@ -44,6 +44,11 @@ class SessionManager {
         return session
     }
 
+    func createSessionByServerID(_ serverID: UUID) async -> TerminalSession? {
+        guard let server = serverManager.server(for: serverID) else { return nil }
+        return await createSession(for: server)
+    }
+
     func session(for id: UUID) -> TerminalSession? {
         sessions.first { $0.id == id }
     }

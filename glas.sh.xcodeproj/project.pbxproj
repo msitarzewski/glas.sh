@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		4C2451562E71897700F37CC4 /* RealityKitContent in Frameworks */ = {isa = PBXBuildFile; productRef = 4C2451552E71897700F37CC4 /* RealityKitContent */; };
+		AA000001000000000000000D /* glasWidgets.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = AA000001000000000000000E /* glasWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		D1A2B3C4E5F6789000AABB01 /* GlasSecretStore in Frameworks */ = {isa = PBXBuildFile; productRef = D1A2B3C4E5F6789000AABB02 /* GlasSecretStore */; };
 /* End PBXBuildFile section */
 
@@ -19,12 +20,34 @@
 			remoteGlobalIDString = 4C24514F2E71897700F37CC4;
 			remoteInfo = glas.sh;
 		};
+		AA00000100000000000000A0 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4C2451482E71897700F37CC4 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA00000100000000000000A3;
+			remoteInfo = glasWidgets;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		AA00000100000000000000C0 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				AA000001000000000000000D /* glasWidgets.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		4C2451502E71897700F37CC4 /* glas.sh.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = glas.sh.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4C2451542E71897700F37CC4 /* RealityKitContent */ = {isa = PBXFileReference; lastKnownFileType = wrapper; path = RealityKitContent; sourceTree = "<group>"; };
 		4C2451622E71897900F37CC4 /* glas.shTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = glas.shTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA000001000000000000000E /* glasWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = glasWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -51,7 +74,25 @@
 			path = glas.shTests;
 			sourceTree = "<group>";
 		};
+		AA00000100000000000000A2 /* glasWidgets */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				AA00000100000000000000EE /* Exceptions for "glasWidgets" folder in "glasWidgets" target */,
+			);
+			path = glasWidgets;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section (glasWidgets) */
+		AA00000100000000000000EE /* Exceptions for "glasWidgets" folder in "glasWidgets" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = AA00000100000000000000A3 /* glasWidgets */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section (glasWidgets) */
 
 /* Begin PBXFrameworksBuildPhase section */
 		4C24514D2E71897700F37CC4 /* Frameworks */ = {
@@ -70,6 +111,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA00000100000000000000A5 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -78,6 +126,7 @@
 			children = (
 				4C2451522E71897700F37CC4 /* glas.sh */,
 				4C2451532E71897700F37CC4 /* Packages */,
+				AA00000100000000000000A2 /* glasWidgets */,
 				4C2451652E71897900F37CC4 /* glas.shTests */,
 				4C2451512E71897700F37CC4 /* Products */,
 			);
@@ -88,6 +137,7 @@
 			children = (
 				4C2451502E71897700F37CC4 /* glas.sh.app */,
 				4C2451622E71897900F37CC4 /* glas.shTests.xctest */,
+				AA000001000000000000000E /* glasWidgets.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -110,10 +160,12 @@
 				4C24514C2E71897700F37CC4 /* Sources */,
 				4C24514D2E71897700F37CC4 /* Frameworks */,
 				4C24514E2E71897700F37CC4 /* Resources */,
+				AA00000100000000000000C0 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				AA00000100000000000000B0 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				4C2451522E71897700F37CC4 /* glas.sh */,
@@ -150,6 +202,28 @@
 			productReference = 4C2451622E71897900F37CC4 /* glas.shTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		AA00000100000000000000A3 /* glasWidgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA00000100000000000000A9 /* Build configuration list for PBXNativeTarget "glasWidgets" */;
+			buildPhases = (
+				AA00000100000000000000A4 /* Sources */,
+				AA00000100000000000000A5 /* Frameworks */,
+				AA00000100000000000000A6 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				AA00000100000000000000A2 /* glasWidgets */,
+			);
+			name = glasWidgets;
+			packageProductDependencies = (
+			);
+			productName = glasWidgets;
+			productReference = AA000001000000000000000E /* glasWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -166,6 +240,9 @@
 					4C2451612E71897900F37CC4 = {
 						CreatedOnToolsVersion = 26.0;
 						TestTargetID = 4C24514F2E71897700F37CC4;
+					};
+					AA00000100000000000000A3 = {
+						CreatedOnToolsVersion = 26.0;
 					};
 				};
 			};
@@ -188,6 +265,7 @@
 			targets = (
 				4C24514F2E71897700F37CC4 /* glas.sh */,
 				4C2451612E71897900F37CC4 /* glas.shTests */,
+				AA00000100000000000000A3 /* glasWidgets */,
 			);
 		};
 /* End PBXProject section */
@@ -201,6 +279,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		4C2451602E71897900F37CC4 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA00000100000000000000A6 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -224,6 +309,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA00000100000000000000A4 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -231,6 +323,11 @@
 			isa = PBXTargetDependency;
 			target = 4C24514F2E71897700F37CC4 /* glas.sh */;
 			targetProxy = 4C2451632E71897900F37CC4 /* PBXContainerItemProxy */;
+		};
+		AA00000100000000000000B0 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA00000100000000000000A3 /* glasWidgets */;
+			targetProxy = AA00000100000000000000A0 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -240,7 +337,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = "glas.sh/glas.sh.entitlements";
+				CODE_SIGN_ENTITLEMENTS = glas.sh/glas.sh.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
@@ -270,7 +367,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = "glas.sh/glas.sh.entitlements";
+				CODE_SIGN_ENTITLEMENTS = glas.sh/glas.sh.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
@@ -462,6 +559,64 @@
 			};
 			name = Release;
 		};
+		AA00000100000000000000A7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = glasWidgets/glasWidgets.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = glasWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = glasWidgets;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.app.glasWidgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 7;
+				XROS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Debug;
+		};
+		AA00000100000000000000A8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = glasWidgets/glasWidgets.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = glasWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = glasWidgets;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.app.glasWidgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 7;
+				XROS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -488,6 +643,15 @@
 			buildConfigurations = (
 				4C24516F2E71897900F37CC4 /* Debug */,
 				4C2451702E71897900F37CC4 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA00000100000000000000A9 /* Build configuration list for PBXNativeTarget "glasWidgets" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA00000100000000000000A7 /* Debug */,
+				AA00000100000000000000A8 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

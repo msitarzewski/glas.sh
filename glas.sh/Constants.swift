@@ -22,6 +22,7 @@ enum UserDefaultsKeys {
     static let blurBackground = "blurBackground"
     static let interactiveGlassEffects = "interactiveGlassEffects"
     static let glassTint = "glassTint"
+    static let etchedBackground = "etchedBackground"
     static let showSidebarByDefault = "showSidebarByDefault"
     static let showInfoPanelByDefault = "showInfoPanelByDefault"
     static let sidebarPosition = "sidebarPosition"
@@ -30,6 +31,7 @@ enum UserDefaultsKeys {
     static let sshKeys = "sshKeys"
     static let theme = "theme"
     static let snippets = "snippets"
+    static let layoutPresets = "layoutPresets"
 }
 
 enum SharedDefaults {
