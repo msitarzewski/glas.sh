@@ -81,10 +81,20 @@
   - in-window session settings modal with local tabs
   - terminal-pane-only tint/translucency behavior (avoids text tint washout).
 
+- Sprint 2 "Spatial Leap" implemented (2026-03-16):
+  - **AI Command Assistant (2A)**: `AIAssistant.swift` with `@Generable` structs (`CommandSuggestion`, `ErrorExplanation`), `AIAssistantView` sheet, sparkles button in bottom ornament. Gated behind `#if canImport(FoundationModels)`.
+  - **AI Error Explainer (2B)**: `AIErrorCard` floating overlay, debounced error detection on terminal output via `detectErrorInTerminalOutput()`, auto-triggers `explainError()`. `getVisibleText(lastNLines:)` added to `SwiftTermHostModel`.
+  - **Spatial Audio (2C)**: `TerminalAudioManager.swift` with `AVAudioPlayer`, `.ambient` audio session (mixes with other audio). VT100 bell sound from `ubuntuperonista/terminal_beeps`. Audio always plays when bell enabled, visual flash is additive.
+  - **Persistent Layouts (2D)**: `.restorationBehavior(.automatic)` on terminal + SFTP windows. `LayoutPreset` model, CRUD in `SettingsManager`, layout menu (save/open/delete) in `ConnectionManagerView` toolbar.
+  - **Spatial Widgets (2E)**: `glasWidgets/` extension target added to pbxproj. `ServerHealthWidget` with small/medium views, `glassh://` URL scheme deep links, `.onOpenURL` handler, `createSessionByServerID()`. WidgetCenter reload calls deferred until target fully validated.
+  - **SFTP Browser enhancements**: Tap-to-select with checkboxes, batch download/delete, selection bar, download-after-folder-pick flow with chunked 32KB progress, file info sheet, hidden files toggle, client-side filter, remote `find` via SSH (`executeRemoteCommand()` added to `SSHConnection`).
+  - **UX refinements**: Glass tint replaced with ColorPicker + preset swatches (hex string storage), "Glass material" slider (theme color opacity over window material), AI + SFTP buttons promoted to bottom ornament icon row.
+  - **Keepalive fix**: `missedKeepAlives` counter was incrementing on every send (not on failure), causing false timeout disconnects after ~3 min idle. Fixed to only increment on `sendKeepAlive()` failure, reset on success.
+
 ## Open Areas
-- Sprint 2 (Tier 2 — Spatial Leap): AI command assistant (Foundation Models), error explainer, spatial audio alerts, persistent layouts, spatial widgets.
 - Sprint 3 (Tier 3 — Command Center): Tailscale integration, session recording + AI summary, immersive focus environment, notification overlays, SharePlay.
 - Port forwarding: Remote (-R) and dynamic/SOCKS (-D) still deferred.
 - Jump hosts: Multi-hop chains deferred (single hop implemented).
 - Follow-up hardening: true Secure Enclave signing semantics.
 - glassdb follow-up: read servers/keys from shared App Group suite.
+- visionOS blur: user wants true gaussian blur of passthrough (like macOS window transparency blur), not system material frost. No visionOS API exists for custom passthrough blur — revisit when/if Apple adds one.

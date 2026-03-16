@@ -434,27 +434,29 @@ struct AppearanceSettingsView: View {
                     settings.saveSettings()
                 }
                 
-                Toggle("Blur background", isOn: $settings.blurBackground)
-                    .onChange(of: settings.blurBackground) { _, _ in
-                        settings.saveSettings()
-                    }
+                Slider(value: $settings.blurBackground, in: 0.0...1.0) {
+                    Text("Glass material")
+                } minimumValueLabel: {
+                    Text("Solid")
+                } maximumValueLabel: {
+                    Text("Frosted")
+                }
+                .onChange(of: settings.blurBackground) { _, _ in
+                    settings.saveSettings()
+                }
+
             }
-            
+
             Section("Glass Effect") {
                 Toggle("Interactive glass effects", isOn: $settings.interactiveGlassEffects)
                     .onChange(of: settings.interactiveGlassEffects) { _, _ in
                         settings.saveSettings()
                     }
                 
-                Picker("Glass Tint", selection: $settings.glassTint) {
-                    Text("None").tag("None")
-                    Text("Blue").tag("Blue")
-                    Text("Purple").tag("Purple")
-                    Text("Green").tag("Green")
-                }
-                .onChange(of: settings.glassTint) { _, _ in
-                    settings.saveSettings()
-                }
+                GlassTintPicker(value: $settings.glassTint)
+                    .onChange(of: settings.glassTint) { _, _ in
+                        settings.saveSettings()
+                    }
             }
             
             Section("Layout") {

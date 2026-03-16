@@ -65,6 +65,36 @@ struct ConnectionManagerView: View {
                 }
                 .toolbar {
                     ToolbarItemGroup(placement: .primaryAction) {
+                        Menu {
+                            Button("Save Current Layout") {
+                                saveCurrentLayout()
+                            }
+                            .disabled(sessionManager.sessions.isEmpty)
+
+                            if !settingsManager.layoutPresets.isEmpty {
+                                Divider()
+
+                                ForEach(settingsManager.layoutPresets) { preset in
+                                    Button(preset.name) {
+                                        openLayout(preset)
+                                    }
+                                }
+
+                                Divider()
+
+                                Menu("Delete Layout") {
+                                    ForEach(settingsManager.layoutPresets) { preset in
+                                        Button(preset.name, role: .destructive) {
+                                            settingsManager.deleteLayoutPreset(preset)
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "rectangle.3.group")
+                        }
+                        .accessibilityLabel("Layouts")
+
                         Button {
                             showingAddServer = true
                         } label: {
@@ -471,6 +501,29 @@ struct ConnectionManagerView: View {
         pendingTrustSession = nil
         pendingTrustChallenge = nil
         pendingConnectPassword = nil
+    }
+
+    // MARK: - Layout Presets
+
+    private func saveCurrentLayout() {
+        let serverIDs = sessionManager.sessions.map { $0.server.id }
+        guard !serverIDs.isEmpty else { return }
+        let name = "Layout (\(serverIDs.count) servers)"
+        let preset = LayoutPreset(name: name, serverIDs: serverIDs)
+        settingsManager.addLayoutPreset(preset)
+    }
+
+    private func openLayout(_ preset: LayoutPreset) {
+        settingsManager.updateLayoutPresetLastUsed(preset.id)
+        Task { @MainActor in
+            for serverID in preset.serverIDs {
+                guard let server = serverManager.server(for: serverID) else { continue }
+                let session = await sessionManager.createSession(for: server)
+                if session.state == .connected {
+                    openWindow(id: "terminal", value: session.id)
+                }
+            }
+        }
     }
 }
 

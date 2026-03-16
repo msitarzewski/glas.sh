@@ -1239,6 +1239,12 @@ class SSHConnection {
         return try await client.openSFTP()
     }
 
+    func executeRemoteCommand(_ command: String) async throws -> String {
+        guard let client else { throw SSHError.notConnected }
+        let buffer = try await client.executeCommand(command)
+        return String(buffer: buffer)
+    }
+
     /// Create a direct-tcpip channel to reach a remote host:port through the SSH tunnel.
     func createDirectTCPIPChannel(targetHost: String, targetPort: Int) async throws -> Channel {
         guard let client else { throw SSHError.notConnected }
@@ -1284,20 +1290,23 @@ class SSHConnection {
 
                 do {
                     try await client.sendKeepAlive()
+                    // sendKeepAlive succeeded — the TCP connection and SSH channel
+                    // are still active. Reset the counter since the transport is healthy.
+                    // The counter only climbs if sendKeepAlive throws (channel dead).
+                    self.missedKeepAlives = 0
+                    Logger.ssh.debug("Keepalive sent successfully")
+                } catch {
                     self.missedKeepAlives += 1
-                    Logger.ssh.debug("Keepalive sent (missed replies: \(self.missedKeepAlives)/\(maxMissed))")
+                    Logger.ssh.debug("Keepalive failed (\(self.missedKeepAlives)/\(maxMissed)): \(error)")
 
-                    if self.missedKeepAlives > maxMissed {
-                        Logger.ssh.warning("Server not responding after \(maxMissed) keepalives — disconnecting")
+                    if self.missedKeepAlives >= maxMissed {
+                        Logger.ssh.warning("Server not responding after \(self.missedKeepAlives) failed keepalives — disconnecting")
                         self.session?.reportError("Connection timed out (server not responding)")
                         await self.disconnect()
                         let autoReconnect = UserDefaults.standard.bool(forKey: UserDefaultsKeys.autoReconnect)
                         self.session?.attemptAutoReconnect(autoReconnectEnabled: autoReconnect)
                         break
                     }
-                } catch {
-                    Logger.ssh.debug("Keepalive send failed: \(error)")
-                    break
                 }
             }
         }
@@ -1500,5 +1509,23 @@ enum SSHError: LocalizedError {
         case .invalidSSHKey(let message):
             return "Invalid SSH key: \(message)"
         }
+    }
+}
+
+// MARK: - Layout Presets
+
+struct LayoutPreset: Identifiable, Codable, Hashable {
+    let id: UUID
+    var name: String
+    var serverIDs: [UUID]
+    let createdAt: Date
+    var lastUsed: Date?
+
+    init(id: UUID = UUID(), name: String, serverIDs: [UUID], createdAt: Date = Date(), lastUsed: Date? = nil) {
+        self.id = id
+        self.name = name
+        self.serverIDs = serverIDs
+        self.createdAt = createdAt
+        self.lastUsed = lastUsed
     }
 }

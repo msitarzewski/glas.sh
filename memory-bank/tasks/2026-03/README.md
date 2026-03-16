@@ -58,3 +58,16 @@
 - **Quick connect bar**: Search bar parses `user@host:port`, password prompt, instant session creation
 - Files: Models.swift, TerminalWindowView.swift, ConnectionManagerView.swift, PortForwardManager.swift, PortForwardingManagerView.swift, SessionManager.swift, ServerFormViews.swift, glas_shApp.swift, new SFTPBrowserView.swift
 - See: [260315_sprint1-command-center.md](./260315_sprint1-command-center.md)
+
+### 2026-03-16: Sprint 2 — Spatial Leap
+- Implemented 5 features leveraging visionOS 26 APIs + SFTP enhancements + UX refinements
+- **AI Command Assistant (2A)**: On-device Foundation Models, `@Generable` structs, AIAssistantView sheet, sparkles button in bottom ornament
+- **AI Error Explainer (2B)**: AIErrorCard overlay, debounced error detection, auto-explains terminal errors
+- **Spatial Audio (2C)**: AVAudioPlayer with .ambient session, VT100 bell sound from terminal_beeps repo, audio+visual bell together
+- **Persistent Layouts (2D)**: `.restorationBehavior(.automatic)`, LayoutPreset model + CRUD, layout save/open/delete menu
+- **Spatial Widgets (2E)**: glasWidgets extension target in pbxproj, ServerHealthWidget, `glassh://` URL scheme deep links
+- **SFTP enhancements**: Tap-to-select, batch ops, download-after-folder-pick with progress, file info sheet, hidden files toggle, client-side filter, remote `find` via SSH
+- **UX**: ColorPicker glass tint with swatches, glass material slider, keepalive timeout fix
+- New files: AIAssistant.swift, TerminalAudioManager.swift, terminal_bell.caf, glasWidgets/*.swift
+- Modified: 12 existing files + project.pbxproj
+- Branch: sprint-2

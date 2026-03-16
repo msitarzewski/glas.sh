@@ -33,6 +33,7 @@ class WindowRecoveryManager {
 
     private func scheduleRecoveryIfNeeded() {
         guard visibleWindowKeys.isEmpty else { return }
+        guard !visibleWindowKeys.contains("main") else { return }
         recoveryTask?.cancel()
         recoveryTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(220))
@@ -44,7 +45,8 @@ class WindowRecoveryManager {
 
 struct TerminalSessionOverride: Codable, Hashable {
     var windowOpacity: Double?
-    var blurBackground: Bool?
+    var blurBackground: Double?
+    var etchedBackground: Bool?
     var interactiveGlassEffects: Bool?
     var glassTint: String?
 }
