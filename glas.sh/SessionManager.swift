@@ -7,6 +7,7 @@
 
 import SwiftUI
 import Observation
+import WidgetKit
 
 @MainActor
 @Observable
@@ -39,6 +40,7 @@ class SessionManager {
 
         if session.state == .connected {
             serverManager.updateLastConnected(server.id)
+            WidgetCenter.shared.reloadAllTimelines()
         }
 
         return session

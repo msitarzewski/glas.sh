@@ -8,6 +8,7 @@
 import SwiftUI
 import Foundation
 import Observation
+import WidgetKit
 import os
 
 @MainActor
@@ -47,6 +48,7 @@ class ServerManager {
         do {
             let data = try JSONEncoder().encode(servers)
             SharedDefaults.defaults.set(data, forKey: UserDefaultsKeys.servers)
+            WidgetCenter.shared.reloadAllTimelines()
         } catch {
             Logger.servers.error("Failed to save servers: \(error)")
         }

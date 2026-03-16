@@ -87,13 +87,15 @@ struct ServerHealthTimelineProvider: TimelineProvider {
                     username: config.username,
                     lastConnected: config.lastConnected,
                     isFavorite: config.isFavorite,
-                    colorTag: config.colorTag?.rawValue ?? "Blue"
+                    colorTag: config.colorTag.rawValue
                 )
             }
     }
 }
 
-// Minimal Codable struct matching ServerConfiguration's relevant fields
+// Minimal Codable struct matching ServerConfiguration's relevant fields.
+// Uses default (lowercase) raw values to match the app's ServerColorTag encoding.
+// Extra fields in ServerConfiguration are silently ignored by the decoder.
 private struct WidgetServerConfig: Codable {
     let id: UUID
     let name: String
@@ -101,17 +103,10 @@ private struct WidgetServerConfig: Codable {
     let username: String
     let lastConnected: Date?
     let isFavorite: Bool
-    let colorTag: ServerColorTag?
+    let colorTag: ServerColorTag
 
     enum ServerColorTag: String, Codable {
-        case blue = "Blue"
-        case green = "Green"
-        case orange = "Orange"
-        case purple = "Purple"
-        case red = "Red"
-        case pink = "Pink"
-        case yellow = "Yellow"
-        case gray = "Gray"
+        case blue, purple, pink, red, orange, yellow, green, cyan, gray
     }
 }
 
