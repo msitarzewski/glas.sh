@@ -87,6 +87,7 @@ struct TerminalWindowView: View {
             dismiss()
         }
         .onDisappear {
+            terminalHostModel.stopFocusMaintenance()
             runCloseGooseCallIfNeeded()
         }
         .onChange(of: showingSearchOverlay) { _, showing in

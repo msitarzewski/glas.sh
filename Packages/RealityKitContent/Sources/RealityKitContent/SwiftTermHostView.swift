@@ -11,6 +11,7 @@ public final class SwiftTermHostModel: ObservableObject {
     private var pendingChunks: [Data] = []
     private var lastNonce: UInt64 = 0
     private var focusRetryTask: Task<Void, Never>?
+    private var focusMaintenanceTask: Task<Void, Never>?
 
     public init() {}
 
@@ -24,6 +25,7 @@ public final class SwiftTermHostModel: ObservableObject {
         attachedViewID = viewID
         flushPending()
         focus()
+        startFocusMaintenance()
     }
 
     public func focus() {
@@ -37,6 +39,24 @@ public final class SwiftTermHostModel: ObservableObject {
                     return
                 }
                 try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+    }
+
+    public func stopFocusMaintenance() {
+        focusMaintenanceTask?.cancel()
+        focusMaintenanceTask = nil
+    }
+
+    private func startFocusMaintenance() {
+        focusMaintenanceTask?.cancel()
+        focusMaintenanceTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled, let self, let view = self.terminalView else { break }
+                if !view.isFirstResponder {
+                    _ = view.becomeFirstResponder()
+                }
             }
         }
     }
