@@ -43,7 +43,7 @@ struct glas_shApp: App {
         }
         .windowStyle(.plain)
         .defaultSize(width: 1200, height: 800)
-        .restorationBehavior(.automatic)
+        .restorationBehavior(.disabled)
 
         // HTML Preview window
         WindowGroup(id: "html-preview", for: HTMLPreviewContext.self) { $context in
@@ -77,7 +77,7 @@ struct glas_shApp: App {
         }
         .windowStyle(.plain)
         .defaultSize(width: 700, height: 500)
-        .restorationBehavior(.automatic)
+        .restorationBehavior(.disabled)
 
         // Port forwarding manager
         Window("Port Forwarding", id: "port-forwarding") {
