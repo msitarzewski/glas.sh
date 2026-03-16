@@ -33,6 +33,7 @@ class WindowRecoveryManager {
 
     private func scheduleRecoveryIfNeeded() {
         guard visibleWindowKeys.isEmpty else { return }
+        guard !visibleWindowKeys.contains("main") else { return }
         recoveryTask?.cancel()
         recoveryTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(220))

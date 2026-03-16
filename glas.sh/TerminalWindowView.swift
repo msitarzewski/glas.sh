@@ -313,12 +313,6 @@ struct TerminalWindowView: View {
     private func runCloseGooseCallIfNeeded() {
         guard !didRunCloseGooseCall else { return }
         didRunCloseGooseCall = true
-        Task { @MainActor in
-            await Task.yield()
-            openWindow(id: "main")
-            try? await Task.sleep(for: .milliseconds(150))
-            openWindow(id: "main")
-        }
     }
 
     private func duplicateSession() {

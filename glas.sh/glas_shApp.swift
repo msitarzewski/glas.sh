@@ -164,7 +164,7 @@ private extension View {
 }
 
 struct SessionNotFoundView: View {
-    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(spacing: 16) {
@@ -182,8 +182,8 @@ struct SessionNotFoundView: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
 
-            Button("Open Connections") {
-                openWindow(id: "main")
+            Button("Close Window") {
+                dismiss()
             }
             .buttonStyle(.borderedProminent)
         }
@@ -192,7 +192,7 @@ struct SessionNotFoundView: View {
 }
 
 struct SFTPBrowserNotFoundView: View {
-    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(spacing: 16) {
@@ -210,8 +210,8 @@ struct SFTPBrowserNotFoundView: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 460)
 
-            Button("Open Connections") {
-                openWindow(id: "main")
+            Button("Close Window") {
+                dismiss()
             }
             .buttonStyle(.borderedProminent)
         }
@@ -220,7 +220,7 @@ struct SFTPBrowserNotFoundView: View {
 }
 
 struct HTMLPreviewNotFoundView: View {
-    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(spacing: 16) {
@@ -238,8 +238,8 @@ struct HTMLPreviewNotFoundView: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 460)
 
-            Button("Open Connections") {
-                openWindow(id: "main")
+            Button("Close Window") {
+                dismiss()
             }
             .buttonStyle(.borderedProminent)
         }
