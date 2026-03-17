@@ -3,53 +3,37 @@
 //  glas.sh
 //
 //  Spatial audio playback for terminal bell alerts.
-//  Each instance owns its own AVAudioPlayer so visionOS spatializes
-//  the sound from the window that created the player.
-//  Player is created lazily on first play (not init) so it attaches
-//  to the correct window context.
+//  Uses AudioServices with a custom registered sound so visionOS
+//  spatializes it from the calling window.
 //
 
-import AVFoundation
+import AudioToolbox
 import os
 
 @MainActor
 final class TerminalAudioManager {
-    private var bellPlayer: AVAudioPlayer?
-    private var didPrepare = false
-
-    private static var audioSessionConfigured = false
+    private var soundID: SystemSoundID = 0
 
     init() {
-        if !Self.audioSessionConfigured {
-            Self.audioSessionConfigured = true
-            do {
-                try AVAudioSession.sharedInstance().setCategory(.ambient)
-            } catch {
-                Logger.audio.error("Failed to set audio session category: \(error)")
-            }
-        }
-    }
-
-    private func prepareIfNeeded() {
-        guard !didPrepare else { return }
-        didPrepare = true
-
         guard let url = Bundle.main.url(forResource: "terminal_bell", withExtension: "caf") else {
             Logger.audio.warning("terminal_bell.caf not found in bundle")
             return
         }
-        do {
-            bellPlayer = try AVAudioPlayer(contentsOf: url)
-            bellPlayer?.prepareToPlay()
-        } catch {
-            Logger.audio.error("Failed to prepare bell sound: \(error)")
+        let status = AudioServicesCreateSystemSoundID(url as CFURL, &soundID)
+        if status != kAudioServicesNoError {
+            Logger.audio.error("Failed to register bell sound: \(status)")
+            soundID = 0
+        }
+    }
+
+    deinit {
+        if soundID != 0 {
+            AudioServicesDisposeSystemSoundID(soundID)
         }
     }
 
     func playBell() {
-        prepareIfNeeded()
-        guard let player = bellPlayer else { return }
-        player.currentTime = 0
-        player.play()
+        guard soundID != 0 else { return }
+        AudioServicesPlaySystemSound(soundID)
     }
 }
