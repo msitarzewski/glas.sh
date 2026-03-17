@@ -34,6 +34,7 @@ enum UserDefaultsKeys {
     static let layoutPresets = "layoutPresets"
     static let tailscaleTailnet = "tailscaleTailnet"
     static let tailscaleAutoDiscover = "tailscaleAutoDiscover"
+    static let tailscaleAuthMethod = "tailscaleAuthMethod"
     static let autoRecordSessions = "autoRecordSessions"
     static let focusEnvironmentStyle = "focusEnvironmentStyle"
     static let notificationOverlaysEnabled = "notificationOverlaysEnabled"

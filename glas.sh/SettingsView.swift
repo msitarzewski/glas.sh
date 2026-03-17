@@ -59,8 +59,10 @@ struct GeneralSettingsView: View {
     @State private var keyCopyMessage: String?
     @State private var sshConfigText: String = ""
     @State private var importResultMessage: String?
-    @State private var tailscaleClientID: String = ""
-    @State private var tailscaleClientSecret: String = ""
+    @State private var tailscaleAuthMethod: TailscaleAuthMethod = .apiKey
+    @State private var tailscaleAPIKey: String = ""
+    @State private var tailscaleOAuthClientID: String = ""
+    @State private var tailscaleOAuthClientSecret: String = ""
     @State private var tailscaleTestResult: String?
     @State private var tailscaleTestInProgress = false
     
@@ -139,31 +141,46 @@ struct GeneralSettingsView: View {
                         settings.saveSettings()
                     }
 
-                TextField("OAuth Client ID", text: $tailscaleClientID)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
+                Picker("Auth method", selection: $tailscaleAuthMethod) {
+                    Text("API Key").tag(TailscaleAuthMethod.apiKey)
+                    Text("OAuth Client").tag(TailscaleAuthMethod.oauthClient)
+                }
+                .onChange(of: tailscaleAuthMethod) { _, newValue in
+                    UserDefaults.standard.set(newValue.rawValue, forKey: UserDefaultsKeys.tailscaleAuthMethod)
+                    tailscaleTestResult = nil
+                }
 
-                SecureField("OAuth Client Secret", text: $tailscaleClientSecret)
+                if tailscaleAuthMethod == .apiKey {
+                    SecureField("API Key", text: $tailscaleAPIKey)
+                        .textContentType(.init(rawValue: ""))
+                    Text("Generate at admin console → Settings → Keys")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    TextField("OAuth Client ID", text: $tailscaleOAuthClientID)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    SecureField("OAuth Client Secret", text: $tailscaleOAuthClientSecret)
+                        .textContentType(.init(rawValue: ""))
+                    Text("Create at admin console → Settings → OAuth clients")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
                 Button {
                     saveTailscaleCredentialsAndTest()
                 } label: {
                     HStack {
                         if tailscaleTestInProgress {
-                            ProgressView()
-                                .controlSize(.small)
+                            ProgressView().controlSize(.small)
                         }
-                        Text("Test Connection")
+                        Text("Save & Test")
                     }
                 }
-                .buttonStyle(.bordered)
-                .disabled(
-                    tailscaleClientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || tailscaleClientSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || tailscaleTestInProgress
-                )
+                .buttonStyle(.borderedProminent)
+                .disabled(tailscaleTestInProgress || !tailscaleCredentialsValid)
 
-                Toggle("Auto-discover Tailscale devices", isOn: $settings.tailscaleAutoDiscover)
+                Toggle("Auto-discover devices", isOn: $settings.tailscaleAutoDiscover)
                     .onChange(of: settings.tailscaleAutoDiscover) { _, _ in
                         settings.saveSettings()
                     }
@@ -171,7 +188,7 @@ struct GeneralSettingsView: View {
                 if let tailscaleTestResult {
                     Text(tailscaleTestResult)
                         .font(.caption)
-                        .foregroundStyle(tailscaleTestResult.hasPrefix("Success") ? .green : .red)
+                        .foregroundStyle(tailscaleTestResult.hasPrefix("Connected") ? .green : .red)
                 }
             }
 
@@ -353,9 +370,26 @@ struct GeneralSettingsView: View {
     }
 
     private func loadTailscaleCredentials() {
-        if let credentials = try? KeychainManager.retrieveTailscaleCredentials() {
-            tailscaleClientID = credentials.clientID
-            tailscaleClientSecret = credentials.clientSecret
+        tailscaleAuthMethod = TailscaleAuthMethod(rawValue:
+            UserDefaults.standard.string(forKey: UserDefaultsKeys.tailscaleAuthMethod) ?? "apiKey"
+        ) ?? .apiKey
+
+        if let key = try? KeychainManager.retrieveTailscaleAPIKey() {
+            tailscaleAPIKey = key
+        }
+        if let creds = try? KeychainManager.retrieveTailscaleOAuthCredentials() {
+            tailscaleOAuthClientID = creds.clientID
+            tailscaleOAuthClientSecret = creds.clientSecret
+        }
+    }
+
+    private var tailscaleCredentialsValid: Bool {
+        switch tailscaleAuthMethod {
+        case .apiKey:
+            return !tailscaleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .oauthClient:
+            return !tailscaleOAuthClientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !tailscaleOAuthClientSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
 
@@ -383,13 +417,23 @@ struct GeneralSettingsView: View {
         tailscaleTestInProgress = true
         tailscaleTestResult = nil
 
-        let clientID = tailscaleClientID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let clientSecret = tailscaleClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Persist auth method first so loadDevices knows which path to use
+        UserDefaults.standard.set(tailscaleAuthMethod.rawValue, forKey: UserDefaultsKeys.tailscaleAuthMethod)
 
         do {
-            try KeychainManager.saveTailscaleCredentials(clientID: clientID, clientSecret: clientSecret)
+            switch tailscaleAuthMethod {
+            case .apiKey:
+                try KeychainManager.saveTailscaleAPIKey(
+                    tailscaleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            case .oauthClient:
+                try KeychainManager.saveTailscaleOAuthCredentials(
+                    clientID: tailscaleOAuthClientID.trimmingCharacters(in: .whitespacesAndNewlines),
+                    clientSecret: tailscaleOAuthClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            }
         } catch {
-            tailscaleTestResult = "Failed to save credentials: \(error.localizedDescription)"
+            tailscaleTestResult = "Failed to save: \(error.localizedDescription)"
             tailscaleTestInProgress = false
             return
         }
@@ -398,7 +442,7 @@ struct GeneralSettingsView: View {
             let client = TailscaleClient()
             do {
                 let success = try await client.testConnection()
-                tailscaleTestResult = success ? "Success - connected to Tailscale." : "Connection test returned false."
+                tailscaleTestResult = success ? "Connected to Tailscale." : "Connection test failed."
             } catch {
                 tailscaleTestResult = "Error: \(error.localizedDescription)"
             }
