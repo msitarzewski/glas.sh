@@ -192,8 +192,23 @@ class TailscaleClient {
 
         do {
             try await fetchDevices(tailnet: tailnet)
-        } catch {
+        } catch is DecodingError {
+            errorMessage = "Failed to decode Tailscale API response. The API format may have changed."
+            Logger.tailscale.error("Decoding error: \(error)")
+        } catch let error as TailscaleError {
             errorMessage = error.localizedDescription
+            Logger.tailscale.error("Tailscale error: \(error)")
+        } catch {
+            // Keychain errors show as generic "data couldn't be read" — translate
+            let authMethod = TailscaleAuthMethod(rawValue:
+                UserDefaults.standard.string(forKey: UserDefaultsKeys.tailscaleAuthMethod) ?? "apiKey"
+            ) ?? .apiKey
+            switch authMethod {
+            case .apiKey:
+                errorMessage = "No API key found. Add one in Settings → Tailscale."
+            case .oauthClient:
+                errorMessage = "No OAuth credentials found. Add them in Settings → Tailscale."
+            }
             Logger.tailscale.error("Failed to load devices: \(error)")
         }
 

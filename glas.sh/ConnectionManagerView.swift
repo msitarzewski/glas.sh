@@ -314,7 +314,7 @@ struct ConnectionManagerView: View {
                 ContentUnavailableView {
                     Label("No Devices", systemImage: "network")
                 } description: {
-                    Text("No Tailscale devices found. Configure OAuth credentials in Settings.")
+                    Text("No Tailscale devices found. Configure your API key or OAuth credentials in Settings.")
                 }
             } else {
                 Section("Devices (\(tailscaleClient.devices.count))") {
