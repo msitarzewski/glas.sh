@@ -48,6 +48,7 @@ class ServerManager {
         do {
             let data = try JSONEncoder().encode(servers)
             SharedDefaults.defaults.set(data, forKey: UserDefaultsKeys.servers)
+            SharedDefaults.defaults.set(SharedDefaults.currentSchemaVersion, forKey: SharedDefaults.schemaVersionKey)
             WidgetCenter.shared.reloadAllTimelines()
         } catch {
             Logger.servers.error("Failed to save servers: \(error)")

@@ -49,4 +49,5 @@ struct TerminalSessionOverride: Codable, Hashable {
     var etchedBackground: Bool?
     var interactiveGlassEffects: Bool?
     var glassTint: String?
+    var glassMaterialStyle: String?
 }

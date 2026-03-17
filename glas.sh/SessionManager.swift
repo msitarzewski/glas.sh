@@ -28,10 +28,17 @@ class SessionManager {
     func createSession(for server: ServerConfiguration, password: String? = nil) async -> TerminalSession {
         let session = TerminalSession(server: server)
 
-        // Resolve jump host configuration if the server uses ProxyJump
-        if let jumpID = server.jumpHostID {
-            session.jumpHostConfig = serverManager.server(for: jumpID)
+        // Resolve jump host chain if the server uses ProxyJump (supports multi-hop)
+        var chain: [ServerConfiguration] = []
+        let pendingIDs = server.resolvedJumpHostIDs
+        var visited: Set<UUID> = []
+        for id in pendingIDs {
+            guard !visited.contains(id) else { break }  // cycle detection
+            guard let hop = serverManager.server(for: id) else { break }
+            visited.insert(id)
+            chain.append(hop)
         }
+        session.jumpHostChain = chain
 
         sessions.append(session)
         activeSessionID = session.id

@@ -66,6 +66,12 @@ public final class SSHAuthenticationMethod: NIOSSHClientUserAuthenticationDelega
     public static func p384(username: String, privateKey: P384.Signing.PrivateKey) -> SSHAuthenticationMethod {
         return SSHAuthenticationMethod(username: username, offer: .privateKey(.init(privateKey: .init(p384Key: privateKey))))
     }
+
+    /// Creates a Secure Enclave P256 based authentication method.
+    /// The private key lives in the Secure Enclave hardware — signing happens on-chip.
+    public static func secureEnclaveP256(username: String, privateKey: SecureEnclave.P256.Signing.PrivateKey) -> SSHAuthenticationMethod {
+        return SSHAuthenticationMethod(username: username, offer: .privateKey(.init(privateKey: .init(secureEnclaveP256Key: privateKey))))
+    }
     
     /// Creates a public key based authentication method.
     /// - Parameters: 

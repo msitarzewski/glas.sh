@@ -37,11 +37,15 @@ enum UserDefaultsKeys {
     static let autoRecordSessions = "autoRecordSessions"
     static let focusEnvironmentStyle = "focusEnvironmentStyle"
     static let notificationOverlaysEnabled = "notificationOverlaysEnabled"
+    static let glassMaterialStyle = "glassMaterialStyle"
 }
 
 enum SharedDefaults {
     static let suiteName = "group.sh.glas.shared"
     static let defaults = UserDefaults(suiteName: suiteName)!
+
+    static let schemaVersionKey = "sharedSchemaVersion"
+    static let currentSchemaVersion = 1
 
     private static let migrationSentinel = "sharedDefaultsMigrationComplete"
 

@@ -27,7 +27,8 @@ struct AddServerView: View {
     @State private var tags: [String] = []
     @State private var newTag: String = ""
     @State private var isFavorite: Bool = false
-    @State private var jumpHostID: UUID?
+    @State private var jumpHostIDs: [UUID] = []
+    @State private var showingJumpHostPicker: Bool = false
 
     @State private var showingAddSSHKey = false
     @State private var keychainSaveError: String?
@@ -101,11 +102,40 @@ struct AddServerView: View {
                 }
 
                 Section("Routing") {
-                    Picker("Connect via", selection: $jumpHostID) {
-                        Text("Direct").tag(UUID?.none)
-                        ForEach(serverManager.servers) { server in
-                            Text(server.name).tag(Optional(server.id))
+                    if jumpHostIDs.isEmpty {
+                        Text("Direct connection")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(Array(jumpHostIDs.enumerated()), id: \.offset) { index, hopID in
+                            if let hop = serverManager.servers.first(where: { $0.id == hopID }) {
+                                HStack {
+                                    Label {
+                                        Text("Hop \(index + 1): \(hop.name)")
+                                    } icon: {
+                                        Image(systemName: "\(index + 1).circle.fill")
+                                            .foregroundStyle(.blue)
+                                    }
+                                    Spacer()
+                                    Button {
+                                        jumpHostIDs.remove(at: index)
+                                    } label: {
+                                        Image(systemName: "minus.circle.fill")
+                                            .foregroundStyle(.red)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("Remove hop \(index + 1)")
+                                }
+                            }
                         }
+                        .onMove { from, to in
+                            jumpHostIDs.move(fromOffsets: from, toOffset: to)
+                        }
+                    }
+
+                    Button {
+                        showingJumpHostPicker = true
+                    } label: {
+                        Label("Add Jump Host", systemImage: "plus.circle")
                     }
                 }
 
@@ -199,6 +229,14 @@ struct AddServerView: View {
                 AddSSHKeyView()
                     .environment(settingsManager)
             }
+            .sheet(isPresented: $showingJumpHostPicker) {
+                JumpHostPickerView(
+                    servers: serverManager.servers,
+                    excludedIDs: Set(jumpHostIDs)
+                ) { selectedID in
+                    jumpHostIDs.append(selectedID)
+                }
+            }
             .alert("Keychain Error", isPresented: Binding(
                 get: { keychainSaveError != nil },
                 set: { if !$0 { keychainSaveError = nil } }
@@ -236,7 +274,8 @@ struct AddServerView: View {
             isFavorite: isFavorite,
             colorTag: colorTag,
             tags: tags,
-            jumpHostID: jumpHostID
+            jumpHostID: jumpHostIDs.first,
+            jumpHostIDs: jumpHostIDs.isEmpty ? nil : jumpHostIDs
         )
 
         serverManager.addServer(server)
@@ -295,7 +334,8 @@ struct EditServerView: View {
     @State private var colorTag: ServerColorTag
     @State private var tags: [String]
     @State private var isFavorite: Bool
-    @State private var jumpHostID: UUID?
+    @State private var jumpHostIDs: [UUID]
+    @State private var showingJumpHostPicker: Bool = false
     @State private var newTag: String = ""
     @State private var showingAddSSHKey = false
     @State private var keychainSaveError: String?
@@ -316,7 +356,7 @@ struct EditServerView: View {
         _colorTag = State(initialValue: server.colorTag)
         _tags = State(initialValue: server.tags)
         _isFavorite = State(initialValue: server.isFavorite)
-        _jumpHostID = State(initialValue: server.jumpHostID)
+        _jumpHostIDs = State(initialValue: server.resolvedJumpHostIDs)
     }
 
     var body: some View {
@@ -367,11 +407,40 @@ struct EditServerView: View {
                 }
 
                 Section("Routing") {
-                    Picker("Connect via", selection: $jumpHostID) {
-                        Text("Direct").tag(UUID?.none)
-                        ForEach(serverManager.servers.filter { $0.id != server.id }) { s in
-                            Text(s.name).tag(Optional(s.id))
+                    if jumpHostIDs.isEmpty {
+                        Text("Direct connection")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(Array(jumpHostIDs.enumerated()), id: \.offset) { index, hopID in
+                            if let hop = serverManager.servers.first(where: { $0.id == hopID }) {
+                                HStack {
+                                    Label {
+                                        Text("Hop \(index + 1): \(hop.name)")
+                                    } icon: {
+                                        Image(systemName: "\(index + 1).circle.fill")
+                                            .foregroundStyle(.blue)
+                                    }
+                                    Spacer()
+                                    Button {
+                                        jumpHostIDs.remove(at: index)
+                                    } label: {
+                                        Image(systemName: "minus.circle.fill")
+                                            .foregroundStyle(.red)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("Remove hop \(index + 1)")
+                                }
+                            }
                         }
+                        .onMove { from, to in
+                            jumpHostIDs.move(fromOffsets: from, toOffset: to)
+                        }
+                    }
+
+                    Button {
+                        showingJumpHostPicker = true
+                    } label: {
+                        Label("Add Jump Host", systemImage: "plus.circle")
                     }
                 }
 
@@ -452,6 +521,14 @@ struct EditServerView: View {
                 AddSSHKeyView()
                     .environment(settingsManager)
             }
+            .sheet(isPresented: $showingJumpHostPicker) {
+                JumpHostPickerView(
+                    servers: serverManager.servers.filter { $0.id != server.id },
+                    excludedIDs: Set(jumpHostIDs)
+                ) { selectedID in
+                    jumpHostIDs.append(selectedID)
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
@@ -507,7 +584,8 @@ struct EditServerView: View {
         updatedServer.colorTag = colorTag
         updatedServer.tags = tags
         updatedServer.isFavorite = isFavorite
-        updatedServer.jumpHostID = jumpHostID
+        updatedServer.jumpHostID = jumpHostIDs.first
+        updatedServer.jumpHostIDs = jumpHostIDs.isEmpty ? nil : jumpHostIDs
 
         serverManager.updateServer(updatedServer)
 
@@ -628,6 +706,58 @@ struct FlowLayout: Layout {
             }
 
             self.size = CGSize(width: width, height: y + lineHeight)
+        }
+    }
+}
+
+// MARK: - Jump Host Picker
+
+struct JumpHostPickerView: View {
+    let servers: [ServerConfiguration]
+    let excludedIDs: Set<UUID>
+    let onSelect: (UUID) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    private var availableServers: [ServerConfiguration] {
+        servers.filter { !excludedIDs.contains($0.id) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if availableServers.isEmpty {
+                    Text("No available servers to add as a jump host.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(availableServers) { server in
+                        Button {
+                            onSelect(server.id)
+                            dismiss()
+                        } label: {
+                            HStack {
+                                Circle()
+                                    .fill(server.colorTag.color)
+                                    .frame(width: 12, height: 12)
+                                VStack(alignment: .leading) {
+                                    Text(server.name)
+                                    Text("\(server.username)@\(server.host):\(server.port)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Add Jump Host")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+            }
         }
     }
 }

@@ -46,7 +46,7 @@ struct TerminalWindowView: View {
             terminalContent
                 .padding(10)
         }
-        .background(.ultraThinMaterial, in: .rect(cornerRadius: 24))
+        .background(resolvedMaterial, in: .rect(cornerRadius: 24))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, 22)
         .padding(.top, 34)
@@ -355,6 +355,19 @@ struct TerminalWindowView: View {
 
     private var effectiveGlassTint: String {
         settingsManager.sessionOverride(for: session.id)?.glassTint ?? settingsManager.glassTint
+    }
+
+    private var effectiveGlassMaterialStyle: String {
+        settingsManager.sessionOverride(for: session.id)?.glassMaterialStyle ?? settingsManager.glassMaterialStyle
+    }
+
+    private var resolvedMaterial: Material {
+        switch effectiveGlassMaterialStyle {
+        case "thin": return .thinMaterial
+        case "regular": return .regularMaterial
+        case "thick": return .thickMaterial
+        default: return .ultraThinMaterial
+        }
     }
 
     private func runCloseGooseCallIfNeeded() {
@@ -788,12 +801,27 @@ struct TerminalOverridesSettingsView: View {
                     )
                 )
 
+                Picker("Glass material", selection: Binding(
+                    get: { sessionOverride.glassMaterialStyle ?? settings.glassMaterialStyle },
+                    set: { newValue in
+                        settings.updateSessionOverride(for: session.id) { override in
+                            override.glassMaterialStyle = newValue
+                        }
+                    }
+                )) {
+                    Text("Ultra Thin").tag("ultraThin")
+                    Text("Thin").tag("thin")
+                    Text("Regular").tag("regular")
+                    Text("Thick").tag("thick")
+                }
+
                 Button("Reset Overrides", role: .destructive) {
                     settings.updateSessionOverride(for: session.id) { override in
                         override.windowOpacity = nil
                         override.blurBackground = nil
                         override.interactiveGlassEffects = nil
                         override.glassTint = nil
+                        override.glassMaterialStyle = nil
                     }
                 }
             }
