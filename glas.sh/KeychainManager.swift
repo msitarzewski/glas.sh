@@ -94,6 +94,55 @@ enum KeychainManager {
         )
     }
 
+    // MARK: - Tailscale OAuth Credentials
+
+    private static let tailscaleOAuthClientIDAccount = "tailscale-oauth-client-id"
+    private static let tailscaleOAuthClientSecretAccount = "tailscale-oauth-client-secret"
+
+    static func saveTailscaleOAuthCredentials(clientID: String, clientSecret: String) throws {
+        try KeychainOperations.savePassword(
+            clientID,
+            account: tailscaleOAuthClientIDAccount,
+            service: config.passwordsService,
+            config: config
+        )
+        try KeychainOperations.savePassword(
+            clientSecret,
+            account: tailscaleOAuthClientSecretAccount,
+            service: config.passwordsService,
+            config: config
+        )
+    }
+
+    static func retrieveTailscaleOAuthCredentials() throws -> (clientID: String, clientSecret: String) {
+        let clientID = try KeychainOperations.retrievePasswordWithFallback(
+            account: tailscaleOAuthClientIDAccount,
+            primaryService: config.passwordsService,
+            legacySuffix: "passwords",
+            config: config
+        )
+        let clientSecret = try KeychainOperations.retrievePasswordWithFallback(
+            account: tailscaleOAuthClientSecretAccount,
+            primaryService: config.passwordsService,
+            legacySuffix: "passwords",
+            config: config
+        )
+        return (clientID, clientSecret)
+    }
+
+    static func deleteTailscaleOAuthCredentials() {
+        try? KeychainOperations.deletePassword(
+            account: tailscaleOAuthClientIDAccount,
+            service: config.passwordsService,
+            config: config
+        )
+        try? KeychainOperations.deletePassword(
+            account: tailscaleOAuthClientSecretAccount,
+            service: config.passwordsService,
+            config: config
+        )
+    }
+
     // MARK: - Migration
 
     static func runMigrationsIfNeeded() {
