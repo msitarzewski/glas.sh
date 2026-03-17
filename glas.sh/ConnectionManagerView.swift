@@ -8,6 +8,7 @@
 import SwiftUI
 import LocalAuthentication
 import GlasSecretStore
+import os
 
 struct ConnectionManagerView: View {
     @Environment(SessionManager.self) private var sessionManager
@@ -27,6 +28,7 @@ struct ConnectionManagerView: View {
     @State private var quickConnectPasswordPrompt: ServerConfiguration?
     @State private var quickConnectPassword: String = ""
     @State private var quickConnectUsername: String = ""
+    @State private var quickConnectPort: String = "22"
     @State private var tailscaleClient = TailscaleClient()
     @State private var tailscaleUsernamePromptDevice: TailscaleDevice?
     
@@ -335,25 +337,34 @@ struct ConnectionManagerView: View {
                 }
             }
         }
-        .onAppear {
-            loadTailscaleDevices()
+        .task {
+            // Use .task instead of .onAppear — async context lets the load complete
+            await tailscaleClient.loadDevices(
+                tailnet: settingsManager.tailscaleTailnet.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? "-"
+                    : settingsManager.tailscaleTailnet.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
         }
-        .alert("Connect to Tailscale Device", isPresented: tailscaleUsernamePromptBinding) {
+        .alert("SSH Login", isPresented: tailscaleUsernamePromptBinding) {
             TextField("Username", text: $quickConnectUsername)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
             SecureField("Password", text: $quickConnectPassword)
+            TextField("Port", text: $quickConnectPort)
+                .keyboardType(.numberPad)
             Button("Connect") {
                 if let device = tailscaleUsernamePromptDevice {
+                    let port = Int(quickConnectPort) ?? 22
                     let config = ServerConfiguration(
                         name: device.hostname,
                         host: device.sshAddress,
-                        port: 22,
+                        port: port,
                         username: quickConnectUsername
                     )
                     let password = quickConnectPassword
                     quickConnectUsername = ""
                     quickConnectPassword = ""
+                    quickConnectPort = "22"
                     tailscaleUsernamePromptDevice = nil
                     Task { @MainActor in
                         let session = await sessionManager.createSession(for: config, password: password)
@@ -370,11 +381,12 @@ struct ConnectionManagerView: View {
             Button("Cancel", role: .cancel) {
                 quickConnectUsername = ""
                 quickConnectPassword = ""
+                quickConnectPort = "22"
                 tailscaleUsernamePromptDevice = nil
             }
         } message: {
             if let device = tailscaleUsernamePromptDevice {
-                Text("Enter credentials for \(device.hostname) (\(device.sshAddress))")
+                Text("Enter SSH credentials for \(device.hostname) (\(device.sshAddress))")
             }
         }
     }
@@ -387,6 +399,7 @@ struct ConnectionManagerView: View {
                     tailscaleUsernamePromptDevice = nil
                     quickConnectUsername = ""
                     quickConnectPassword = ""
+                    quickConnectPort = "22"
                 }
             }
         )
@@ -394,12 +407,14 @@ struct ConnectionManagerView: View {
 
     private func loadTailscaleDevices() {
         let tailnet = settingsManager.tailscaleTailnet.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !tailnet.isEmpty else {
-            tailscaleClient.errorMessage = "Tailnet name not configured. Set it in Settings."
-            return
+        if tailnet.isEmpty {
+            // Use "-" wildcard — works for any authenticated user
+            Logger.tailscale.info("No tailnet configured, using '-' wildcard")
         }
+        let effectiveTailnet = tailnet.isEmpty ? "-" : tailnet
+        Logger.tailscale.info("Loading Tailscale devices for tailnet: '\(effectiveTailnet)'")
         Task {
-            await tailscaleClient.loadDevices(tailnet: tailnet)
+            await tailscaleClient.loadDevices(tailnet: effectiveTailnet)
         }
     }
 
@@ -977,9 +992,8 @@ private struct TailscaleDeviceRow: View {
         HStack(spacing: 16) {
             HStack(spacing: 10) {
                 Circle()
-                    .fill(device.online ? Color.green : Color.gray)
+                    .fill(Color.green)
                     .frame(width: 10, height: 10)
-                    .accessibilityLabel(device.online ? "Online" : "Offline")
 
                 Text(device.hostname)
                     .font(.subheadline.weight(.semibold))
@@ -998,14 +1012,15 @@ private struct TailscaleDeviceRow: View {
                 .padding(.vertical, 4)
                 .background(.regularMaterial, in: .capsule)
 
-            Text(device.online ? "Online" : "Offline")
+            Text(device.user)
                 .font(.caption)
-                .foregroundStyle(device.online ? .green : .secondary)
-                .frame(width: 60, alignment: .trailing)
+                .foregroundStyle(.secondary)
+                .frame(width: 120, alignment: .trailing)
+                .lineLimit(1)
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(device.hostname), \(device.os), \(device.online ? "online" : "offline")")
+        .accessibilityLabel("\(device.hostname), \(device.os), \(device.user)")
         .accessibilityHint("Double tap to connect via SSH")
     }
 }

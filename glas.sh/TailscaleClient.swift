@@ -2,35 +2,47 @@
 //  TailscaleClient.swift
 //  glas.sh
 //
-//  Tailscale REST API v2 client for device discovery
+//  Tailscale REST API v2 client for device discovery.
+//  Field names match the official tailscale-client-go/v2 Device struct.
 //
 
 import Foundation
 import Observation
 import os
 
-// MARK: - API Response Models (match Tailscale JSON exactly)
+// MARK: - API Response (matches official Go client exactly)
 
-private struct TailscaleAPIDevicesResponse: Decodable {
+private struct TailscaleAPIResponse: Decodable {
     let devices: [TailscaleAPIDevice]
 }
 
 private struct TailscaleAPIDevice: Decodable {
-    let id: String           // Can be numeric string or node ID
-    let name: String         // FQDN like "device.tailnet.ts.net"
-    let hostname: String     // Short hostname
-    let addresses: [String]  // CIDR notation: ["100.64.0.1/32", "fd7a::.../128"]
+    // Required fields from official Go client
+    let id: String
+    let name: String          // FQDN: "device.tailnet.ts.net"
+    let hostname: String      // Short hostname
+    let addresses: [String]   // Tailscale IPs: ["100.64.0.1", "fd7a:..."]
     let os: String
-    let online: Bool?        // nullable
-    let lastSeen: String?    // ISO 8601 timestamp, nullable
-    let clientVersion: String?
-    let authorized: Bool?
-    let user: String?        // email or user identifier
+    let user: String
 
-    // Extract clean IP from CIDR notation
+    // Optional fields
+    let authorized: Bool?
+    let lastSeen: String?     // ISO 8601
+    let created: String?
+    let clientVersion: String?
+    let tags: [String]?
+    let keyExpiryDisabled: Bool?
+    let blocksIncomingConnections: Bool?
+    let isExternal: Bool?
+    let updateAvailable: Bool?
+    let machineKey: String?
+    let nodeKey: String?
+    let tailnetLockError: String?
+    let tailnetLockKey: String?
+
     var ipv4Address: String? {
-        addresses.first { $0.contains(".") }?
-            .components(separatedBy: "/").first
+        addresses.first { $0.contains(".") && !$0.contains(":") }?
+            .components(separatedBy: "/").first  // Strip /32 if present
     }
 }
 
@@ -39,12 +51,11 @@ private struct TailscaleAPIDevice: Decodable {
 struct TailscaleDevice: Identifiable, Hashable {
     let id: String
     let hostname: String
-    let displayName: String  // FQDN
+    let displayName: String
     let ipAddress: String
     let os: String
-    let online: Bool
     let lastSeen: Date?
-    let user: String?
+    let user: String
 
     var sshAddress: String { ipAddress }
 }
@@ -69,18 +80,32 @@ class TailscaleClient {
     // MARK: - Token Resolution
 
     private func resolveToken() async throws -> String {
-        let authMethod = TailscaleAuthMethod(rawValue:
-            UserDefaults.standard.string(forKey: UserDefaultsKeys.tailscaleAuthMethod) ?? "apiKey"
-        ) ?? .apiKey
+        let authMethodRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.tailscaleAuthMethod) ?? "apiKey"
+        let authMethod = TailscaleAuthMethod(rawValue: authMethodRaw) ?? .apiKey
+        Logger.tailscale.info("Resolving token, auth method: \(authMethodRaw)")
 
         switch authMethod {
         case .apiKey:
-            return try KeychainManager.retrieveTailscaleAPIKey()
+            do {
+                let key = try KeychainManager.retrieveTailscaleAPIKey()
+                Logger.tailscale.info("API key found (\(key.prefix(8))...)")
+                return key
+            } catch {
+                Logger.tailscale.error("No API key in Keychain: \(error)")
+                throw TailscaleError.notAuthenticated
+            }
 
         case .oauthClient:
             if let cached = cachedOAuthToken { return cached }
 
-            let creds = try KeychainManager.retrieveTailscaleOAuthCredentials()
+            let creds: (clientID: String, clientSecret: String)
+            do {
+                creds = try KeychainManager.retrieveTailscaleOAuthCredentials()
+            } catch {
+                Logger.tailscale.error("No OAuth credentials in Keychain: \(error)")
+                throw TailscaleError.notAuthenticated
+            }
+
             let url = URL(string: "https://api.tailscale.com/api/v2/oauth/token")!
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
@@ -90,6 +115,8 @@ class TailscaleClient {
 
             let (data, response) = try await session.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                let body = String(data: data, encoding: .utf8) ?? ""
+                Logger.tailscale.error("OAuth token exchange failed: \(body)")
                 throw TailscaleError.authenticationFailed
             }
 
@@ -109,61 +136,82 @@ class TailscaleClient {
         defer { isLoading = false }
 
         let token = try await resolveToken()
-        let escapedTailnet = tailnet.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? tailnet
+        let effectiveTailnet = tailnet.isEmpty ? "-" : tailnet
+        let escapedTailnet = effectiveTailnet.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? effectiveTailnet
         let url = URL(string: "https://api.tailscale.com/api/v2/tailnet/\(escapedTailnet)/devices")!
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
-        Logger.tailscale.info("Fetching devices for tailnet: \(tailnet)")
+        Logger.tailscale.info("GET \(url.absoluteString)")
         let (data, response) = try await session.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw TailscaleError.invalidResponse
         }
 
+        Logger.tailscale.info("Response: HTTP \(httpResponse.statusCode), \(data.count) bytes")
+
         if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
             cachedOAuthToken = nil
+            let body = String(data: data, encoding: .utf8) ?? ""
+            Logger.tailscale.error("Auth failed: \(body)")
             throw TailscaleError.authenticationFailed
         }
 
         guard httpResponse.statusCode == 200 else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            Logger.tailscale.error("API error \(httpResponse.statusCode): \(body)")
             throw TailscaleError.fetchFailed(statusCode: httpResponse.statusCode)
         }
 
         let decoder = JSONDecoder()
-        let apiResponse = try decoder.decode(TailscaleAPIDevicesResponse.self, from: data)
+        let apiResponse: TailscaleAPIResponse
+        do {
+            apiResponse = try decoder.decode(TailscaleAPIResponse.self, from: data)
+        } catch {
+            // Log first 500 chars of response to help debug
+            let preview = String(data: data.prefix(500), encoding: .utf8) ?? "(binary)"
+            Logger.tailscale.error("Decode failed: \(error)\nResponse preview: \(preview)")
+            throw error
+        }
 
-        // ISO 8601 date formatter for lastSeen
         let dateFormatter = ISO8601DateFormatter()
         dateFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-
         let fallbackFormatter = ISO8601DateFormatter()
         fallbackFormatter.formatOptions = [.withInternetDateTime]
 
-        devices = apiResponse.devices.compactMap { apiDevice in
-            guard let ip = apiDevice.ipv4Address else { return nil }
+        // Filter out iOS/iPadOS/Android — they don't run SSH servers
+        let nonMobileOS = Set(["iOS", "iPadOS", "android"])
+
+        devices = apiResponse.devices.compactMap { d in
+            guard !nonMobileOS.contains(d.os) else {
+                Logger.tailscale.debug("Skipping \(d.hostname): mobile OS (\(d.os))")
+                return nil
+            }
+            guard let ip = d.ipv4Address else {
+                Logger.tailscale.debug("Skipping \(d.hostname): no IPv4 address")
+                return nil
+            }
 
             let lastSeenDate: Date?
-            if let ls = apiDevice.lastSeen {
+            if let ls = d.lastSeen {
                 lastSeenDate = dateFormatter.date(from: ls) ?? fallbackFormatter.date(from: ls)
             } else {
                 lastSeenDate = nil
             }
 
             return TailscaleDevice(
-                id: apiDevice.id,
-                hostname: apiDevice.hostname,
-                displayName: apiDevice.name,
+                id: d.id,
+                hostname: d.hostname,
+                displayName: d.name,
                 ipAddress: ip,
-                os: apiDevice.os,
-                online: apiDevice.online ?? false,
+                os: d.os,
                 lastSeen: lastSeenDate,
-                user: apiDevice.user
+                user: d.user
             )
         }
-        .filter { $0.online }
 
-        Logger.tailscale.info("Fetched \(apiResponse.devices.count) devices (\(self.devices.count) online with IPv4).")
+        Logger.tailscale.info("Loaded \(self.devices.count) devices with IPv4 (of \(apiResponse.devices.count) total)")
     }
 
     // MARK: - Test Connection
@@ -180,7 +228,7 @@ class TailscaleClient {
         }
 
         let success = httpResponse.statusCode == 200
-        Logger.tailscale.info("Connection test: \(success ? "succeeded" : "failed (HTTP \(httpResponse.statusCode))")")
+        Logger.tailscale.info("Connection test: HTTP \(httpResponse.statusCode)")
         return success
     }
 
@@ -193,13 +241,11 @@ class TailscaleClient {
         do {
             try await fetchDevices(tailnet: tailnet)
         } catch let decodingError as DecodingError {
-            errorMessage = "Failed to decode Tailscale API response. The API format may have changed."
+            errorMessage = "Failed to decode API response."
             Logger.tailscale.error("Decoding error: \(decodingError)")
         } catch let error as TailscaleError {
             errorMessage = error.localizedDescription
-            Logger.tailscale.error("Tailscale error: \(error)")
         } catch {
-            // Keychain errors show as generic "data couldn't be read" — translate
             let authMethod = TailscaleAuthMethod(rawValue:
                 UserDefaults.standard.string(forKey: UserDefaultsKeys.tailscaleAuthMethod) ?? "apiKey"
             ) ?? .apiKey
@@ -209,7 +255,7 @@ class TailscaleClient {
             case .oauthClient:
                 errorMessage = "No OAuth credentials found. Add them in Settings → Tailscale."
             }
-            Logger.tailscale.error("Failed to load devices: \(error)")
+            Logger.tailscale.error("Load failed: \(error)")
         }
 
         isLoading = false

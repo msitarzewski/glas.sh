@@ -417,6 +417,9 @@ struct GeneralSettingsView: View {
         tailscaleTestInProgress = true
         tailscaleTestResult = nil
 
+        // Persist auth method first so loadDevices knows which path to use
+        UserDefaults.standard.set(tailscaleAuthMethod.rawValue, forKey: UserDefaultsKeys.tailscaleAuthMethod)
+
         do {
             switch tailscaleAuthMethod {
             case .apiKey:
@@ -429,7 +432,6 @@ struct GeneralSettingsView: View {
                     clientSecret: tailscaleOAuthClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
                 )
             }
-            UserDefaults.standard.set(tailscaleAuthMethod.rawValue, forKey: UserDefaultsKeys.tailscaleAuthMethod)
         } catch {
             tailscaleTestResult = "Failed to save: \(error.localizedDescription)"
             tailscaleTestInProgress = false
