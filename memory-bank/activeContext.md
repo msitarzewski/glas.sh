@@ -1,23 +1,22 @@
 # Active Context
 
 ## Current Focus
-- Sprint 1 and Sprint 2 shipped and merged to main.
-- Sprint 2 follow-up fixes merged (window restoration crashes, widget data, keyboard focus maintenance).
-- Ready for Sprint 3 planning and implementation.
+- "Command Center" release is COMPLETE. All 4 sprints shipped and merged to main.
+- Sprint 1 (Table Stakes), Sprint 2 (Spatial Leap), Sprint 3 (Command Center), Sprint Details (Hardening) — all done.
 
-## Immediate Priorities
-- Sprint 3 (Tier 3 — Command Center):
-  - Tailscale discovery + SSH integration
-  - Session recording + AI summary (leverages existing Foundation Models infrastructure)
-  - Immersive focus environment
-  - Notification overlays
-  - SharePlay terminal sharing
-- Follow-up hardening:
-  - Remote port forwarding (-R) and dynamic/SOCKS (-D)
-  - Multi-hop jump host chains
-  - True Secure Enclave signing integration
-  - SFTP download performance (currently slow for large files, 32KB chunk size)
-  - glassdb follow-up: read servers/keys from shared App Group suite
+## What's Next
+- SSH Agent forwarding implementation (UI exists, not wired)
+- SFTP drag-and-drop
+- Terminal themes (import/export)
+- App Store submission prep (screenshots, description, privacy policy)
+- glassdb follow-up: read servers/keys from shared App Group suite
+
+## Known Platform Limitations
+- Bell audio not spatialized per-window (visionOS has no API for per-window short audio effects)
+- No custom passthrough blur (only system Materials)
+- SharePlay viewer is read-only (no remote input yet)
+- Secure Enclave keys are device-bound (cannot transfer)
+- SecureEnclave.isAvailable returns false in simulator
 
 ## Sprint 2 Learnings (apply to future sprints)
 - **Window restoration**: `.restorationBehavior(.automatic)` is incompatible with ephemeral in-memory sessions. SSH connections can't survive app quit. Layout presets (reconnect fresh) are the right pattern instead.

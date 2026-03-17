@@ -97,11 +97,22 @@
     - Main Window restoration disabled (prevented duplicate Connections window)
     - Keyboard focus maintenance: 2-second periodic `becomeFirstResponder` timer to combat visionOS RTI idle dropout
 
-## Open Areas
-- Sprint 3 (Tier 3 — Command Center): Tailscale integration, session recording + AI summary, immersive focus environment, notification overlays, SharePlay.
-- Port forwarding: Remote (-R) and dynamic/SOCKS (-D) still deferred.
-- Jump hosts: Multi-hop chains deferred (single hop implemented).
-- Follow-up hardening: true Secure Enclave signing semantics.
-- SFTP download performance: 32KB chunk size is slow for large files — consider increasing or using streaming writes.
-- glassdb follow-up: read servers/keys from shared App Group suite.
-- visionOS blur: user wants true gaussian blur of passthrough (like macOS window transparency blur), not system material frost. No visionOS API exists for custom passthrough blur — revisit when/if Apple adds one.
+- Sprint 3 "Command Center" shipped (2026-03-17):
+  - Tailscale discovery, session recording + AI summary, immersive focus, notifications, SharePlay
+- Sprint Details "Hardening" shipped (2026-03-17):
+  - Remote (-R) + dynamic/SOCKS (-D) port forwarding, multi-hop jump hosts, true Secure Enclave signing, SFTP 256KB chunks, glass material picker, glassdb schema versioning
+  - Follow-up: Tailscale API struct rewrite (matched official Go client), dual auth (API key + OAuth), mobile device filtering, SSH port field, keyboard focus isKeyWindow guard, stable bell audio
+
+## What's Next
+- SSH Agent forwarding implementation (UI exists, auth path not wired)
+- SFTP drag-and-drop
+- Terminal themes (import/export)
+- App Store submission prep (screenshots, description, privacy policy)
+- glassdb follow-up: read servers/keys from shared App Group suite
+
+## Known Platform Limitations
+- Bell audio not spatialized per-window (visionOS has no API for per-window short audio effects — tried AudioServices, AVAudioPlayer, RealityKit)
+- No custom passthrough blur (only system Materials — user wants true gaussian blur, no API exists)
+- SharePlay viewer is read-only (no remote input yet)
+- Secure Enclave keys are device-bound (cannot transfer to new device)
+- SecureEnclave.isAvailable returns false in visionOS Simulator
