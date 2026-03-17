@@ -30,6 +30,7 @@ struct TerminalWindowView: View {
     @StateObject private var terminalHostModel = SwiftTermHostModel()
     @State private var didRunCloseGooseCall = false
     @State private var errorCheckTask: Task<Void, Never>?
+    @State private var terminalAudioManager = TerminalAudioManager()
     @State private var notificationManager = NotificationManager()
     @State private var isImmersiveFocusActive = false
     @State private var showingRecordings = false
@@ -192,7 +193,7 @@ struct TerminalWindowView: View {
                 },
                 onBell: {
                     guard settingsManager.bellEnabled else { return }
-                    TerminalAudioManager.shared.playBell()
+                    terminalAudioManager.playBell()
                     if settingsManager.visualBell {
                         withAnimation(.easeInOut(duration: 0.1)) { showVisualBell = true }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {

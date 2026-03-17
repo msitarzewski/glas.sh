@@ -2,7 +2,9 @@
 //  TerminalAudioManager.swift
 //  glas.sh
 //
-//  Spatial audio playback for terminal bell alerts
+//  Spatial audio playback for terminal bell alerts.
+//  Each instance owns its own AVAudioPlayer so visionOS spatializes
+//  the sound from the window that created the player.
 //
 
 import AVFoundation
@@ -10,15 +12,18 @@ import os
 
 @MainActor
 final class TerminalAudioManager {
-    static let shared = TerminalAudioManager()
-
     private var bellPlayer: AVAudioPlayer?
 
-    private init() {
-        do {
-            try AVAudioSession.sharedInstance().setCategory(.ambient)
-        } catch {
-            Logger.audio.error("Failed to set audio session category: \(error)")
+    private static var audioSessionConfigured = false
+
+    init() {
+        if !Self.audioSessionConfigured {
+            Self.audioSessionConfigured = true
+            do {
+                try AVAudioSession.sharedInstance().setCategory(.ambient)
+            } catch {
+                Logger.audio.error("Failed to set audio session category: \(error)")
+            }
         }
         preloadBell()
     }
