@@ -54,6 +54,9 @@ public final class SwiftTermHostModel: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
                 guard !Task.isCancelled, let self, let view = self.terminalView else { break }
+                // Only re-assert focus if this terminal's window is the key window.
+                // Otherwise we'd steal keyboard from Connections, Settings, etc.
+                guard let window = view.window, window.isKeyWindow else { continue }
                 if !view.isFirstResponder {
                     _ = view.becomeFirstResponder()
                 }
