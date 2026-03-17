@@ -59,6 +59,10 @@ struct GeneralSettingsView: View {
     @State private var keyCopyMessage: String?
     @State private var sshConfigText: String = ""
     @State private var importResultMessage: String?
+    @State private var tailscaleClientID: String = ""
+    @State private var tailscaleClientSecret: String = ""
+    @State private var tailscaleTestResult: String?
+    @State private var tailscaleTestInProgress = false
     
     var body: some View {
         @Bindable var settings = settingsManager
@@ -91,6 +95,18 @@ struct GeneralSettingsView: View {
                     }
             }
             
+            Section("Session Recording") {
+                Toggle("Auto-record sessions", isOn: $settings.autoRecordSessions)
+                    .onChange(of: settings.autoRecordSessions) { _, _ in
+                        settings.saveSettings()
+                    }
+
+                let recordings = SessionRecorder.loadRecordings()
+                let totalSize = Self.recordingStorageSize()
+                LabeledContent("Recordings", value: "\(recordings.count)")
+                LabeledContent("Storage", value: Self.formatBytes(totalSize))
+            }
+
             Section("Notifications") {
                 Toggle("Bell enabled", isOn: $settings.bellEnabled)
                     .onChange(of: settings.bellEnabled) { _, _ in
@@ -112,6 +128,50 @@ struct GeneralSettingsView: View {
                 }
                 .onChange(of: settings.hostKeyVerificationMode) { _, _ in
                     settings.saveSettings()
+                }
+            }
+
+            Section("Tailscale") {
+                TextField("Tailnet name", text: $settings.tailscaleTailnet)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .onChange(of: settings.tailscaleTailnet) { _, _ in
+                        settings.saveSettings()
+                    }
+
+                TextField("OAuth Client ID", text: $tailscaleClientID)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+
+                SecureField("OAuth Client Secret", text: $tailscaleClientSecret)
+
+                Button {
+                    saveTailscaleCredentialsAndTest()
+                } label: {
+                    HStack {
+                        if tailscaleTestInProgress {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text("Test Connection")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(
+                    tailscaleClientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || tailscaleClientSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || tailscaleTestInProgress
+                )
+
+                Toggle("Auto-discover Tailscale devices", isOn: $settings.tailscaleAutoDiscover)
+                    .onChange(of: settings.tailscaleAutoDiscover) { _, _ in
+                        settings.saveSettings()
+                    }
+
+                if let tailscaleTestResult {
+                    Text(tailscaleTestResult)
+                        .font(.caption)
+                        .foregroundStyle(tailscaleTestResult.hasPrefix("Success") ? .green : .red)
                 }
             }
 
@@ -221,6 +281,7 @@ struct GeneralSettingsView: View {
         .task {
             serverManager.loadServersIfNeeded()
             settingsManager.refreshSecretMigrationStatus()
+            loadTailscaleCredentials()
         }
         .sheet(isPresented: $showingAddSSHKey) {
             AddSSHKeyView()
@@ -289,6 +350,60 @@ struct GeneralSettingsView: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
         #endif
+    }
+
+    private func loadTailscaleCredentials() {
+        if let credentials = try? KeychainManager.retrieveTailscaleCredentials() {
+            tailscaleClientID = credentials.clientID
+            tailscaleClientSecret = credentials.clientSecret
+        }
+    }
+
+    private static func recordingStorageSize() -> Int64 {
+        let directory = SessionRecorder.recordingsDirectory
+        guard let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.fileSizeKey]) else {
+            return 0
+        }
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            if let size = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+                total += Int64(size)
+            }
+        }
+        return total
+    }
+
+    private static func formatBytes(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
+    }
+
+    private func saveTailscaleCredentialsAndTest() {
+        tailscaleTestInProgress = true
+        tailscaleTestResult = nil
+
+        let clientID = tailscaleClientID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clientSecret = tailscaleClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        do {
+            try KeychainManager.saveTailscaleCredentials(clientID: clientID, clientSecret: clientSecret)
+        } catch {
+            tailscaleTestResult = "Failed to save credentials: \(error.localizedDescription)"
+            tailscaleTestInProgress = false
+            return
+        }
+
+        Task {
+            let client = TailscaleClient()
+            do {
+                let success = try await client.testConnection()
+                tailscaleTestResult = success ? "Success - connected to Tailscale." : "Connection test returned false."
+            } catch {
+                tailscaleTestResult = "Error: \(error.localizedDescription)"
+            }
+            tailscaleTestInProgress = false
+        }
     }
 }
 

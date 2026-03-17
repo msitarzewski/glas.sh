@@ -30,7 +30,14 @@ struct TerminalWindowView: View {
     @StateObject private var terminalHostModel = SwiftTermHostModel()
     @State private var didRunCloseGooseCall = false
     @State private var errorCheckTask: Task<Void, Never>?
+    @State private var notificationManager = NotificationManager()
+    @State private var isImmersiveFocusActive = false
+    @State private var showingRecordings = false
+    @State private var sharePlayManager = SharePlayManager()
+    @State private var previousSessionState: SessionState?
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     
@@ -89,9 +96,20 @@ struct TerminalWindowView: View {
         .onDisappear {
             terminalHostModel.stopFocusMaintenance()
             runCloseGooseCallIfNeeded()
+            if isImmersiveFocusActive {
+                Task { await dismissImmersiveSpace() }
+                isImmersiveFocusActive = false
+            }
+            sharePlayManager.stopSharing()
         }
         .onChange(of: showingSearchOverlay) { _, showing in
             if showing { isSearchFieldFocused = true }
+        }
+        .onChange(of: session.state) { oldState, newState in
+            handleSessionStateNotification(from: oldState, to: newState)
+        }
+        .sheet(isPresented: $showingRecordings) {
+            recordingsListSheet
         }
     }
     
@@ -115,6 +133,13 @@ struct TerminalWindowView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Cancel reconnect")
             } else {
+                if session.recorder?.isRecording == true {
+                    Circle()
+                        .fill(.red)
+                        .frame(width: 8, height: 8)
+                        .accessibilityLabel("Recording")
+                }
+
                 Text(session.server.name)
                     .font(.caption)
                     .fontWeight(.semibold)
@@ -122,6 +147,16 @@ struct TerminalWindowView: View {
                 Text("\(session.server.username)@\(session.server.host):\(session.server.port)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if sharePlayManager.isActive {
+                    HStack(spacing: 3) {
+                        Image(systemName: "shareplay")
+                            .font(.caption2)
+                        Text("\(sharePlayManager.participantCount)")
+                            .font(.caption2.weight(.semibold))
+                    }
+                    .foregroundStyle(.green)
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -233,6 +268,17 @@ struct TerminalWindowView: View {
                 .padding(.bottom, 14)
                 .padding(.horizontal, 14)
             }
+        }
+        .overlay(alignment: .topTrailing) {
+            VStack(spacing: 6) {
+                ForEach(notificationManager.active) { notification in
+                    NotificationBanner(notification: notification) {
+                        notificationManager.dismiss(notification.id)
+                    }
+                }
+            }
+            .padding(14)
+            .animation(.spring(), value: notificationManager.active.count)
         }
         .onAppear {
             aiAssistant.checkAvailability()
@@ -382,6 +428,50 @@ struct TerminalWindowView: View {
             .accessibilityLabel("SFTP Browser")
             .help("SFTP Browser")
 
+            Button {
+                Task {
+                    if isImmersiveFocusActive {
+                        await dismissImmersiveSpace()
+                        isImmersiveFocusActive = false
+                    } else {
+                        let result = await openImmersiveSpace(id: "focus-environment")
+                        isImmersiveFocusActive = (result == .opened)
+                    }
+                }
+            } label: {
+                Image(systemName: isImmersiveFocusActive ? "moon.fill" : "moon")
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(isImmersiveFocusActive ? "Exit Focus Mode" : "Focus Mode")
+            .help(isImmersiveFocusActive ? "Exit Focus Mode" : "Focus Mode")
+
+            Button {
+                Task {
+                    if sharePlayManager.isActive {
+                        sharePlayManager.stopSharing()
+                    } else {
+                        await sharePlayManager.startSharing(
+                            serverName: session.server.name,
+                            sessionID: session.id
+                        )
+                    }
+                }
+            } label: {
+                Image(systemName: "shareplay")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(sharePlayManager.isActive ? .green : .primary)
+            .disabled(session.state != .connected)
+            .accessibilityLabel(sharePlayManager.isActive ? "Stop Sharing" : "Share Terminal")
+            .help(sharePlayManager.isActive ? "Stop Sharing" : "Share Terminal")
+
+            if session.recorder?.isRecording == true {
+                Circle()
+                    .fill(.red)
+                    .frame(width: 10, height: 10)
+                    .accessibilityLabel("Recording in progress")
+            }
+
             Menu {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
@@ -413,6 +503,39 @@ struct TerminalWindowView: View {
                     Label("Snippets", systemImage: "text.page")
                 }
                 .disabled(session.state != .connected || settingsManager.snippets.isEmpty)
+
+                Divider()
+
+                if session.recorder?.isRecording == true {
+                    Button {
+                        let _ = session.recorder?.stop()
+                        notificationManager.post(icon: "stop.circle", title: "Recording saved", style: .info)
+                    } label: {
+                        Label("Stop Recording", systemImage: "stop.circle.fill")
+                    }
+                } else {
+                    Button {
+                        if session.recorder == nil {
+                            session.recorder = SessionRecorder()
+                        }
+                        session.recorder?.start(
+                            sessionID: session.id,
+                            serverName: session.server.name,
+                            host: session.server.host,
+                            width: 140, height: 40
+                        )
+                        notificationManager.post(icon: "record.circle", title: "Recording started", style: .info)
+                    } label: {
+                        Label("Start Recording", systemImage: "record.circle")
+                    }
+                    .disabled(session.state != .connected)
+                }
+
+                Button {
+                    showingRecordings = true
+                } label: {
+                    Label("Recordings", systemImage: "list.bullet.rectangle")
+                }
 
                 Divider()
 
@@ -829,6 +952,78 @@ struct AddSessionPortForwardView: View {
         guard !remoteHost.isEmpty else { return false }
         guard let remote = Int(remotePort), remote > 0 && remote <= 65535 else { return false }
         return true
+    }
+}
+
+// MARK: - Session State Notifications
+
+extension TerminalWindowView {
+    func handleSessionStateNotification(from oldState: SessionState, to newState: SessionState) {
+        switch newState {
+        case .connected where oldState == .reconnecting:
+            notificationManager.post(icon: "checkmark.circle.fill", title: "Reconnected", style: .success)
+        case .error(let message):
+            notificationManager.post(icon: "exclamationmark.triangle.fill", title: "Connection Error", message: message, style: .error)
+        case .disconnected where oldState == .connected:
+            notificationManager.post(icon: "xmark.circle", title: "Disconnected", style: .warning)
+        default:
+            break
+        }
+    }
+
+    var recordingsListSheet: some View {
+        NavigationStack {
+            List {
+                let recordings = SessionRecorder.loadRecordings()
+                if recordings.isEmpty {
+                    ContentUnavailableView("No Recordings", systemImage: "waveform", description: Text("Session recordings will appear here."))
+                } else {
+                    ForEach(recordings) { recording in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(recording.serverName)
+                                    .font(.headline)
+                                Spacer()
+                                Text("\(recording.eventCount) events")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            HStack {
+                                Text(recording.host)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text(recording.startTime, format: .dateTime.month().day().hour().minute())
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+
+                            if let endTime = recording.endTime {
+                                let duration = endTime.timeIntervalSince(recording.startTime)
+                                Text("Duration: \(Int(duration / 60))m \(Int(duration.truncatingRemainder(dividingBy: 60)))s")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                SessionRecorder.deleteRecording(recording)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Recordings")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { showingRecordings = false }
+                }
+            }
+        }
+        .frame(width: 520, height: 440)
     }
 }
 

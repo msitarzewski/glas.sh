@@ -26,6 +26,9 @@ struct ConnectionManagerView: View {
     @State private var connectionFailureMessage: String?
     @State private var quickConnectPasswordPrompt: ServerConfiguration?
     @State private var quickConnectPassword: String = ""
+    @State private var quickConnectUsername: String = ""
+    @State private var tailscaleClient = TailscaleClient()
+    @State private var tailscaleUsernamePromptDevice: TailscaleDevice?
     
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
@@ -213,8 +216,17 @@ struct ConnectionManagerView: View {
     }
 
     // MARK: - Detail View
-    
+
+    @ViewBuilder
     private var detailView: some View {
+        if selectedSection == .tailscale {
+            tailscaleDetailView
+        } else {
+            serverListDetailView
+        }
+    }
+
+    private var serverListDetailView: some View {
         VStack(spacing: 0) {
             if !activeTagFilters.isEmpty {
                 activeTagFilterBar
@@ -271,6 +283,137 @@ struct ConnectionManagerView: View {
         }
     }
 
+    private var tailscaleDetailView: some View {
+        List {
+            if tailscaleClient.isLoading {
+                HStack {
+                    Spacer()
+                    ProgressView("Loading Tailscale devices...")
+                    Spacer()
+                }
+                .padding(.vertical, 20)
+            } else if let error = tailscaleClient.errorMessage {
+                Section {
+                    VStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.title2)
+                            .foregroundStyle(.orange)
+                        Text(error)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                        Button("Retry") {
+                            loadTailscaleDevices()
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                }
+            } else if tailscaleClient.devices.isEmpty {
+                ContentUnavailableView {
+                    Label("No Devices", systemImage: "network")
+                } description: {
+                    Text("No Tailscale devices found. Configure OAuth credentials in Settings.")
+                }
+            } else {
+                Section("Devices (\(tailscaleClient.devices.count))") {
+                    ForEach(tailscaleClient.devices) { device in
+                        TailscaleDeviceRow(device: device)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                tailscaleUsernamePromptDevice = device
+                            }
+                            .contextMenu {
+                                Button {
+                                    importTailscaleDevice(device)
+                                } label: {
+                                    Label("Import as Server", systemImage: "square.and.arrow.down")
+                                }
+                            }
+                    }
+                }
+            }
+        }
+        .onAppear {
+            loadTailscaleDevices()
+        }
+        .alert("Connect to Tailscale Device", isPresented: tailscaleUsernamePromptBinding) {
+            TextField("Username", text: $quickConnectUsername)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            SecureField("Password", text: $quickConnectPassword)
+            Button("Connect") {
+                if let device = tailscaleUsernamePromptDevice {
+                    let config = ServerConfiguration(
+                        name: device.hostname,
+                        host: device.sshAddress ?? "",
+                        port: 22,
+                        username: quickConnectUsername
+                    )
+                    let password = quickConnectPassword
+                    quickConnectUsername = ""
+                    quickConnectPassword = ""
+                    tailscaleUsernamePromptDevice = nil
+                    Task { @MainActor in
+                        let session = await sessionManager.createSession(for: config, password: password)
+                        if session.state == .connected {
+                            openWindow(id: "terminal", value: session.id)
+                            dismissWindow(id: "main")
+                        } else if case .error(let message) = session.state {
+                            connectionFailureMessage = message
+                            sessionManager.closeSession(session)
+                        }
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                quickConnectUsername = ""
+                quickConnectPassword = ""
+                tailscaleUsernamePromptDevice = nil
+            }
+        } message: {
+            if let device = tailscaleUsernamePromptDevice {
+                Text("Enter credentials for \(device.hostname) (\(device.sshAddress ?? "unknown"))")
+            }
+        }
+    }
+
+    private var tailscaleUsernamePromptBinding: Binding<Bool> {
+        Binding(
+            get: { tailscaleUsernamePromptDevice != nil },
+            set: { isPresented in
+                if !isPresented {
+                    tailscaleUsernamePromptDevice = nil
+                    quickConnectUsername = ""
+                    quickConnectPassword = ""
+                }
+            }
+        )
+    }
+
+    private func loadTailscaleDevices() {
+        let tailnet = settingsManager.tailscaleTailnet.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tailnet.isEmpty else {
+            tailscaleClient.errorMessage = "Tailnet name not configured. Set it in Settings."
+            return
+        }
+        Task {
+            await tailscaleClient.loadDevices(tailnet: tailnet)
+        }
+    }
+
+    private func importTailscaleDevice(_ device: TailscaleDevice) {
+        let config = ServerConfiguration(
+            name: device.hostname,
+            host: device.sshAddress ?? "",
+            port: 22,
+            username: "",
+            tags: ["tailscale"]
+        )
+        serverManager.addServer(config)
+    }
+
     private var activeTagFilterBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
@@ -320,6 +463,8 @@ struct ConnectionManagerView: View {
             servers = serverManager.servers.filter { !$0.tags.isEmpty }
         case .recent:
             servers = serverManager.recentServers
+        case .tailscale:
+            servers = []
         case .tag(let tag):
             servers = serverManager.servers.filter { $0.tags.contains(tag) }
         }
@@ -770,6 +915,7 @@ enum ConnectionSection: Hashable, Identifiable, CaseIterable {
     case all
     case tags
     case recent
+    case tailscale
     case tag(String)
 
     var id: String {
@@ -778,6 +924,7 @@ enum ConnectionSection: Hashable, Identifiable, CaseIterable {
         case .all: return "all"
         case .tags: return "tags"
         case .recent: return "recent"
+        case .tailscale: return "tailscale"
         case .tag(let tag): return "tag-\(tag)"
         }
     }
@@ -788,6 +935,7 @@ enum ConnectionSection: Hashable, Identifiable, CaseIterable {
         case .all: return "All Servers"
         case .tags: return "Tags"
         case .recent: return "Recent"
+        case .tailscale: return "Tailscale"
         case .tag(let tag): return tag
         }
     }
@@ -798,6 +946,7 @@ enum ConnectionSection: Hashable, Identifiable, CaseIterable {
         case .all: return "server.rack"
         case .tags: return "tag"
         case .recent: return "clock.fill"
+        case .tailscale: return "network"
         case .tag: return "tag.fill"
         }
     }
@@ -808,14 +957,64 @@ enum ConnectionSection: Hashable, Identifiable, CaseIterable {
         case .all: return .blue
         case .tags: return .orange
         case .recent: return .purple
+        case .tailscale: return .cyan
         case .tag: return .orange
         }
     }
 
     static var allCases: [ConnectionSection] {
-        [.favorites, .all, .tags, .recent]
+        [.favorites, .all, .tags, .recent, .tailscale]
     }
 
+}
+
+// MARK: - Tailscale Device Row
+
+private struct TailscaleDeviceRow: View {
+    let device: TailscaleDevice
+
+    var body: some View {
+        HStack(spacing: 16) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(device.online ? Color.green : Color.gray)
+                    .frame(width: 10, height: 10)
+                    .accessibilityLabel(device.online ? "Online" : "Offline")
+
+                Text(device.hostname)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+            }
+            .frame(minWidth: 180, alignment: .leading)
+
+            if let address = device.sshAddress {
+                Text(address)
+                    .font(.subheadline.monospaced())
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text("No address")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Text(device.os)
+                .font(.caption)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(.regularMaterial, in: .capsule)
+
+            Text(device.online ? "Online" : "Offline")
+                .font(.caption)
+                .foregroundStyle(device.online ? .green : .secondary)
+                .frame(width: 60, alignment: .trailing)
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(device.hostname), \(device.os), \(device.online ? "online" : "offline")")
+        .accessibilityHint("Double tap to connect via SSH")
+    }
 }
 
 private let relativeDateFormatter: RelativeDateTimeFormatter = {

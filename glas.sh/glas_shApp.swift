@@ -97,6 +97,13 @@ struct glas_shApp: App {
         }
         .windowStyle(.plain)
         .defaultSize(width: 700, height: 600)
+
+        // Immersive focus environment
+        ImmersiveSpace(id: "focus-environment") {
+            FocusEnvironmentView()
+        }
+        .immersionStyle(selection: .constant(.progressive), in: .progressive)
+        .restorationBehavior(.disabled)
     }
 }
 
