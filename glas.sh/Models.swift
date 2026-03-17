@@ -79,7 +79,16 @@ struct ServerConfiguration: Identifiable, Codable, Hashable {
     var lastConnected: Date?
     var tags: [String]
     var jumpHostID: UUID?
-    
+    var jumpHostIDs: [UUID]?
+
+    /// Returns the ordered list of jump host UUIDs, preferring the multi-hop
+    /// array when present and falling back to the legacy single-hop property.
+    var resolvedJumpHostIDs: [UUID] {
+        if let ids = jumpHostIDs, !ids.isEmpty { return ids }
+        if let id = jumpHostID { return [id] }
+        return []
+    }
+
     // Advanced options
     var compression: Bool
     var keepAliveInterval: Int // seconds
@@ -101,7 +110,8 @@ struct ServerConfiguration: Identifiable, Codable, Hashable {
         isFavorite: Bool = false,
         colorTag: ServerColorTag = .blue,
         tags: [String] = [],
-        jumpHostID: UUID? = nil
+        jumpHostID: UUID? = nil,
+        jumpHostIDs: [UUID]? = nil
     ) {
         self.id = id
         self.name = name
@@ -118,6 +128,7 @@ struct ServerConfiguration: Identifiable, Codable, Hashable {
         self.lastConnected = nil
         self.tags = tags
         self.jumpHostID = jumpHostID
+        self.jumpHostIDs = jumpHostIDs
 
         // Defaults
         self.compression = false
@@ -293,8 +304,8 @@ class TerminalSession: Identifiable, Hashable {
     var scrollbackBuffer: [TerminalLine] = []
     let maxScrollback: Int = 10000
     
-    // Jump host configuration (resolved before connect)
-    var jumpHostConfig: ServerConfiguration?
+    // Jump host chain (resolved before connect, ordered first-hop to last-hop)
+    var jumpHostChain: [ServerConfiguration] = []
 
     // SSH Connection
     private var sshConnection: SSHConnection?
@@ -352,7 +363,7 @@ class TerminalSession: Identifiable, Hashable {
         appendLine(TerminalLine(text: "Connecting to \(server.name)...", style: .system))
         
         do {
-            try await sshConnection?.connect(password: password, jumpHostConfig: jumpHostConfig)
+            try await sshConnection?.connect(password: password, jumpHostChain: jumpHostChain)
             pendingHostKeyChallenge = nil
             connectionProgress = nil
             lastConnectionDiagnostics = nil
@@ -1045,8 +1056,8 @@ class SSHConnection {
         }
     }
 
-    /// Connect to SSH server, optionally through a jump host (ProxyJump)
-    func connect(password: String?, jumpHostConfig: ServerConfiguration? = nil) async throws {
+    /// Connect to SSH server, optionally through a chain of jump hosts (ProxyJump)
+    func connect(password: String?, jumpHostChain: [ServerConfiguration] = []) async throws {
         guard let session = session else { throw SSHError.sessionNotFound }
         let server = session.server
         let normalizedHost = Self.normalizedHost(server.host)
@@ -1065,50 +1076,91 @@ class SSHConnection {
         session.setConnectionProgress(.openingSocket(port: server.port))
         session.setConnectionProgress(.negotiatingSecurity)
 
-        if let jumpConfig = jumpHostConfig {
-            // --- Jump Host (ProxyJump) path ---
-            let jumpHost = Self.normalizedHost(jumpConfig.host)
-            guard !jumpHost.isEmpty else {
-                throw SSHError.invalidHost(jumpConfig.host)
+        if !jumpHostChain.isEmpty {
+            // --- Jump Host Chain (multi-hop ProxyJump) path ---
+            let firstHop = jumpHostChain[0]
+            let firstHopHost = Self.normalizedHost(firstHop.host)
+            guard !firstHopHost.isEmpty else {
+                throw SSHError.invalidHost(firstHop.host)
             }
 
-            // Resolve jump host credentials (password from keychain for password auth)
-            let jumpPassword: String?
-            if jumpConfig.authMethod == .password {
-                jumpPassword = try KeychainManager.retrievePassword(for: jumpConfig)
+            // Resolve first hop credentials
+            let firstHopPassword: String?
+            if firstHop.authMethod == .password {
+                firstHopPassword = try KeychainManager.retrievePassword(for: firstHop)
             } else {
-                jumpPassword = nil
+                firstHopPassword = nil
             }
-            let jumpAuth = try Self.resolveAuthMethod(for: jumpConfig, password: jumpPassword)
-            let jumpValidator = Self.resolveHostKeyValidator(for: jumpConfig, normalizedHost: jumpHost)
+            let firstHopAuth = try Self.resolveAuthMethod(for: firstHop, password: firstHopPassword)
+            let firstHopValidator = Self.resolveHostKeyValidator(for: firstHop, normalizedHost: firstHopHost)
 
             session.appendLine(TerminalLine(
-                text: "Connecting via jump host \(jumpConfig.name) (\(jumpConfig.host):\(jumpConfig.port))...",
+                text: "Connecting via jump host \(firstHop.name) (\(firstHop.host):\(firstHop.port))...",
                 style: .system
             ))
 
-            // 1. Connect to the jump host
-            let jumpClient = try await Self.connectWithFallback(
-                host: jumpHost,
-                port: jumpConfig.port,
-                authenticationMethod: jumpAuth,
-                hostKeyValidator: jumpValidator,
+            // 1. Connect to the first jump host
+            var currentClient = try await Self.connectWithFallback(
+                host: firstHopHost,
+                port: firstHop.port,
+                authenticationMethod: firstHopAuth,
+                hostKeyValidator: firstHopValidator,
                 session: session
             )
 
             session.appendLine(TerminalLine(
-                text: "Jump host connected. Tunneling to \(server.host):\(server.port)...",
+                text: "Hop 1/\(jumpHostChain.count) connected: \(firstHop.name)",
                 style: .system
             ))
 
-            // 2. Jump through to the target server
+            // 2. Jump through each subsequent hop in the chain
+            for (index, hopConfig) in jumpHostChain.dropFirst().enumerated() {
+                let hopHost = Self.normalizedHost(hopConfig.host)
+                guard !hopHost.isEmpty else {
+                    throw SSHError.invalidHost(hopConfig.host)
+                }
+
+                let hopPassword: String?
+                if hopConfig.authMethod == .password {
+                    hopPassword = try KeychainManager.retrievePassword(for: hopConfig)
+                } else {
+                    hopPassword = nil
+                }
+                let hopAuth = try Self.resolveAuthMethod(for: hopConfig, password: hopPassword)
+                let hopValidator = Self.resolveHostKeyValidator(for: hopConfig, normalizedHost: hopHost)
+
+                session.appendLine(TerminalLine(
+                    text: "Jumping to hop \(index + 2)/\(jumpHostChain.count): \(hopConfig.name) (\(hopConfig.host):\(hopConfig.port))...",
+                    style: .system
+                ))
+
+                let hopSettings = SSHClientSettings(
+                    host: hopHost,
+                    port: hopConfig.port,
+                    authenticationMethod: { hopAuth },
+                    hostKeyValidator: hopValidator
+                )
+                currentClient = try await currentClient.jump(to: hopSettings)
+
+                session.appendLine(TerminalLine(
+                    text: "Hop \(index + 2)/\(jumpHostChain.count) connected: \(hopConfig.name)",
+                    style: .system
+                ))
+            }
+
+            session.appendLine(TerminalLine(
+                text: "Tunneling to target \(server.host):\(server.port)...",
+                style: .system
+            ))
+
+            // 3. Jump through to the final target server
             let targetSettings = SSHClientSettings(
                 host: normalizedHost,
                 port: server.port,
                 authenticationMethod: { authMethod },
                 hostKeyValidator: hostKeyValidator
             )
-            self.client = try await jumpClient.jump(to: targetSettings)
+            self.client = try await currentClient.jump(to: targetSettings)
         } else {
             // --- Direct connection path ---
             self.client = try await Self.connectWithFallback(
@@ -1261,6 +1313,22 @@ class SSHConnection {
                          originatorAddress: try .init(ipAddress: "127.0.0.1", port: 0)),
             initialize: { $0.eventLoop.makeSucceededVoidFuture() }
         )
+    }
+
+    /// Request remote port forwarding (-R) from the SSH server.
+    ///
+    /// The remote server listens on `remoteHost:remotePort` and forwards incoming
+    /// connections back through the SSH tunnel to `localHost:localPort`.
+    /// This method blocks until cancelled or the forward is torn down.
+    func runRemotePortForward(remoteHost: String, remotePort: Int,
+                              localHost: String, localPort: Int) async throws {
+        guard let client else { throw SSHError.notConnected }
+        try await client.runRemotePortForward(
+            host: remoteHost, port: remotePort,
+            forwardingTo: localHost, port: localPort
+        ) { remoteForward in
+            Logger.ssh.info("Remote port forward established: \(remoteHost):\(remoteForward.boundPort) -> \(localHost):\(localPort)")
+        }
     }
 
     /// Disconnect from SSH server

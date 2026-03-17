@@ -634,7 +634,19 @@ struct SFTPBrowserView: View {
         do {
             let file = try await client.openFile(filePath: filePath, flags: .read)
 
-            let chunkSize: UInt32 = 32768
+            // Fast path: read small files (<10MB) in one shot
+            if let fileSize = entry.attributes.size, fileSize < 10_000_000 {
+                let buffer = try await file.readAll()
+                try await file.close()
+                let data = Data(buffer: buffer)
+                let destinationURL = folder.appendingPathComponent(entry.filename)
+                try data.write(to: destinationURL)
+                operationInProgress = nil
+                downloadProgress = 0
+                return
+            }
+
+            let chunkSize: UInt32 = 262144
             var offset: UInt64 = 0
             var allData = Data()
 

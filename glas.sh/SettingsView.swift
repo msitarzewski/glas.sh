@@ -572,6 +572,16 @@ struct AppearanceSettingsView: View {
                     .onChange(of: settings.glassTint) { _, _ in
                         settings.saveSettings()
                     }
+
+                Picker("Glass material", selection: $settings.glassMaterialStyle) {
+                    Text("Ultra Thin").tag("ultraThin")
+                    Text("Thin").tag("thin")
+                    Text("Regular").tag("regular")
+                    Text("Thick").tag("thick")
+                }
+                .onChange(of: settings.glassMaterialStyle) { _, _ in
+                    settings.saveSettings()
+                }
             }
             
             Section("Layout") {

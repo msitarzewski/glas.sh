@@ -47,6 +47,7 @@ class SettingsManager {
     var tailscaleAutoDiscover: Bool = false
     var tailscaleTailnet: String = ""
     var autoRecordSessions: Bool = false
+    var glassMaterialStyle: String = "ultraThin"
     private var hasLoadedPersistentState = false
 
     init(loadImmediately: Bool = true) {
@@ -133,6 +134,9 @@ class SettingsManager {
         if UserDefaults.standard.object(forKey: UserDefaultsKeys.autoRecordSessions) != nil {
             autoRecordSessions = UserDefaults.standard.bool(forKey: UserDefaultsKeys.autoRecordSessions)
         }
+        if let savedGlassMaterialStyle = UserDefaults.standard.string(forKey: UserDefaultsKeys.glassMaterialStyle) {
+            glassMaterialStyle = savedGlassMaterialStyle
+        }
 
         loadTheme()
         loadSnippets()
@@ -163,6 +167,7 @@ class SettingsManager {
         UserDefaults.standard.set(tailscaleAutoDiscover, forKey: UserDefaultsKeys.tailscaleAutoDiscover)
         UserDefaults.standard.set(tailscaleTailnet, forKey: UserDefaultsKeys.tailscaleTailnet)
         UserDefaults.standard.set(autoRecordSessions, forKey: UserDefaultsKeys.autoRecordSessions)
+        UserDefaults.standard.set(glassMaterialStyle, forKey: UserDefaultsKeys.glassMaterialStyle)
         do {
             let data = try JSONEncoder().encode(sessionOverrides)
             UserDefaults.standard.set(data, forKey: UserDefaultsKeys.sessionOverrides)
