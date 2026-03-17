@@ -9,26 +9,52 @@ import Foundation
 import Observation
 import os
 
-struct TailscaleDevice: Identifiable, Codable, Hashable {
-    let id: String
-    let hostname: String
-    let addresses: [String]
+// MARK: - API Response Models (match Tailscale JSON exactly)
+
+private struct TailscaleAPIDevicesResponse: Decodable {
+    let devices: [TailscaleAPIDevice]
+}
+
+private struct TailscaleAPIDevice: Decodable {
+    let id: String           // Can be numeric string or node ID
+    let name: String         // FQDN like "device.tailnet.ts.net"
+    let hostname: String     // Short hostname
+    let addresses: [String]  // CIDR notation: ["100.64.0.1/32", "fd7a::.../128"]
     let os: String
-    let online: Bool
-    let lastSeen: Date
-    let name: String
+    let online: Bool?        // nullable
+    let lastSeen: String?    // ISO 8601 timestamp, nullable
+    let clientVersion: String?
+    let authorized: Bool?
+    let user: String?        // email or user identifier
 
-    var sshAddress: String? { addresses.first }
-
-    enum CodingKeys: String, CodingKey {
-        case id, hostname, addresses, os, online, lastSeen, name
+    // Extract clean IP from CIDR notation
+    var ipv4Address: String? {
+        addresses.first { $0.contains(".") }?
+            .components(separatedBy: "/").first
     }
 }
 
-enum TailscaleAuthMethod: String, Codable {
-    case apiKey     // Direct API key (admin generates at admin console → Keys)
-    case oauthClient // OAuth client ID + secret (exchanged for short-lived token)
+// MARK: - App Model
+
+struct TailscaleDevice: Identifiable, Hashable {
+    let id: String
+    let hostname: String
+    let displayName: String  // FQDN
+    let ipAddress: String
+    let os: String
+    let online: Bool
+    let lastSeen: Date?
+    let user: String?
+
+    var sshAddress: String { ipAddress }
 }
+
+enum TailscaleAuthMethod: String, Codable {
+    case apiKey
+    case oauthClient
+}
+
+// MARK: - Client
 
 @MainActor
 @Observable
@@ -40,9 +66,8 @@ class TailscaleClient {
     private var cachedOAuthToken: String?
     private let session = URLSession.shared
 
-    // MARK: - Resolve Bearer Token
+    // MARK: - Token Resolution
 
-    /// Get a usable Bearer token — either the API key directly, or exchange OAuth credentials.
     private func resolveToken() async throws -> String {
         let authMethod = TailscaleAuthMethod(rawValue:
             UserDefaults.standard.string(forKey: UserDefaultsKeys.tailscaleAuthMethod) ?? "apiKey"
@@ -53,7 +78,6 @@ class TailscaleClient {
             return try KeychainManager.retrieveTailscaleAPIKey()
 
         case .oauthClient:
-            // Exchange OAuth client credentials for short-lived access token
             if let cached = cachedOAuthToken { return cached }
 
             let creds = try KeychainManager.retrieveTailscaleOAuthCredentials()
@@ -98,7 +122,7 @@ class TailscaleClient {
         }
 
         if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
-            cachedOAuthToken = nil // Invalidate cached token
+            cachedOAuthToken = nil
             throw TailscaleError.authenticationFailed
         }
 
@@ -106,12 +130,40 @@ class TailscaleClient {
             throw TailscaleError.fetchFailed(statusCode: httpResponse.statusCode)
         }
 
-        struct DevicesResponse: Decodable { let devices: [TailscaleDevice] }
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let devicesResponse = try decoder.decode(DevicesResponse.self, from: data)
-        devices = devicesResponse.devices.filter { $0.online }
-        Logger.tailscale.info("Fetched \(devicesResponse.devices.count) devices (\(self.devices.count) online).")
+        let apiResponse = try decoder.decode(TailscaleAPIDevicesResponse.self, from: data)
+
+        // ISO 8601 date formatter for lastSeen
+        let dateFormatter = ISO8601DateFormatter()
+        dateFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+        let fallbackFormatter = ISO8601DateFormatter()
+        fallbackFormatter.formatOptions = [.withInternetDateTime]
+
+        devices = apiResponse.devices.compactMap { apiDevice in
+            guard let ip = apiDevice.ipv4Address else { return nil }
+
+            let lastSeenDate: Date?
+            if let ls = apiDevice.lastSeen {
+                lastSeenDate = dateFormatter.date(from: ls) ?? fallbackFormatter.date(from: ls)
+            } else {
+                lastSeenDate = nil
+            }
+
+            return TailscaleDevice(
+                id: apiDevice.id,
+                hostname: apiDevice.hostname,
+                displayName: apiDevice.name,
+                ipAddress: ip,
+                os: apiDevice.os,
+                online: apiDevice.online ?? false,
+                lastSeen: lastSeenDate,
+                user: apiDevice.user
+            )
+        }
+        .filter { $0.online }
+
+        Logger.tailscale.info("Fetched \(apiResponse.devices.count) devices (\(self.devices.count) online with IPv4).")
     }
 
     // MARK: - Test Connection

@@ -347,7 +347,7 @@ struct ConnectionManagerView: View {
                 if let device = tailscaleUsernamePromptDevice {
                     let config = ServerConfiguration(
                         name: device.hostname,
-                        host: device.sshAddress ?? "",
+                        host: device.sshAddress,
                         port: 22,
                         username: quickConnectUsername
                     )
@@ -374,7 +374,7 @@ struct ConnectionManagerView: View {
             }
         } message: {
             if let device = tailscaleUsernamePromptDevice {
-                Text("Enter credentials for \(device.hostname) (\(device.sshAddress ?? "unknown"))")
+                Text("Enter credentials for \(device.hostname) (\(device.sshAddress))")
             }
         }
     }
@@ -406,7 +406,7 @@ struct ConnectionManagerView: View {
     private func importTailscaleDevice(_ device: TailscaleDevice) {
         let config = ServerConfiguration(
             name: device.hostname,
-            host: device.sshAddress ?? "",
+            host: device.sshAddress,
             port: 22,
             username: "",
             tags: ["tailscale"]
@@ -987,17 +987,10 @@ private struct TailscaleDeviceRow: View {
             }
             .frame(minWidth: 180, alignment: .leading)
 
-            if let address = device.sshAddress {
-                Text(address)
-                    .font(.subheadline.monospaced())
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                Text("No address")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            Text(device.sshAddress)
+                .font(.subheadline.monospaced())
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             Text(device.os)
                 .font(.caption)
