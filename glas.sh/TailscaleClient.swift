@@ -192,9 +192,9 @@ class TailscaleClient {
 
         do {
             try await fetchDevices(tailnet: tailnet)
-        } catch is DecodingError {
+        } catch let decodingError as DecodingError {
             errorMessage = "Failed to decode Tailscale API response. The API format may have changed."
-            Logger.tailscale.error("Decoding error: \(error)")
+            Logger.tailscale.error("Decoding error: \(decodingError)")
         } catch let error as TailscaleError {
             errorMessage = error.localizedDescription
             Logger.tailscale.error("Tailscale error: \(error)")
