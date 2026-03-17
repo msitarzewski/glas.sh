@@ -102,6 +102,41 @@
   - Dead code removed reduces maintenance burden and confusion.
 - References: `tasks/2026-03/260315_comprehensive-audit-fix.md`
 
+## 2026-03-16: Sprint 2 "Spatial Leap" — on-device AI, spatial audio, widgets
+- Status: Approved
+- Context: Sprint 2 targets visionOS 26 differentiators — Foundation Models (private AI), spatial audio, WidgetKit. No competitor (La Terminal, Prompt 3, Termius) has on-device AI or spatial audio on visionOS.
+- Decisions:
+  - Gate all Foundation Models code behind `#if canImport(FoundationModels)` — allows building on older SDKs.
+  - Use `@Generable` structs with `@Guide` annotations for structured AI output (`CommandSuggestion`, `ErrorExplanation`).
+  - Create fresh `LanguageModelSession` per request (4K token limit too small for conversation history).
+  - Use `AVAudioPlayer` with `.ambient` audio session for bell sounds — mixes with other audio, doesn't interrupt media.
+  - Source authentic VT100 bell sound from open-source `terminal_beeps` repo rather than generating synthetic tone.
+  - Layout presets (reconnect fresh) instead of window restoration — SSH sessions are ephemeral, can't survive app quit.
+  - Widget extension target added via direct pbxproj editing — `PBXFileSystemSynchronizedRootGroup` auto-syncs directory contents.
+  - Widget `WidgetServerConfig` must exactly match app's `ServerConfiguration` Codable encoding (lowercase enum raw values).
+  - SFTP download flow: pick destination folder first via `.fileImporter(.folder)`, then stream download with chunked progress — avoids visionOS z-order issue with system save dialogs.
+  - Promote frequently-used actions (AI, SFTP) to bottom ornament icon row, not buried in menu.
+- Consequences:
+  - AI features work on-device, fully private, no cloud dependency.
+  - Bell audio mixes cleanly with background media.
+  - No ghost windows on app relaunch.
+  - Widgets show live server data from shared App Group defaults.
+  - SFTP batch operations significantly improve file management workflow.
+- References: `tasks/2026-03/260316_sprint2-spatial-leap.md` (in README)
+
+## 2026-03-16: visionOS keyboard focus maintenance timer
+- Status: Approved
+- Context: visionOS RTI (Remote Text Input) system silently drops first responder from TerminalView after a few seconds of keyboard idle. User loses ability to type — `RTIInputSystemClient remoteTextInputSessionWithID:performInputOperation: perform input operation requires a valid sessionID` errors flood the log.
+- Decision: Add a 2-second periodic timer in `SwiftTermHostModel` that checks `isFirstResponder` and re-asserts `becomeFirstResponder()` if lost. Timer starts on attach, stops on disappear.
+- Alternatives: Tried initial focus retry (3×50ms) — insufficient for ongoing idle loss. Could override `resignFirstResponder` on TerminalView but SwiftTerm's UIView subclass isn't easily extensible from outside.
+- Consequences: Keyboard stays active indefinitely. 2-second timer is lightweight (no-op when already first responder). May cause focus fights if user intentionally focuses another element — mitigated by stopping timer on disappear.
+
+## 2026-03-16: Window restoration incompatible with ephemeral SSH sessions
+- Status: Approved
+- Context: `.restorationBehavior(.automatic)` was enabled on terminal and SFTP windows for Sprint 2D (persistent layouts). On-device testing revealed: restored windows show "Session not found" because SSH sessions are in-memory and don't survive app quit. Main `Window` (singleton) also restored, creating a duplicate alongside `.defaultLaunchBehavior(.presented)`.
+- Decision: Revert ALL windows to `.restorationBehavior(.disabled)`. Use `LayoutPreset` (save server IDs, reconnect fresh on open) as the persistent layout mechanism instead.
+- Consequences: No ghost windows on relaunch. Layout presets create fresh connections. Users must reconnect after app quit (expected behavior for SSH clients).
+
 ## 2026-02-28: Migrate SSH key operations to SecureBytes API
 - Status: Approved
 - Context: GlasSecretStore introduced `SecureBytes` type for secure memory handling. SSH key save/retrieve operations in `KeychainManager` and `SettingsManager` still used raw `String` internally at the keychain boundary.
