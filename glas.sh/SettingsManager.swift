@@ -259,10 +259,17 @@ class SettingsManager {
     func generateSecureEnclaveP256Key(name: String) throws -> StoredSSHKey {
         #if canImport(CryptoKit)
         let keyID = UUID()
-        let keyTag = SecureEnclaveKeyManager.keyTag(for: keyID)
-        let p256PrivateKey = P256.Signing.PrivateKey()
-        let sealedPayload = try SecureEnclaveKeyManager.wrap(data: p256PrivateKey.rawRepresentation, keyTag: keyTag)
-        try KeychainManager.saveSecureEnclaveWrappedP256(sealedPayload, keyTag: keyTag, for: keyID)
+
+        // Generate true Secure Enclave signing key — private key never leaves hardware
+        guard SecureEnclave.isAvailable else {
+            throw SecretStoreError.secureEnclaveUnavailable
+        }
+        let seKey = try SecureEnclave.P256.Signing.PrivateKey(compactRepresentable: false)
+        let dataRep = seKey.dataRepresentation // opaque device-bound token, NOT raw key material
+
+        // Store the opaque token via Keychain — prefixed so auth flow knows it's true SE
+        let encoded = "TRUE_SE_P256:" + dataRep.base64EncodedString()
+        try KeychainManager.saveSSHKey(encoded, passphrase: nil, for: keyID)
 
         let key = StoredSSHKey(
             id: keyID,
@@ -271,7 +278,7 @@ class SettingsManager {
             storageKind: .secureEnclave,
             algorithmKind: .ecdsaP256,
             migrationState: .migrated,
-            keyTag: keyTag,
+            keyTag: nil,
             createdAt: Date()
         )
         sshKeys.append(key)
@@ -298,7 +305,14 @@ class SettingsManager {
         let passphraseData = keyMaterial.passphrase?.toData()
 
         let publicKey: NIOSSHPublicKey
-        if privateKeyString.hasPrefix("SECURE_ENCLAVE_P256:") {
+        if privateKeyString.hasPrefix("TRUE_SE_P256:") {
+            let payload = String(privateKeyString.dropFirst("TRUE_SE_P256:".count))
+            guard let dataRep = Data(base64Encoded: payload) else {
+                throw SecretStoreError.unsupportedSSHKeyType
+            }
+            let seKey = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: dataRep)
+            publicKey = NIOSSHPrivateKey(secureEnclaveP256Key: seKey).publicKey
+        } else if privateKeyString.hasPrefix("SECURE_ENCLAVE_P256:") {
             let payload = String(privateKeyString.dropFirst("SECURE_ENCLAVE_P256:".count))
             guard let rawData = Data(base64Encoded: payload) else {
                 throw SecretStoreError.unsupportedSSHKeyType

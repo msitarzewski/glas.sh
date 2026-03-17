@@ -968,7 +968,16 @@ class SSHConnection {
                 let privateKeyString = keyMaterial.privateKey.toUTF8String() ?? ""
                 let passphraseData = keyMaterial.passphrase?.toData()
 
-                if privateKeyString.hasPrefix("SECURE_ENCLAVE_P256:") {
+                if privateKeyString.hasPrefix("TRUE_SE_P256:") {
+                    // True Secure Enclave key — signing happens in hardware
+                    let payload = String(privateKeyString.dropFirst("TRUE_SE_P256:".count))
+                    guard let dataRep = Data(base64Encoded: payload) else {
+                        throw SSHError.invalidSSHKey("Invalid true Secure Enclave P-256 data representation.")
+                    }
+                    let seKey = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: dataRep)
+                    return .secureEnclaveP256(username: server.username, privateKey: seKey)
+                } else if privateKeyString.hasPrefix("SECURE_ENCLAVE_P256:") {
+                    // Legacy wrapped Secure Enclave key — backward compatible
                     let payload = String(privateKeyString.dropFirst("SECURE_ENCLAVE_P256:".count))
                     guard let rawData = Data(base64Encoded: payload) else {
                         throw SSHError.invalidSSHKey("Invalid Secure Enclave P-256 payload.")
