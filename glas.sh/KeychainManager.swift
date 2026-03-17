@@ -64,50 +64,31 @@ enum KeychainManager {
         try SSHKeyKeychainStore.retrieveSecureEnclaveWrapped(for: keyID, config: config)
     }
 
-    // MARK: - Tailscale Credentials
+    // MARK: - Tailscale API Key
 
-    private static let tailscaleClientIDAccount = "tailscale-oauth-client-id"
-    private static let tailscaleClientSecretAccount = "tailscale-oauth-client-secret"
+    private static let tailscaleAPIKeyAccount = "tailscale-api-key"
 
-    static func saveTailscaleCredentials(clientID: String, clientSecret: String) throws {
+    static func saveTailscaleAPIKey(_ apiKey: String) throws {
         try KeychainOperations.savePassword(
-            clientID,
-            account: tailscaleClientIDAccount,
-            service: config.passwordsService,
-            config: config
-        )
-        try KeychainOperations.savePassword(
-            clientSecret,
-            account: tailscaleClientSecretAccount,
+            apiKey,
+            account: tailscaleAPIKeyAccount,
             service: config.passwordsService,
             config: config
         )
     }
 
-    static func retrieveTailscaleCredentials() throws -> (clientID: String, clientSecret: String) {
-        let clientID = try KeychainOperations.retrievePasswordWithFallback(
-            account: tailscaleClientIDAccount,
+    static func retrieveTailscaleAPIKey() throws -> String {
+        try KeychainOperations.retrievePasswordWithFallback(
+            account: tailscaleAPIKeyAccount,
             primaryService: config.passwordsService,
             legacySuffix: "passwords",
             config: config
         )
-        let clientSecret = try KeychainOperations.retrievePasswordWithFallback(
-            account: tailscaleClientSecretAccount,
-            primaryService: config.passwordsService,
-            legacySuffix: "passwords",
-            config: config
-        )
-        return (clientID, clientSecret)
     }
 
-    static func deleteTailscaleCredentials() {
+    static func deleteTailscaleAPIKey() {
         try? KeychainOperations.deletePassword(
-            account: tailscaleClientIDAccount,
-            service: config.passwordsService,
-            config: config
-        )
-        try? KeychainOperations.deletePassword(
-            account: tailscaleClientSecretAccount,
+            account: tailscaleAPIKeyAccount,
             service: config.passwordsService,
             config: config
         )

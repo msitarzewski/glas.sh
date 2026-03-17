@@ -59,8 +59,7 @@ struct GeneralSettingsView: View {
     @State private var keyCopyMessage: String?
     @State private var sshConfigText: String = ""
     @State private var importResultMessage: String?
-    @State private var tailscaleClientID: String = ""
-    @State private var tailscaleClientSecret: String = ""
+    @State private var tailscaleAPIKey: String = ""
     @State private var tailscaleTestResult: String?
     @State private var tailscaleTestInProgress = false
     
@@ -139,31 +138,33 @@ struct GeneralSettingsView: View {
                         settings.saveSettings()
                     }
 
-                TextField("OAuth Client ID", text: $tailscaleClientID)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
+                SecureField("API Key", text: $tailscaleAPIKey)
+                    .textContentType(.init(rawValue: ""))
 
-                SecureField("OAuth Client Secret", text: $tailscaleClientSecret)
-
-                Button {
-                    saveTailscaleCredentialsAndTest()
-                } label: {
-                    HStack {
-                        if tailscaleTestInProgress {
-                            ProgressView()
-                                .controlSize(.small)
+                HStack(spacing: 12) {
+                    Button {
+                        saveTailscaleAPIKeyAndTest()
+                    } label: {
+                        HStack {
+                            if tailscaleTestInProgress {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                            Text("Save & Test")
                         }
-                        Text("Test Connection")
                     }
-                }
-                .buttonStyle(.bordered)
-                .disabled(
-                    tailscaleClientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || tailscaleClientSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || tailscaleTestInProgress
-                )
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        tailscaleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || tailscaleTestInProgress
+                    )
 
-                Toggle("Auto-discover Tailscale devices", isOn: $settings.tailscaleAutoDiscover)
+                    Text("Generate at [login.tailscale.com](https://login.tailscale.com/admin/settings/keys)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Toggle("Auto-discover devices", isOn: $settings.tailscaleAutoDiscover)
                     .onChange(of: settings.tailscaleAutoDiscover) { _, _ in
                         settings.saveSettings()
                     }
@@ -171,7 +172,7 @@ struct GeneralSettingsView: View {
                 if let tailscaleTestResult {
                     Text(tailscaleTestResult)
                         .font(.caption)
-                        .foregroundStyle(tailscaleTestResult.hasPrefix("Success") ? .green : .red)
+                        .foregroundStyle(tailscaleTestResult.hasPrefix("Connected") ? .green : .red)
                 }
             }
 
@@ -353,9 +354,8 @@ struct GeneralSettingsView: View {
     }
 
     private func loadTailscaleCredentials() {
-        if let credentials = try? KeychainManager.retrieveTailscaleCredentials() {
-            tailscaleClientID = credentials.clientID
-            tailscaleClientSecret = credentials.clientSecret
+        if let key = try? KeychainManager.retrieveTailscaleAPIKey() {
+            tailscaleAPIKey = key
         }
     }
 
@@ -379,17 +379,16 @@ struct GeneralSettingsView: View {
         return formatter.string(fromByteCount: bytes)
     }
 
-    private func saveTailscaleCredentialsAndTest() {
+    private func saveTailscaleAPIKeyAndTest() {
         tailscaleTestInProgress = true
         tailscaleTestResult = nil
 
-        let clientID = tailscaleClientID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let clientSecret = tailscaleClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = tailscaleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
 
         do {
-            try KeychainManager.saveTailscaleCredentials(clientID: clientID, clientSecret: clientSecret)
+            try KeychainManager.saveTailscaleAPIKey(key)
         } catch {
-            tailscaleTestResult = "Failed to save credentials: \(error.localizedDescription)"
+            tailscaleTestResult = "Failed to save API key: \(error.localizedDescription)"
             tailscaleTestInProgress = false
             return
         }
@@ -397,8 +396,8 @@ struct GeneralSettingsView: View {
         Task {
             let client = TailscaleClient()
             do {
-                let success = try await client.testConnection()
-                tailscaleTestResult = success ? "Success - connected to Tailscale." : "Connection test returned false."
+                let success = try await client.testConnection(apiKey: key)
+                tailscaleTestResult = success ? "Connected to Tailscale." : "Connection test failed."
             } catch {
                 tailscaleTestResult = "Error: \(error.localizedDescription)"
             }
