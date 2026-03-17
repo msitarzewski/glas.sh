@@ -37,6 +37,21 @@ struct ErrorExplanation {
     @Guide(description: "Why this fix works or why there is no fix")
     var reasoning: String
 }
+
+@Generable
+struct SessionSummary {
+    @Guide(description: "3-5 bullet points of what was accomplished")
+    var highlights: String
+
+    @Guide(description: "Notable commands that were run")
+    var commandsRun: String
+
+    @Guide(description: "Duration in human-readable format")
+    var duration: String
+
+    @Guide(description: "Any errors or issues encountered")
+    var issues: String
+}
 #endif
 
 // MARK: - AIAssistant
@@ -48,6 +63,7 @@ final class AIAssistant {
     var isProcessing = false
     var lastSuggestion: (command: String, explanation: String, riskLevel: String)?
     var lastError: (problem: String, suggestedFix: String, reasoning: String)?
+    var lastSessionSummary: (highlights: String, commandsRun: String, duration: String, issues: String)?
     var errorMessage: String?
 
     func checkAvailability() {
@@ -142,9 +158,53 @@ final class AIAssistant {
         #endif
     }
 
+    func summarizeSession(recordingText: String, serverName: String) async {
+        #if canImport(FoundationModels)
+        guard isAvailable else {
+            errorMessage = "AI model not available on this device."
+            return
+        }
+
+        isProcessing = true
+        lastSessionSummary = nil
+        errorMessage = nil
+
+        do {
+            let systemPrompt = """
+            You are a terminal session analyst. Summarize what happened during \
+            an SSH session on server "\(serverName)". The recording contains \
+            base64-encoded terminal input and output events in asciicast v2 format. \
+            Decode and analyze the content to provide a concise summary. \
+            Focus on commands run, their results, and any errors encountered.
+            """
+            let session = LanguageModelSession(instructions: systemPrompt)
+
+            let response = try await session.respond(
+                to: recordingText,
+                generating: SessionSummary.self
+            )
+
+            let result = response.content
+            lastSessionSummary = (
+                highlights: result.highlights,
+                commandsRun: result.commandsRun,
+                duration: result.duration,
+                issues: result.issues
+            )
+            Logger.ai.info("Session summary generated for \(serverName)")
+        } catch {
+            Logger.ai.error("Session summary failed: \(error)")
+            errorMessage = "Failed to generate session summary: \(error.localizedDescription)"
+        }
+
+        isProcessing = false
+        #endif
+    }
+
     func reset() {
         lastSuggestion = nil
         lastError = nil
+        lastSessionSummary = nil
         errorMessage = nil
         isProcessing = false
     }

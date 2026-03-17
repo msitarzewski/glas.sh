@@ -64,6 +64,55 @@ enum KeychainManager {
         try SSHKeyKeychainStore.retrieveSecureEnclaveWrapped(for: keyID, config: config)
     }
 
+    // MARK: - Tailscale Credentials
+
+    private static let tailscaleClientIDAccount = "tailscale-oauth-client-id"
+    private static let tailscaleClientSecretAccount = "tailscale-oauth-client-secret"
+
+    static func saveTailscaleCredentials(clientID: String, clientSecret: String) throws {
+        try KeychainOperations.savePassword(
+            clientID,
+            account: tailscaleClientIDAccount,
+            service: config.passwordsService,
+            config: config
+        )
+        try KeychainOperations.savePassword(
+            clientSecret,
+            account: tailscaleClientSecretAccount,
+            service: config.passwordsService,
+            config: config
+        )
+    }
+
+    static func retrieveTailscaleCredentials() throws -> (clientID: String, clientSecret: String) {
+        let clientID = try KeychainOperations.retrievePasswordWithFallback(
+            account: tailscaleClientIDAccount,
+            primaryService: config.passwordsService,
+            legacySuffix: "passwords",
+            config: config
+        )
+        let clientSecret = try KeychainOperations.retrievePasswordWithFallback(
+            account: tailscaleClientSecretAccount,
+            primaryService: config.passwordsService,
+            legacySuffix: "passwords",
+            config: config
+        )
+        return (clientID, clientSecret)
+    }
+
+    static func deleteTailscaleCredentials() {
+        try? KeychainOperations.deletePassword(
+            account: tailscaleClientIDAccount,
+            service: config.passwordsService,
+            config: config
+        )
+        try? KeychainOperations.deletePassword(
+            account: tailscaleClientSecretAccount,
+            service: config.passwordsService,
+            config: config
+        )
+    }
+
     // MARK: - Migration
 
     static func runMigrationsIfNeeded() {

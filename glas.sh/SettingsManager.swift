@@ -44,6 +44,9 @@ class SettingsManager {
     var sessionOverrides: [String: TerminalSessionOverride] = [:]
     var layoutPresets: [LayoutPreset] = []
     var secretMigrationStatus: SecretStoreMigrationStatus?
+    var tailscaleAutoDiscover: Bool = false
+    var tailscaleTailnet: String = ""
+    var autoRecordSessions: Bool = false
     private var hasLoadedPersistentState = false
 
     init(loadImmediately: Bool = true) {
@@ -121,6 +124,16 @@ class SettingsManager {
             }
         }
 
+        if UserDefaults.standard.object(forKey: UserDefaultsKeys.tailscaleAutoDiscover) != nil {
+            tailscaleAutoDiscover = UserDefaults.standard.bool(forKey: UserDefaultsKeys.tailscaleAutoDiscover)
+        }
+        if let savedTailnet = UserDefaults.standard.string(forKey: UserDefaultsKeys.tailscaleTailnet) {
+            tailscaleTailnet = savedTailnet
+        }
+        if UserDefaults.standard.object(forKey: UserDefaultsKeys.autoRecordSessions) != nil {
+            autoRecordSessions = UserDefaults.standard.bool(forKey: UserDefaultsKeys.autoRecordSessions)
+        }
+
         loadTheme()
         loadSnippets()
         loadLayoutPresets()
@@ -147,6 +160,9 @@ class SettingsManager {
         UserDefaults.standard.set(showSidebarByDefault, forKey: UserDefaultsKeys.showSidebarByDefault)
         UserDefaults.standard.set(showInfoPanelByDefault, forKey: UserDefaultsKeys.showInfoPanelByDefault)
         UserDefaults.standard.set(sidebarPosition, forKey: UserDefaultsKeys.sidebarPosition)
+        UserDefaults.standard.set(tailscaleAutoDiscover, forKey: UserDefaultsKeys.tailscaleAutoDiscover)
+        UserDefaults.standard.set(tailscaleTailnet, forKey: UserDefaultsKeys.tailscaleTailnet)
+        UserDefaults.standard.set(autoRecordSessions, forKey: UserDefaultsKeys.autoRecordSessions)
         do {
             let data = try JSONEncoder().encode(sessionOverrides)
             UserDefaults.standard.set(data, forKey: UserDefaultsKeys.sessionOverrides)

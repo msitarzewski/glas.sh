@@ -307,6 +307,9 @@ class TerminalSession: Identifiable, Hashable {
     private var userInitiatedDisconnect: Bool = false
     nonisolated(unsafe) private var reconnectTask: Task<Void, Never>?
     var reconnectAttemptCount: Int = 0
+    var recorder: SessionRecorder?
+    var sharePlayManager: SharePlayManager?
+
     init(server: ServerConfiguration) {
         self.id = UUID()
         self.server = server
@@ -474,6 +477,7 @@ class TerminalSession: Identifiable, Hashable {
     }
     
     func sendTerminalData(_ data: Data) {
+        recorder?.recordInput(data)
         Task {
             do {
                 try await sshConnection?.sendBytes(data)
@@ -529,6 +533,10 @@ class TerminalSession: Identifiable, Hashable {
     
     func feedTerminalData(_ data: Data) {
         pendingTerminalOutput.append(data)
+        recorder?.recordOutput(data)
+        if let sharePlay = sharePlayManager, sharePlay.isActive {
+            Task { await sharePlay.broadcastOutput(data) }
+        }
         scheduleTerminalFlush()
     }
     

@@ -32,6 +32,11 @@ enum UserDefaultsKeys {
     static let theme = "theme"
     static let snippets = "snippets"
     static let layoutPresets = "layoutPresets"
+    static let tailscaleTailnet = "tailscaleTailnet"
+    static let tailscaleAutoDiscover = "tailscaleAutoDiscover"
+    static let autoRecordSessions = "autoRecordSessions"
+    static let focusEnvironmentStyle = "focusEnvironmentStyle"
+    static let notificationOverlaysEnabled = "notificationOverlaysEnabled"
 }
 
 enum SharedDefaults {
