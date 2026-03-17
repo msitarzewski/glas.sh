@@ -7,6 +7,7 @@
 
 import SwiftUI
 import GroupActivities
+import Combine
 import os
 
 struct TerminalShareActivity: GroupActivity {
