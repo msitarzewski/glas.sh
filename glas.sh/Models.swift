@@ -245,7 +245,7 @@ final class PromptingHostKeyValidator: NIOSSHClientServerAuthenticationDelegate,
         )
     }
 
-    private static func cacheKey(host: String, port: Int) -> String {
+    nonisolated private static func cacheKey(host: String, port: Int) -> String {
         "\(host.lowercased()):\(port)"
     }
 

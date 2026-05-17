@@ -16,3 +16,4 @@
 ## Tasks
 - [2026-02](./tasks/2026-02/README.md)
 - [2026-03](./tasks/2026-03/README.md)
+- [2026-05](./tasks/2026-05/README.md)

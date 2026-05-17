@@ -137,6 +137,33 @@
 - Decision: Revert ALL windows to `.restorationBehavior(.disabled)`. Use `LayoutPreset` (save server IDs, reconnect fresh on open) as the persistent layout mechanism instead.
 - Consequences: No ghost windows on relaunch. Layout presets create fresh connections. Users must reconnect after app quit (expected behavior for SSH clients).
 
+## 2026-05-16: swift-crypto 4.x adoption + PrivacyInfo.xcprivacy + App Store readiness
+- Status: Approved
+- Context: Pre-WWDC26 push to ship glas.sh on the App Store. Project had not been touched in ~2 months; all SPM deps were stale, swift-crypto major 4.x was available but the vendored Citadel/swift-nio-ssh Package.swift constraints capped at `<4.0.0`, no `PrivacyInfo.xcprivacy` was present (required by App Store since May 2024), and the build number was still `1`.
+- Decision:
+  - Widen swift-crypto constraint in vendored `Packages/Citadel/Package.swift` and `Packages/swift-nio-ssh/Package.swift` to `..<"5.0.0"`. Keep both at their original tools-versions (5.9 / 5.10) — bumping them activates Swift 6 strict concurrency on the vendored source and surfaces static-var / closure-capture errors.
+  - Keep `_CryptoExtras` listed as a Citadel target dependency even though no Citadel source imports it directly — it transitively exposes `CCryptoBoringSSL`, which Citadel's `RSA.swift` and `AES.swift` do import directly. Removing it breaks the build.
+  - Force-pin all other SPM deps to absolute latest via explicit `Package.resolved` entries (with both `version` and `revision` SHA). SPM resolver is conservative on free choice and won't pick latest automatically when the package graph contains a low-tools-version package.
+  - Install Xcode 26 "Metal Toolchain" component to support SwiftTerm 1.12.0+ (introduced Metal shaders).
+  - Add `PrivacyInfo.xcprivacy` to `glas.sh/` and `glasWidgets/` directories. `PBXFileSystemSynchronizedRootGroup` auto-bundles them — no pbxproj edits needed.
+  - Manifest declares only `NSPrivacyAccessedAPICategoryUserDefaults` (reason `CA92.1`). Audit confirmed no file timestamp, disk space, or system boot time API usage.
+  - Add `nonisolated` to all 10 `Logger` statics (default-MainActor inference in Swift 6 / Xcode 26 makes module-level statics MainActor-isolated, breaking access from `OSAllocatedUnfairLock.withLock` closures).
+  - Add `nonisolated` to `PromptingHostKeyValidator.cacheKey`.
+  - Add `@MainActor` to `SwiftTermHostView.Coordinator.dismissEditMenu()` — `@objc` selector called from `UITapGestureRecognizer` target on main thread.
+  - Leave the 4 `nonisolated(unsafe)` Task properties in `Models.swift:312-319` as-is. Swift compiler suggests `nonisolated` but its own language rules reject `nonisolated` on mutable stored properties. `nonisolated(unsafe)` is the only form that compiles and provides the escape hatch needed for `deinit` access. Accept the "has no effect" warning — compiler bug.
+  - Bump `CURRENT_PROJECT_VERSION` 1 → 2 across all 6 build configs. Keep `MARKETING_VERSION` at 1.0 for initial submission.
+- Alternatives considered:
+  - Bumping vendored Citadel/swift-nio-ssh tools-version to 6.1 — rejected after testing: surfaces Swift 6 strict-concurrency errors in vendored source (static-var on non-Sendable types, implicit self captures in closures). Would require source-level changes to vendored audit-fixed code.
+  - Re-vendoring from upstream Citadel 0.12.1 / swift-nio-ssh 0.13.0 — rejected: would lose the 8 audit fixes landed 2026-03-15.
+  - Using `swiftLanguageMode(.v5)` swiftSetting — would work but adds complexity for marginal benefit; constraint widening alone is sufficient.
+- Consequences:
+  - All dependencies at absolute latest. Build clean on Xcode 26.4 / visionOS 26.4 SDK with 0 errors and 5 non-blocking warnings.
+  - App Store privacy manifest requirement satisfied.
+  - Vendored package audit fixes preserved; no source-level changes to Citadel or swift-nio-ssh.
+  - Build number ready for first TestFlight upload.
+  - SwiftTerm 1.13.0 Metal renderer now available (perf improvements on visionOS).
+- References: `tasks/2026-05/260516_dependency-refresh-and-app-store-prep.md`
+
 ## 2026-02-28: Migrate SSH key operations to SecureBytes API
 - Status: Approved
 - Context: GlasSecretStore introduced `SecureBytes` type for secure memory handling. SSH key save/retrieve operations in `KeychainManager` and `SettingsManager` still used raw `String` internally at the keychain boundary.

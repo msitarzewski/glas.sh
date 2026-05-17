@@ -1,6 +1,21 @@
 # Progress
 
 ## Latest Milestones
+- Dependency refresh + App Store readiness pass shipped (2026-05-16):
+  - **swift-crypto 3.15.1 → 4.5.0** (major bump). Unblocked by widening constraint ranges in vendored `Packages/Citadel/Package.swift` and `Packages/swift-nio-ssh/Package.swift` to `..<"5.0.0"`. No source changes required.
+  - **swift-nio 2.94 → 2.99**, **swift-log 1.9 → 1.12**, **swift-collections 1.3 → 1.5.1**, **swift-asn1 1.5 → 1.7**, **swift-argument-parser 1.7.0 → 1.7.1**, **SwiftTerm 1.10.1 → 1.13.0** (last required installing Xcode 26 Metal toolchain component).
+  - swift-atomics, swift-system, BigInt already at latest.
+  - Vendored Citadel and swift-nio-ssh source untouched — all 8 audit fixes from 2026-03-15 intact.
+  - **PrivacyInfo.xcprivacy** added to app + widget bundles. Declares `NSPrivacyAccessedAPICategoryUserDefaults` (CA92.1), `NSPrivacyTracking=false`, no collected data. Confirmed bundled at app root and `PlugIns/glasWidgets.appex/`.
+  - **Swift 6 concurrency cleanup** — reduced warnings 11 → 5:
+    - `Logger.swift` — `nonisolated` on all 10 logger statics (default-MainActor inference made them main-actor-isolated)
+    - `Models.swift:248` — `nonisolated` on `PromptingHostKeyValidator.cacheKey`
+    - `SwiftTermHostView.swift:236` — `@MainActor` on `dismissEditMenu()` `@objc` selector
+  - Remaining 5 warnings: 4 unfixable Swift compiler false-positives (suggests `nonisolated` but rejects it for mutable stored `@Observable` properties — `nonisolated(unsafe)` is the only form that compiles); 1 documented `UIMenuController` deprecation workaround.
+  - `CURRENT_PROJECT_VERSION` bumped 1 → 2 across all 6 build configs. `MARKETING_VERSION` stays at 1.0 for first submission.
+  - Build: SUCCESS, 0 errors on Xcode 26.4 / visionOS 26.4 SDK.
+
+
 - Sprint 1 "Command Center" shipped (2026-03-15):
   - **Auto-reconnect**: Exponential backoff (1s/2s/4s/8s/16s, 5 attempts), triggers on unexpected disconnect/keepalive timeout, cancel button in connection label ornament.
   - **Port forwarding (local -L)**: NIO ServerBootstrap + Citadel DirectTCPIP bidirectional pipe. TunnelStatus enum with UI indicators. Remote/dynamic deferred.
@@ -104,11 +119,13 @@
   - Follow-up: Tailscale API struct rewrite (matched official Go client), dual auth (API key + OAuth), mobile device filtering, SSH port field, keyboard focus isKeyWindow guard, stable bell audio
 
 ## What's Next
-- SSH Agent forwarding implementation (UI exists, auth path not wired)
-- SFTP drag-and-drop
-- Terminal themes (import/export)
-- App Store submission prep (screenshots, description, privacy policy)
-- glassdb follow-up: read servers/keys from shared App Group suite
+- Distribution provisioning + signing in Xcode
+- App Store Connect listing: name, screenshots (visionOS spec), description, privacy policy URL, age rating, category
+- Archive + upload to App Store Connect
+- TestFlight smoke test on device
+- SSH Agent forwarding (only remaining `TODO` in source — `Models.swift:1007`)
+- SFTP drag-and-drop, terminal themes (import/export) — post-launch
+- glassdb follow-up: read servers/keys from shared App Group suite — separate repo
 
 ## Known Platform Limitations
 - Bell audio not spatialized per-window (visionOS has no API for per-window short audio effects — tried AudioServices, AVAudioPlayer, RealityKit)
