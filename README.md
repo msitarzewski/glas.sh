@@ -6,6 +6,9 @@ A native visionOS terminal built from scratch for spatial computing. Float termi
 
 **[glas.sh](https://glas.sh)** &nbsp;|&nbsp; **[GitHub Sponsors](https://github.com/sponsors/msitarzewski)** &nbsp;|&nbsp; **MIT Licensed**
 
+> [!WARNING]
+> **Pre-alpha.** glas.sh is under active development and **not yet released on the App Store**. It builds and runs on Apple Vision Pro today, but expect rough edges, incomplete features, and breaking changes between updates. Bug reports and feedback are very welcome — [open an issue](https://github.com/msitarzewski/glas.sh/issues).
+
 ---
 
 <p align="center">
