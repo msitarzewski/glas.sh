@@ -6,7 +6,7 @@
     <title>glas.sh | Native visionOS SSH terminal</title>
     <meta
       name="description"
-      content="glas.sh is a native visionOS SSH terminal with PTY sessions, SwiftTerm rendering, host-key trust prompts, and a glass-first multi-window workflow."
+      content="glas.sh is a native visionOS SSH terminal for Apple Vision Pro — PTY sessions, on-device AI, Tailscale auto-discovery, SFTP, port forwarding, and a glass-first multi-window workflow."
     >
     <meta name="theme-color" content="#0c141f">
     <link rel="canonical" href="https://msitarzewski.github.io/glas.sh/">
@@ -15,23 +15,23 @@
     <meta property="og:title" content="glas.sh | Native visionOS SSH terminal">
     <meta
       property="og:description"
-      content="A native visionOS SSH terminal app with PTY sessions, host-key trust prompts, and a glass-first multi-window workflow."
+      content="A native visionOS SSH terminal for Apple Vision Pro — PTY sessions, on-device AI, Tailscale, SFTP, and a glass-first multi-window workflow."
     >
     <meta property="og:url" content="https://msitarzewski.github.io/glas.sh/">
     <meta
       property="og:image"
-      content="https://msitarzewski.github.io/glas.sh/images/hero-og.jpg"
+      content="https://msitarzewski.github.io/glas.sh/images/shots/hero-htop.jpg"
     >
 
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="glas.sh | Native visionOS SSH terminal">
     <meta
       name="twitter:description"
-      content="Native visionOS SSH terminal with PTY sessions, SwiftTerm rendering, and glass-first multi-window UX."
+      content="Native visionOS SSH terminal with PTY sessions, on-device AI, Tailscale, SFTP, and glass-first multi-window UX."
     >
     <meta
       name="twitter:image"
-      content="https://msitarzewski.github.io/glas.sh/images/hero-og.jpg"
+      content="https://msitarzewski.github.io/glas.sh/images/shots/hero-htop.jpg"
     >
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -53,6 +53,7 @@
         </a>
         <nav class="top-nav" aria-label="Primary">
           <a href="#features">Features</a>
+          <a href="#screens">Screens</a>
           <a href="#workflow">Workflow</a>
           <a href="#security">Security</a>
         </nav>
@@ -63,53 +64,51 @@
     <main id="main">
       <section id="top" class="hero shell">
         <div class="hero-copy">
-          <p class="eyebrow">visionOS native SSH</p>
-          <h1>A real terminal in spatial computing.</h1>
+          <p class="eyebrow">visionOS native SSH · pre-alpha</p>
+          <h1>The SSH terminal Apple Vision Pro deserves.</h1>
           <p class="lede">
-            glas.sh brings interactive PTY sessions, SwiftTerm rendering, and trust-aware SSH onboarding to visionOS
-            with a glass-first interface built for multi-window workflows.
+            A native visionOS terminal built from scratch for spatial computing. Float terminal windows in your
+            space, run AI privately on-device, and connect to your entire Tailscale network with one tap.
           </p>
           <div class="hero-cta">
             <a class="button button-primary" href="https://github.com/msitarzewski/glas.sh">View source</a>
             <a class="button button-ghost" href="https://github.com/sponsors/msitarzewski">Sponsor</a>
           </div>
           <ul class="signal-list" aria-label="Current capability highlights">
-            <li>PTY interactive sessions</li>
-            <li>Host-key trust prompts</li>
-            <li>Secure Enclave-backed P-256 keys</li>
+            <li>Interactive PTY sessions</li>
+            <li>On-device AI</li>
+            <li>Tailscale auto-discovery</li>
+            <li>Secure Enclave keys</li>
           </ul>
         </div>
 
-        <div class="hero-art" aria-hidden="true">
-          <div class="orb orb-a"></div>
-          <div class="orb orb-b"></div>
-          <article class="mock-window">
-            <header class="mock-chrome">
-              <span></span><span></span><span></span>
-              <p>session: root@lab</p>
-            </header>
-            <div class="mock-body">
-              <p><span class="prompt">$</span> ssh ops@10.0.1.42</p>
-              <p class="muted">Host key fingerprint SHA-256 verified.</p>
-              <p><span class="prompt">$</span> top</p>
-              <p class="ok">Connected with PTY / xterm-256color</p>
-            </div>
-          </article>
+        <div class="hero-art">
+          <div class="orb orb-a" aria-hidden="true"></div>
+          <div class="orb orb-b" aria-hidden="true"></div>
+          <figure class="media-card">
+            <img
+              src="./images/shots/hero-htop.jpg"
+              alt="glas.sh terminal floating in a living room on Apple Vision Pro, running htop over SSH with a glass control ornament"
+              width="1800"
+              height="1111"
+            >
+            <figcaption>A live <code>htop</code> session floating in your space — full PTY, truecolor, glass ornament controls.</figcaption>
+          </figure>
         </div>
       </section>
 
       <section class="proof shell" aria-label="Proof points">
         <article>
           <h2>Native stack</h2>
-          <p>Swift + SwiftUI + SwiftTerm + Citadel on visionOS.</p>
+          <p>Swift + SwiftUI + SwiftTerm + Citadel, purpose-built for visionOS 26.</p>
         </article>
         <article>
-          <h2>Multi-window</h2>
-          <p>Connections, terminals, settings, preview, and forwarding surfaces.</p>
+          <h2>Private by design</h2>
+          <p>On-device AI via Apple Foundation Models. No cloud, no subscriptions.</p>
         </article>
         <article>
-          <h2>Operational clarity</h2>
-          <p>Host key verification modes, SSH key auth, and explicit trust diagnostics.</p>
+          <h2>Your whole tailnet</h2>
+          <p>Tailscale auto-discovery surfaces every device in one tap.</p>
         </article>
       </section>
 
@@ -122,39 +121,94 @@
           <article class="card">
             <h3>Interactive PTY sessions</h3>
             <p>
-              Sessions run as interactive terminals with resize propagation, not one-off command execution.
+              Full PTY shells with ANSI/truecolor SwiftTerm rendering, dynamic resize, in-terminal search, and
+              command snippets — not one-off command execution.
             </p>
           </article>
           <article class="card">
-            <h3>Search + session controls</h3>
+            <h3>On-device AI</h3>
             <p>
-              Footer-first terminal controls provide quick search, clear, preview, and in-window settings.
+              Apple Foundation Models power a command assistant, automatic error explainer, and session
+              summaries. Everything runs on your Vision Pro — nothing leaves the device.
             </p>
           </article>
           <article class="card">
-            <h3>Session-level overrides</h3>
+            <h3>Tailscale auto-discovery</h3>
             <p>
-              Tune per-session appearance and behavior without disturbing your global defaults.
+              Add an API key or OAuth credentials once and glas.sh lists every device on your tailnet. Tap,
+              authenticate, connect. Mobile devices are filtered out automatically.
             </p>
           </article>
           <article class="card">
-            <h3>Host trust workflow</h3>
+            <h3>SFTP file browser</h3>
             <p>
-              Ask/Strict/Insecure verification modes and explicit fingerprint prompts for first-seen or changed keys.
+              Breadcrumb navigation, batch download and delete, streamed transfers with progress, file info
+              sheets, and recursive server-side <code>find</code> search.
             </p>
           </article>
           <article class="card">
-            <h3>SSH key management</h3>
+            <h3>Port forwarding</h3>
             <p>
-              Import RSA/Ed25519 keys, generate Secure Enclave-backed P-256 keys, and assign keys per server.
+              Local (-L), Remote (-R), and Dynamic/SOCKS5 (-D) tunnels with full IPv4, domain, and IPv6 support.
             </p>
           </article>
           <article class="card">
-            <h3>Config import and mapping</h3>
+            <h3>Multi-hop jump hosts</h3>
             <p>
-              Import OpenSSH config entries and map identity files to stored keys when possible.
+              Chain A → B → C with a reorderable hop list and cycle detection. Single-hop configs stay
+              backward compatible.
             </p>
           </article>
+          <article class="card">
+            <h3>Secure Enclave keys + host trust</h3>
+            <p>
+              P-256 keys generated inside the hardware chip with Optic ID gating, plus Ask/Strict/Insecure
+              host-key verification and per-server fingerprint trust.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Spatial features</h3>
+            <p>
+              Immersive focus mode with Digital Crown depth, spatial server-health widgets, SharePlay session
+              sharing, and per-window glass material and tint.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Session recording</h3>
+            <p>
+              Records to asciicast v2 (asciinema-compatible) with timestamps, plus AI-generated session
+              summaries and an auto-record option.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section id="screens" class="shell section">
+        <div class="section-head">
+          <p class="eyebrow">Screens</p>
+          <h2>Real captures from Apple Vision Pro.</h2>
+        </div>
+        <div class="split">
+          <figure class="media-card">
+            <img
+              src="./images/shots/ai-assistant.jpg"
+              alt="glas.sh AI Assistant turning 'List files in my Downloads folder. Filter by images' into a find command tagged Safe, with Run and Copy actions"
+              loading="lazy"
+              width="1800"
+              height="1111"
+            >
+            <figcaption>On-device AI: plain English in, a risk-rated shell command out.</figcaption>
+          </figure>
+          <figure class="media-card">
+            <img
+              src="./images/shots/sftp.jpg"
+              alt="glas.sh SFTP file browser open over a terminal session with breadcrumb navigation, a directory listing, and a filter field"
+              loading="lazy"
+              width="1800"
+              height="1111"
+            >
+            <figcaption>The SFTP browser opens right over your session — filter, browse, batch transfer.</figcaption>
+          </figure>
         </div>
       </section>
 
@@ -164,29 +218,29 @@
           <h2>From connection to command loop in seconds.</h2>
           <ol class="flow">
             <li>
-              <h3>1. Select server</h3>
-              <p>Filter by favorites, recents, tags, or direct search.</p>
+              <h3>1. Pick a server</h3>
+              <p>Filter by favorites, recents, tags, search, or your live Tailscale tailnet.</p>
             </li>
             <li>
               <h3>2. Verify trust</h3>
-              <p>Review host key fingerprint and choose trust behavior.</p>
+              <p>Review the host key fingerprint and choose your trust behavior.</p>
             </li>
             <li>
               <h3>3. Work in-terminal</h3>
-              <p>Use PTY shell sessions with dynamic resize and terminal-local controls.</p>
+              <p>PTY shells with dynamic resize, on-device AI help, SFTP, and forwarding.</p>
             </li>
           </ol>
         </div>
 
         <figure class="media-card">
           <img
-            src="./images/workflow.jpg"
-            alt="Spatial multi-window SSH workspace with connection list, terminal session, and settings panel"
+            src="./images/shots/connections.jpg"
+            alt="glas.sh Connections window showing the All Servers list with a sidebar for Favorites, Recent, Tags, and Tailscale"
             loading="lazy"
             width="1800"
-            height="1200"
+            height="1111"
           >
-          <figcaption>Multi-window spatial workflow: connections, terminal, and settings.</figcaption>
+          <figcaption>Connections: favorites, recents, tags, and one-tap Tailscale discovery.</figcaption>
         </figure>
       </section>
 
@@ -207,19 +261,23 @@
           <ul class="status-list">
             <li>
               <span class="tag live">Live now</span>
-              <p>Password auth, SSH key auth (RSA/Ed25519), and Secure Enclave-backed P-256 key generation.</p>
+              <p>Password auth, SSH key auth (RSA/Ed25519), and Secure Enclave-backed P-256 key generation gated by Optic ID.</p>
             </li>
             <li>
               <span class="tag live">Live now</span>
               <p>Host-key verification modes (Ask / Strict / Insecure) with trust prompts and per-server trust storage.</p>
             </li>
             <li>
-              <span class="tag progress">In progress</span>
-              <p>SSH agent authentication path.</p>
+              <span class="tag live">Live now</span>
+              <p>Port forwarding (Local / Remote / Dynamic SOCKS5) and single- or multi-hop jump host chains.</p>
+            </li>
+            <li>
+              <span class="tag live">Live now</span>
+              <p>Credentials stored in Keychain with a shared access group; on-device AI keeps prompts and output off the network.</p>
             </li>
             <li>
               <span class="tag progress">In progress</span>
-              <p>Active SSH forwarding lifecycle start/stop wiring.</p>
+              <p>SSH agent authentication path (UI present, not yet wired).</p>
             </li>
           </ul>
         </div>
