@@ -6,6 +6,12 @@ A native visionOS terminal built from scratch for spatial computing. Float termi
 
 **[glas.sh](https://glas.sh)** &nbsp;|&nbsp; **[GitHub Sponsors](https://github.com/sponsors/msitarzewski)** &nbsp;|&nbsp; **MIT Licensed**
 
+<p align="center">
+  <img src="docs/images/shots/hero-htop.jpg" alt="glas.sh terminal floating in a living room on Apple Vision Pro, running htop over SSH with a glass control ornament" width="900">
+  <br>
+  <em>A live <code>htop</code> session floating in your space — full PTY, truecolor, glass ornament controls.</em>
+</p>
+
 > [!WARNING]
 > **Pre-alpha.** glas.sh is under active development and **not yet released on the App Store**. It builds and runs on Apple Vision Pro today, but expect rough edges, incomplete features, and breaking changes between updates. Bug reports and feedback are very welcome — [open an issue](https://github.com/msitarzewski/glas.sh/issues).
 
@@ -52,6 +58,12 @@ Powered by Apple's Foundation Models framework. Everything runs on your Vision P
 - **Error Explainer** — automatically detects errors in terminal output and shows a floating card with diagnosis + suggested fix
 - **Session Summary** — AI-generated highlights of recorded terminal sessions
 
+<p align="center">
+  <img src="docs/images/shots/ai-assistant.jpg" alt="glas.sh AI Assistant turning the request 'List files in my Downloads folder. Filter by images' into a find command tagged Safe, with Run and Copy actions" width="820">
+  <br>
+  <em>Plain English in, a risk-rated shell command out — running entirely on-device.</em>
+</p>
+
 ### Tailscale Integration
 
 Connect your entire Tailscale network. Enter your API key or OAuth credentials once, and glas.sh discovers every device on your tailnet. Tap a device, enter SSH credentials, and you're in. Mobile devices (iOS, iPadOS, Android) are automatically filtered out.
@@ -59,6 +71,12 @@ Connect your entire Tailscale network. Enter your API key or OAuth credentials o
 ### Connections
 
 Server management with favorites, tags, search, and recent connections. Quick connect bar parses `user@host:port` on the fly. Host key verification with fingerprint display. Layout presets save and restore multi-server window arrangements — open your entire production stack with one tap.
+
+<p align="center">
+  <img src="docs/images/shots/connections.jpg" alt="glas.sh Connections window showing the All Servers list with a sidebar for Favorites, Recent, Tags, and Tailscale" width="820">
+  <br>
+  <em>Connections: favorites, recents, tags, and one-tap Tailscale discovery in a glass sidebar.</em>
+</p>
 
 ### Port Forwarding
 
@@ -73,6 +91,12 @@ Single-hop or multi-hop chains. Configure A → B → C with a reorderable hop l
 ### SFTP File Browser
 
 Full directory browsing with breadcrumb navigation. Tap files to select, batch download or delete, pick your destination folder first then stream with progress. File info sheet shows permissions, uid/gid, timestamps, and raw listing. Show/hide hidden files. Client-side filter for the current directory, or press Return to run `find` on the server via SSH for deep recursive search.
+
+<p align="center">
+  <img src="docs/images/shots/sftp.jpg" alt="glas.sh SFTP file browser sheet open over a terminal session, showing breadcrumb navigation, a directory listing, and a file filter field" width="820">
+  <br>
+  <em>The SFTP browser opens right over your session — breadcrumbs, filtering, and batch transfers.</em>
+</p>
 
 ### Security
 
