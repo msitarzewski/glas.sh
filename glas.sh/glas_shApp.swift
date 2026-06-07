@@ -36,14 +36,27 @@ struct glas_shApp: App {
                     .environment(settingsManager)
                     .trackWindowPresence(key: "terminal-\(sessionID.uuidString)", recovery: windowRecoveryManager)
             } else {
-                SessionNotFoundView()
+                SessionNotFoundView(sessionID: sessionID)
                     .environment(sessionManager)
                     .environment(settingsManager)
-                    .trackWindowPresence(key: "terminal-missing", recovery: windowRecoveryManager)
+                    .trackWindowPresence(
+                        key: sessionID.map { "terminal-\($0.uuidString)" } ?? "terminal-missing",
+                        recovery: windowRecoveryManager
+                    )
             }
         }
         .windowStyle(.plain)
         .defaultSize(width: 1200, height: 800)
+        .restorationBehavior(.disabled)
+
+        // Minimized Connections proxy — a slowly spinning terminal icon shown when the
+        // Connections window is closed while it is the last open window. Tap to restore.
+        Window("", id: "minimized") {
+            MinimizedConnectionsView()
+                .trackWindowPresence(key: "minimized", recovery: windowRecoveryManager)
+        }
+        .windowStyle(.plain)
+        .defaultSize(width: 160, height: 160)
         .restorationBehavior(.disabled)
 
         // HTML Preview window
@@ -56,7 +69,7 @@ struct glas_shApp: App {
                         recovery: windowRecoveryManager
                     )
             } else {
-                HTMLPreviewNotFoundView()
+                HTMLPreviewNotFoundView(context: context)
                     .trackWindowPresence(key: "html-preview-missing", recovery: windowRecoveryManager)
             }
         }
@@ -72,7 +85,7 @@ struct glas_shApp: App {
                     .environment(sessionManager)
                     .environment(settingsManager)
             } else {
-                SFTPBrowserNotFoundView()
+                SFTPBrowserNotFoundView(context: context)
                     .trackWindowPresence(key: "sftp-missing", recovery: windowRecoveryManager)
             }
         }
@@ -110,7 +123,6 @@ struct glas_shApp: App {
 struct MainBootstrapView: View {
     @Environment(SessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
-    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openWindow) private var openWindow
     @State private var didBootstrap = false
 
@@ -123,11 +135,11 @@ struct MainBootstrapView: View {
             settingsManager.loadPersistentStateIfNeeded()
             sessionManager.preloadPersistentStateIfNeeded()
         }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .background {
-                sessionManager.closeAllSessions()
-            }
-        }
+        // NOTE: We intentionally do NOT close sessions on scenePhase == .background.
+        // On visionOS, closing the Connections window (or glancing away) backgrounds
+        // this scene — which would kill every live terminal and orphan its window into
+        // "Session not found". Sessions are ephemeral and the OS tears down sockets on
+        // actual app termination; TerminalSession.deinit cancels outstanding tasks.
         .onOpenURL { url in
             handleDeepLink(url)
         }
@@ -171,8 +183,35 @@ private extension View {
     }
 }
 
+/// Slowly spinning terminal icon shown when Connections is closed as the last window.
+/// Tapping it restores the full Connections window and dismisses this proxy.
+struct MinimizedConnectionsView: View {
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
+
+    var body: some View {
+        Button {
+            openWindow(id: "main")
+            dismissWindow(id: "minimized")
+        } label: {
+            Image(systemName: "terminal")
+                .font(.system(size: 56))
+                .foregroundStyle(.secondary)
+                .symbolEffect(.rotate, options: .repeat(.continuous))
+                .padding(28)
+                .background(.regularMaterial, in: .circle)
+        }
+        .buttonStyle(.plain)
+        .hoverEffect(.highlight)
+        .help("Open Connections")
+        .accessibilityLabel("Open Connections")
+    }
+}
+
 struct SessionNotFoundView: View {
-    @Environment(\.dismiss) private var dismiss
+    let sessionID: UUID?
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
         VStack(spacing: 16) {
@@ -184,23 +223,40 @@ struct SessionNotFoundView: View {
                 .font(.title3)
                 .fontWeight(.semibold)
 
-            Text("This terminal window was restored, but its session is no longer active.")
+            Text("This terminal window's session is no longer active.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
 
-            Button("Close Window") {
-                dismiss()
+            HStack(spacing: 12) {
+                Button("Open Connections") {
+                    openWindow(id: "main")
+                    closeThisWindow()
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button("Close Window") {
+                    closeThisWindow()
+                }
+                .buttonStyle(.bordered)
             }
-            .buttonStyle(.borderedProminent)
         }
         .padding(32)
+    }
+
+    private func closeThisWindow() {
+        if let sessionID {
+            dismissWindow(id: "terminal", value: sessionID)
+        } else {
+            dismissWindow(id: "terminal")
+        }
     }
 }
 
 struct SFTPBrowserNotFoundView: View {
-    @Environment(\.dismiss) private var dismiss
+    let context: SFTPBrowserContext?
+    @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
         VStack(spacing: 16) {
@@ -212,14 +268,18 @@ struct SFTPBrowserNotFoundView: View {
                 .font(.title3)
                 .fontWeight(.semibold)
 
-            Text("This SFTP window was restored, but its source session is no longer active.")
+            Text("This SFTP window's source session is no longer active.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 460)
 
             Button("Close Window") {
-                dismiss()
+                if let context {
+                    dismissWindow(id: "sftp", value: context)
+                } else {
+                    dismissWindow(id: "sftp")
+                }
             }
             .buttonStyle(.borderedProminent)
         }
@@ -228,7 +288,8 @@ struct SFTPBrowserNotFoundView: View {
 }
 
 struct HTMLPreviewNotFoundView: View {
-    @Environment(\.dismiss) private var dismiss
+    let context: HTMLPreviewContext?
+    @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
         VStack(spacing: 16) {
@@ -240,14 +301,18 @@ struct HTMLPreviewNotFoundView: View {
                 .font(.title3)
                 .fontWeight(.semibold)
 
-            Text("This preview window was restored, but its source session is no longer active.")
+            Text("This preview window's source session is no longer active.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 460)
 
             Button("Close Window") {
-                dismiss()
+                if let context {
+                    dismissWindow(id: "html-preview", value: context)
+                } else {
+                    dismissWindow(id: "html-preview")
+                }
             }
             .buttonStyle(.borderedProminent)
         }
