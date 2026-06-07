@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Privacy Policy | glas.sh</title>
+    <meta
+      name="description"
+      content="The glas.sh privacy policy. We don't track. We don't collect. Everything stays on your device."
+    >
+    <meta name="theme-color" content="#0c141f">
+    <link rel="canonical" href="https://msitarzewski.github.io/glas.sh/privacy.html">
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    >
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="shell nav-wrap">
+        <a class="brand" href="./" aria-label="glas.sh home">
+          <span class="brand-dot"></span>
+          glas.sh
+        </a>
+        <nav>
+          <a href="./">Home</a>
+          <a href="https://github.com/msitarzewski/glas.sh">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="shell section">
+        <p class="eyebrow">Privacy</p>
+        <h1>Privacy Policy</h1>
+        <p class="lede">
+          glas.sh is built on the principle that your terminal sessions are
+          yours. We don't collect, transmit, or monetize your data. Everything
+          this policy describes is what the app technically does — not a
+          promise we hope to keep.
+        </p>
+        <p class="muted"><strong>Last updated:</strong> May 17, 2026 &nbsp;·&nbsp; <strong>Effective:</strong> v1.0.0</p>
+      </section>
+
+      <section class="shell section">
+        <h2>Summary</h2>
+        <ul class="flow">
+          <li>We don't collect personal information.</li>
+          <li>We don't run analytics, telemetry, crash reporting, or any first-party tracking.</li>
+          <li>The app contains no third-party SDKs that phone home.</li>
+          <li>All your SSH credentials, server configurations, session recordings, and AI assistant interactions stay on your device.</li>
+          <li>When you connect to a remote server, we send traffic only to that server — over SSH, that you initiated.</li>
+        </ul>
+      </section>
+
+      <section class="shell section">
+        <h2>What stays on your device</h2>
+        <ul class="flow">
+          <li><strong>SSH server configurations</strong> — hostnames, ports, usernames, tags, jump-host relationships. Stored in <code>UserDefaults</code> inside a shared App Group accessible only to apps you've installed from us (currently glas.sh and glassdb).</li>
+          <li><strong>Passwords and SSH private keys</strong> — stored in iOS / visionOS Keychain with accessibility level <code>kSecAttrAccessibleWhenUnlockedThisDeviceOnly</code>. Never synced to iCloud. Never leave your device.</li>
+          <li><strong>Secure Enclave-protected keys</strong> — when enabled, your SSH key material is encrypted at rest with a P-256 keypair that lives in the Apple Secure Enclave and never leaves it. Retrieval requires biometric or device-passcode authentication.</li>
+          <li><strong>Session recordings</strong> — when you record a terminal session, the recording is written to the app's sandboxed container on your device.</li>
+          <li><strong>AI command assistant interactions</strong> — your prompts and the AI's responses are processed entirely on-device using Apple's Foundation Models framework. No prompts, responses, or terminal contents are sent to any cloud AI service.</li>
+          <li><strong>App preferences and layouts</strong> — terminal themes, window arrangements, font sizes, and other personalization stay in local <code>UserDefaults</code>.</li>
+        </ul>
+      </section>
+
+      <section class="shell section">
+        <h2>What leaves your device, when, and to whom</h2>
+        <ul class="flow">
+          <li><strong>SSH traffic.</strong> When you connect to a server, encrypted SSH traffic flows between your device and the server you specified. We aren't a man-in-the-middle. We don't proxy, log, or relay your sessions through any infrastructure of ours.</li>
+          <li><strong>Tailscale device discovery.</strong> If you opt in to Tailscale integration, the app makes API calls directly from your device to <code>api.tailscale.com</code> using credentials you provide (API key or OAuth client). These credentials are stored in Keychain and used only to fetch your tailnet's device list. We have no relationship with Tailscale; the connection is between your device and Tailscale's API.</li>
+          <li><strong>SharePlay.</strong> If you start a SharePlay session to share a terminal view with someone in a FaceTime call, terminal video frames are transmitted through Apple's Group Activities infrastructure. This uses Apple's services, not ours, and is governed by Apple's privacy policy. The viewer receives a read-only stream.</li>
+        </ul>
+      </section>
+
+      <section class="shell section">
+        <h2>Permissions we request</h2>
+        <ul class="flow">
+          <li><strong>Network access.</strong> Required to make SSH connections to the servers you specify.</li>
+          <li><strong>Keychain access.</strong> Required to securely store SSH credentials.</li>
+          <li><strong>Local Authentication (Face ID / Optic ID / passcode).</strong> Required only if you enable Secure Enclave–protected SSH keys, to authorize each use of a protected key.</li>
+          <li><strong>Group Activities.</strong> Required only if you start a SharePlay session.</li>
+        </ul>
+        <p class="muted">
+          The app does not request access to your contacts, location, photos, microphone, or camera. We don't ask for tracking permission because there's nothing to track.
+        </p>
+      </section>
+
+      <section class="shell section">
+        <h2>Children</h2>
+        <p>
+          glas.sh is a developer and system-administration tool. It is not directed at children under 13 and we do not knowingly collect any information from children.
+        </p>
+      </section>
+
+      <section class="shell section">
+        <h2>Changes to this policy</h2>
+        <p>
+          If we ever change this policy, the change will appear in the version control history of this page (<a href="https://github.com/msitarzewski/glas.sh/commits/main/docs/privacy.html">on GitHub</a>) and the &quot;Last updated&quot; date at the top will move. We will not retroactively start collecting or transmitting data that this policy says we don't.
+        </p>
+      </section>
+
+      <section class="shell section">
+        <h2>Contact</h2>
+        <p>
+          Questions about this policy or how the app handles data?
+        </p>
+        <ul class="flow">
+          <li>Open an issue: <a href="https://github.com/msitarzewski/glas.sh/issues">github.com/msitarzewski/glas.sh/issues</a></li>
+          <li>Email: <a href="mailto:msitarzewski@gmail.com">msitarzewski@gmail.com</a></li>
+        </ul>
+      </section>
+
+      <section class="shell final-cta">
+        <h2>Open source. Audit it yourself.</h2>
+        <p>
+          Every claim in this policy maps to code you can read. The repository is MIT-licensed and public.
+        </p>
+        <div class="hero-cta">
+          <a class="button button-primary" href="https://github.com/msitarzewski/glas.sh">Open repository</a>
+          <a class="button button-ghost" href="./">Back to home</a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell footer-row">
+        <p>glas.sh</p>
+        <div>
+          <a href="./">Website</a>
+          <a href="./privacy.html">Privacy</a>
+          <a href="https://github.com/msitarzewski/glas.sh">GitHub</a>
+          <a href="https://github.com/sponsors/msitarzewski">Sponsor</a>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>

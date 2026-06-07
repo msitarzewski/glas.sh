@@ -232,7 +232,7 @@ public struct SwiftTermHostView: UIViewRepresentable {
             self.onBell = onBell
         }
 
-        @objc func dismissEditMenu() {
+        @objc @MainActor func dismissEditMenu() {
             UIMenuController.shared.hideMenu()
         }
 
