@@ -45,7 +45,8 @@ public final class SFTPFile {
         }
     }
     
-    /// Read the attributes of the file. This is equivalent to the `stat()` system call.
+    /// Read the attributes of this open file handle. This is equivalent to the
+    /// `fstat()` system call and does not re-resolve `path`.
     ///
     /// - Returns: File attributes including size, permissions, etc
     /// - Throws: SFTPError if the file handle is invalid or request fails
@@ -60,17 +61,22 @@ public final class SFTPFile {
     /// }
     /// ```
     public func readAttributes() async throws -> SFTPFileAttributes {
-        guard self.isActive else { throw SFTPError.fileHandleInvalid }
-        
-        guard case .attributes(let attributes) = try await self.client.sendRequest(.stat(.init(
-            requestId: self.client.allocateRequestId(),
-            path: path
-        ))) else {
+        guard case .attributes(let attributes) = try await self.client.sendRequest(
+            try makeReadAttributesRequest()
+        ) else {
             self.logger.warning("SFTP server returned bad response to read file request, this is a protocol error")
             throw SFTPError.invalidResponse
         }
                                                                                          
         return attributes.attributes
+    }
+
+    internal func makeReadAttributesRequest() throws -> SFTPRequest {
+        guard isActive else { throw SFTPError.fileHandleInvalid }
+        return .fstat(.init(
+            requestId: client.allocateRequestId(),
+            handle: handle
+        ))
     }
 
     /// Sets the attributes on the file handle represented by this `SFTPFile`.
@@ -250,6 +256,32 @@ public final class SFTPFile {
         self.logger.debug("SFTP finished writing \(data.readerIndex) bytes @ \(offset) to file \(self.handle.sftpHandleDebugDescription)")
     }
 
+    /// Requests durable synchronization through OpenSSH's advertised
+    /// `fsync@openssh.com` extension.
+    public func synchronize() async throws {
+        let response = try await client.sendRequest(try makeSynchronizeRequest())
+        guard case .status(let status) = response, status.errorCode == .ok else {
+            throw SFTPError.invalidResponse
+        }
+    }
+
+    internal func makeSynchronizeRequest() throws -> SFTPRequest {
+        guard isActive else { throw SFTPError.fileHandleInvalid }
+        let extensionName = "fsync@openssh.com"
+        guard client.supportsExtension(extensionName, version: "1") else {
+            throw SFTPError.unsupportedExtension(extensionName)
+        }
+
+        var payload = ByteBuffer()
+        var fileHandle = handle
+        payload.writeSSHString(&fileHandle)
+        return .extended(.init(
+            requestId: client.allocateRequestId(),
+            requestName: extensionName,
+            payload: payload
+        ))
+    }
+
     /// Close the file handle.
     ///
     /// - Throws: SFTPError if close fails
@@ -286,7 +318,13 @@ extension ByteBuffer {
     /// any arbitrary identifying value the server cares to use, such as the integer representation of
     /// a Windows `HANDLE`) and prints it in as readable as form as is reasonable.
     internal var sftpHandleDebugDescription: String {
-        // TODO: This is an appallingly ineffecient way to do a byte-to-hex conversion.
-        return self.readableBytesView.flatMap { [Int($0 >> 8), Int($0 & 0x0f)] }.map { ["0","1","2","3","4","5","6","7","8","9","a","b","c","d","e","f"][$0] }.joined()
+        let digits = Array("0123456789abcdef".utf8)
+        var encoded: [UInt8] = []
+        encoded.reserveCapacity(self.readableBytes * 2)
+        for byte in self.readableBytesView {
+            encoded.append(digits[Int(byte >> 4)])
+            encoded.append(digits[Int(byte & 0x0f)])
+        }
+        return String(decoding: encoded, as: UTF8.self)
     }
 }

@@ -51,7 +51,8 @@ struct SettingsView: View {
 
 struct GeneralSettingsView: View {
     @Environment(SettingsManager.self) private var settingsManager
-    @State private var serverManager = ServerManager(loadImmediately: false)
+    @Environment(SessionManager.self) private var sessionManager
+    private var serverManager: ServerManager { sessionManager.serverManager }
     @State private var showingAddSSHKey = false
     @State private var showingGenerateSecureEnclaveKey = false
     @State private var editingSSHKey: StoredSSHKey?
@@ -83,10 +84,14 @@ struct GeneralSettingsView: View {
             }
             
             Section("Terminal Behavior") {
-                Toggle("Save scrollback history", isOn: $settings.saveScrollback)
+                Toggle("Keep scrollback during session", isOn: $settings.saveScrollback)
                     .onChange(of: settings.saveScrollback) { _, _ in
                         settings.saveSettings()
                     }
+
+                Text("Scrollback stays in memory and is cleared when the terminal session ends.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 
                 Stepper("Max scrollback lines: \(settings.maxScrollbackLines)",
                        value: $settings.maxScrollbackLines,
@@ -98,11 +103,6 @@ struct GeneralSettingsView: View {
             }
             
             Section("Session Recording") {
-                Toggle("Auto-record sessions", isOn: $settings.autoRecordSessions)
-                    .onChange(of: settings.autoRecordSessions) { _, _ in
-                        settings.saveSettings()
-                    }
-
                 let recordings = SessionRecorder.loadRecordings()
                 let totalSize = Self.recordingStorageSize()
                 LabeledContent("Recordings", value: "\(recordings.count)")
@@ -124,7 +124,7 @@ struct GeneralSettingsView: View {
 
             Section("Security") {
                 Picker("Host key verification", selection: $settings.hostKeyVerificationMode) {
-                    ForEach(HostKeyVerificationMode.allCases, id: \.rawValue) { mode in
+                    ForEach([HostKeyVerificationMode.ask, .strict], id: \.rawValue) { mode in
                         Text(mode.rawValue).tag(mode.rawValue)
                     }
                 }
@@ -180,38 +180,15 @@ struct GeneralSettingsView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(tailscaleTestInProgress || !tailscaleCredentialsValid)
 
-                Toggle("Auto-discover devices", isOn: $settings.tailscaleAutoDiscover)
-                    .onChange(of: settings.tailscaleAutoDiscover) { _, _ in
-                        settings.saveSettings()
-                    }
-
                 if let tailscaleTestResult {
                     Text(tailscaleTestResult)
                         .font(.caption)
                         .foregroundStyle(tailscaleTestResult.hasPrefix("Connected") ? .green : .red)
                 }
-            }
 
-            Section("Secret Migration") {
-                if let status = settings.secretMigrationStatus {
-                    let stateText = status.needsMigration ? "Migration pending" : "No pending migration"
-                    Text(stateText)
-                        .font(.subheadline)
-                    Text(
-                        "Passwords: \(status.passwordItemCount), Private keys: \(status.sshPrivateKeyItemCount), Passphrases: \(status.sshPassphraseItemCount)"
-                    )
+                Text("Earlier-build Tailscale credentials are not imported from unnamespaced entries in the shared Keychain service. If a field is empty after updating, re-enter it once to store it in glas.sh's terminal namespace.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                } else {
-                    Text("Migration status unavailable.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Button("Refresh Migration Status") {
-                    settings.refreshSecretMigrationStatus()
-                }
-                .buttonStyle(.bordered)
             }
 
             Section("SSH Keys") {
@@ -297,7 +274,6 @@ struct GeneralSettingsView: View {
         .padding()
         .task {
             serverManager.loadServersIfNeeded()
-            settingsManager.refreshSecretMigrationStatus()
             loadTailscaleCredentials()
         }
         .sheet(isPresented: $showingAddSSHKey) {
@@ -339,7 +315,11 @@ struct GeneralSettingsView: View {
             presenting: keyPendingDeletion
         ) { key in
             Button("Delete \(key.name)", role: .destructive) {
-                settingsManager.deleteSSHKey(key.id, serverManager: serverManager)
+                do {
+                    try settingsManager.deleteSSHKey(key.id, serverManager: serverManager)
+                } catch {
+                    keyCopyMessage = "The key was not deleted because secure storage could not be updated: \(error.localizedDescription)"
+                }
                 keyPendingDeletion = nil
             }
             Button("Cancel", role: .cancel) {
@@ -417,9 +397,6 @@ struct GeneralSettingsView: View {
         tailscaleTestInProgress = true
         tailscaleTestResult = nil
 
-        // Persist auth method first so loadDevices knows which path to use
-        UserDefaults.standard.set(tailscaleAuthMethod.rawValue, forKey: UserDefaultsKeys.tailscaleAuthMethod)
-
         do {
             switch tailscaleAuthMethod {
             case .apiKey:
@@ -432,6 +409,8 @@ struct GeneralSettingsView: View {
                     clientSecret: tailscaleOAuthClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
                 )
             }
+            // Switch the active method only after its credential write succeeds.
+            UserDefaults.standard.set(tailscaleAuthMethod.rawValue, forKey: UserDefaultsKeys.tailscaleAuthMethod)
         } catch {
             tailscaleTestResult = "Failed to save: \(error.localizedDescription)"
             tailscaleTestInProgress = false
@@ -581,72 +560,54 @@ struct AppearanceSettingsView: View {
         @Bindable var settings = settingsManager
         
         Form {
-            Section("Window") {
-                Slider(value: $settings.windowOpacity, in: 0.5...1.0) {
+            Section("Glass") {
+                Picker("Frost", selection: $settings.glassFrost) {
+                    Text("Light").tag("ultraThin")
+                    Text("Medium").tag("thin")
+                    Text("Heavy").tag("regular")
+                    Text("Max").tag("thick")
+                }
+                .onChange(of: settings.glassFrost) { _, _ in
+                    settings.saveSettings()
+                }
+
+                Slider(value: $settings.windowOpacity, in: 0.0...1.0) {
                     Text("Opacity")
                 } minimumValueLabel: {
-                    Text("50%")
+                    Text("Transparent")
                 } maximumValueLabel: {
-                    Text("100%")
+                    Text("Opaque")
                 }
                 .onChange(of: settings.windowOpacity) { _, _ in
                     settings.saveSettings()
                 }
-                
+
                 Slider(value: $settings.blurBackground, in: 0.0...1.0) {
-                    Text("Glass material")
+                    Text("Blur")
                 } minimumValueLabel: {
-                    Text("Solid")
+                    Text("None")
                 } maximumValueLabel: {
-                    Text("Frosted")
+                    Text("Maximum")
                 }
                 .onChange(of: settings.blurBackground) { _, _ in
                     settings.saveSettings()
                 }
 
-            }
-
-            Section("Glass Effect") {
-                Toggle("Interactive glass effects", isOn: $settings.interactiveGlassEffects)
-                    .onChange(of: settings.interactiveGlassEffects) { _, _ in
+                Toggle("Interactive glass", isOn: $settings.interactiveGlass)
+                    .onChange(of: settings.interactiveGlass) { _, _ in
                         settings.saveSettings()
                     }
-                
+
+                Text("Opacity paints the theme color; Blur controls passthrough frosting independently. Set both to zero for a completely transparent terminal. Interactive glass changes how the selected frost responds to gaze without disabling either slider.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 GlassTintPicker(value: $settings.glassTint)
                     .onChange(of: settings.glassTint) { _, _ in
                         settings.saveSettings()
                     }
-
-                Picker("Glass material", selection: $settings.glassMaterialStyle) {
-                    Text("Ultra Thin").tag("ultraThin")
-                    Text("Thin").tag("thin")
-                    Text("Regular").tag("regular")
-                    Text("Thick").tag("thick")
-                }
-                .onChange(of: settings.glassMaterialStyle) { _, _ in
-                    settings.saveSettings()
-                }
             }
             
-            Section("Layout") {
-                Toggle("Show sidebar by default", isOn: $settings.showSidebarByDefault)
-                    .onChange(of: settings.showSidebarByDefault) { _, _ in
-                        settings.saveSettings()
-                    }
-                
-                Toggle("Show info panel by default", isOn: $settings.showInfoPanelByDefault)
-                    .onChange(of: settings.showInfoPanelByDefault) { _, _ in
-                        settings.saveSettings()
-                    }
-                
-                Picker("Sidebar Position", selection: $settings.sidebarPosition) {
-                    Text("Left").tag("Left")
-                    Text("Right").tag("Right")
-                }
-                .onChange(of: settings.sidebarPosition) { _, _ in
-                    settings.saveSettings()
-                }
-            }
         }
         .formStyle(.grouped)
         .padding()
@@ -1098,7 +1059,7 @@ struct GenerateSecureEnclaveSSHKeyView: View {
                 Section("Key Details") {
                     TextField("Key name", text: $name)
                         .focused($isNameFocused)
-                    Text("Generates an ECDSA P-256 key wrapped with a device-bound Secure Enclave key.")
+                    Text("Generates a hardware-bound ECDSA P-256 signing key. The private key never leaves the Secure Enclave, and each use requires user presence.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1180,4 +1141,5 @@ private let relativeDateFormatter: RelativeDateTimeFormatter = {
 #Preview {
     SettingsView()
         .environment(SettingsManager())
+        .environment(SessionManager(loadImmediately: false))
 }

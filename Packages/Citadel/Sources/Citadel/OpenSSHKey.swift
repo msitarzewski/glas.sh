@@ -260,7 +260,7 @@ enum OpenSSH {
                 }
                 
                 guard _SHA512.didInit else {
-                    fatalError("Internal library error")
+                    throw KeyError.cryptoError
                 }
                 
                 return try decryptionKey.withUnsafeBytes { decryptionKey in

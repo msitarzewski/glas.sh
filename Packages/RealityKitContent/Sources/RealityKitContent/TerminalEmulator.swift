@@ -1,8 +1,46 @@
 import Foundation
 import SwiftTerm
 
-private final class NoOpTerminalDelegate: TerminalDelegate {
-    func send(source: Terminal, data: ArraySlice<UInt8>) {}
+private final class CapturingTerminalDelegate: TerminalDelegate {
+    static let maximumCapturedOutboundBytes = 1_048_576
+
+    private(set) var outboundData = Data()
+    private(set) var outboundDataWasTruncated = false
+    private(set) var synchronizedOutputActive = false
+
+    func send(source: Terminal, data: ArraySlice<UInt8>) {
+        let remainingCapacity = Self.maximumCapturedOutboundBytes - outboundData.count
+        guard remainingCapacity > 0 else {
+            outboundDataWasTruncated = true
+            return
+        }
+        if data.count > remainingCapacity {
+            outboundData.append(contentsOf: data.prefix(remainingCapacity))
+            outboundDataWasTruncated = true
+        } else {
+            outboundData.append(contentsOf: data)
+        }
+    }
+
+    func synchronizedOutputChanged(source: Terminal, active: Bool) {
+        synchronizedOutputActive = active
+    }
+
+    func drainOutboundData() -> Data {
+        defer {
+            outboundData.removeAll(keepingCapacity: true)
+            outboundDataWasTruncated = false
+        }
+        return outboundData
+    }
+}
+
+public enum TerminalMouseReportingMode: String, Equatable, Sendable {
+    case off
+    case x10
+    case vt200
+    case buttonEventTracking
+    case anyEvent
 }
 
 public struct TerminalRGBColor: Equatable, Sendable {
@@ -20,32 +58,90 @@ public struct TerminalRGBColor: Equatable, Sendable {
 public struct TerminalCellStyle: Equatable, Sendable {
     public var foreground: TerminalRGBColor
     public var background: TerminalRGBColor?
+    public var isBold: Bool
+    public var isUnderlined: Bool
+    public var isBlinking: Bool
+    public var isInverse: Bool
+    public var isInvisible: Bool
+    public var isDim: Bool
+    public var isItalic: Bool
+    public var isCrossedOut: Bool
+    public var underlineStyleRawValue: UInt8
 
-    public init(foreground: TerminalRGBColor, background: TerminalRGBColor?) {
+    public init(
+        foreground: TerminalRGBColor,
+        background: TerminalRGBColor?,
+        isBold: Bool = false,
+        isUnderlined: Bool = false,
+        isBlinking: Bool = false,
+        isInverse: Bool = false,
+        isInvisible: Bool = false,
+        isDim: Bool = false,
+        isItalic: Bool = false,
+        isCrossedOut: Bool = false,
+        underlineStyleRawValue: UInt8 = 0
+    ) {
         self.foreground = foreground
         self.background = background
+        self.isBold = isBold
+        self.isUnderlined = isUnderlined
+        self.isBlinking = isBlinking
+        self.isInverse = isInverse
+        self.isInvisible = isInvisible
+        self.isDim = isDim
+        self.isItalic = isItalic
+        self.isCrossedOut = isCrossedOut
+        self.underlineStyleRawValue = underlineStyleRawValue
     }
 }
 
 public struct TerminalStyledCell: Equatable, Sendable {
     public var scalar: String
+    public var columnWidth: Int
     public var style: TerminalCellStyle
 
-    public init(scalar: String, style: TerminalCellStyle) {
+    public init(scalar: String, columnWidth: Int = 1, style: TerminalCellStyle) {
         self.scalar = scalar
+        self.columnWidth = columnWidth
         self.style = style
     }
 }
 
 @MainActor
 public final class TerminalEmulator {
+    private let terminalDelegate: CapturingTerminalDelegate
     private let terminal: Terminal
     public private(set) var rows: [String] = []
     public private(set) var styledRows: [[TerminalStyledCell]] = []
     public private(set) var cursor: (row: Int, col: Int) = (0, 0)
+    public private(set) var columns: Int
+    public private(set) var rowCount: Int
+    public private(set) var isAlternateBufferActive = false
+    public private(set) var isApplicationCursorModeActive = false
+    public private(set) var isBracketedPasteModeActive = false
+    public private(set) var mouseReportingMode: TerminalMouseReportingMode = .off
+    public private(set) var kittyKeyboardFlagsRawValue = 0
+    public var isSynchronizedOutputActive: Bool {
+        terminalDelegate.synchronizedOutputActive
+    }
+    public var outboundDataWasTruncated: Bool {
+        terminalDelegate.outboundDataWasTruncated
+    }
+    public var bufferLineCount: Int {
+        terminal.getBufferAsData().reduce(into: 0) { count, byte in
+            if byte == UInt8(ascii: "\n") { count += 1 }
+        }
+    }
+    public var scrollbackLineCount: Int {
+        max(0, bufferLineCount - rowCount)
+    }
 
     public init(cols: Int = 120, rows: Int = 40) {
-        terminal = Terminal(delegate: NoOpTerminalDelegate(), options: TerminalOptions())
+        let terminalDelegate = CapturingTerminalDelegate()
+        self.terminalDelegate = terminalDelegate
+        terminal = Terminal(delegate: terminalDelegate, options: TerminalOptions())
+        columns = cols
+        rowCount = rows
         terminal.resize(cols: cols, rows: rows)
         refreshSnapshot()
     }
@@ -65,6 +161,10 @@ public final class TerminalEmulator {
         refreshSnapshot()
     }
 
+    public func drainOutboundData() -> Data {
+        terminalDelegate.drainOutboundData()
+    }
+
     private func refreshSnapshot() {
         var snapshot: [String] = []
         var styledSnapshot: [[TerminalStyledCell]] = []
@@ -82,6 +182,7 @@ public final class TerminalEmulator {
                     styledLine.append(
                         TerminalStyledCell(
                             scalar: " ",
+                            columnWidth: 1,
                             style: TerminalCellStyle(
                                 foreground: terminalDefaultForeground(),
                                 background: terminalDefaultBackground()
@@ -100,6 +201,7 @@ public final class TerminalEmulator {
                 styledLine.append(
                     TerminalStyledCell(
                         scalar: scalar,
+                        columnWidth: Int(charData.width),
                         style: style(for: charData.attribute)
                     )
                 )
@@ -111,6 +213,19 @@ public final class TerminalEmulator {
         rows = snapshot
         styledRows = styledSnapshot
         cursor = (row: terminal.buffer.y, col: terminal.buffer.x)
+        columns = terminal.cols
+        rowCount = terminal.rows
+        isAlternateBufferActive = terminal.isCurrentBufferAlternate
+        isApplicationCursorModeActive = terminal.applicationCursor
+        isBracketedPasteModeActive = terminal.bracketedPasteMode
+        kittyKeyboardFlagsRawValue = terminal.keyboardEnhancementFlags.rawValue
+        switch terminal.mouseMode {
+        case .off: mouseReportingMode = .off
+        case .x10: mouseReportingMode = .x10
+        case .vt200: mouseReportingMode = .vt200
+        case .buttonEventTracking: mouseReportingMode = .buttonEventTracking
+        case .anyEvent: mouseReportingMode = .anyEvent
+        }
     }
 
     private func style(for attribute: Attribute) -> TerminalCellStyle {
@@ -127,7 +242,19 @@ public final class TerminalEmulator {
             fg = bg ?? terminalDefaultBackground()
         }
 
-        return TerminalCellStyle(foreground: fg, background: bg)
+        return TerminalCellStyle(
+            foreground: fg,
+            background: bg,
+            isBold: attribute.style.contains(.bold),
+            isUnderlined: attribute.style.contains(.underline),
+            isBlinking: attribute.style.contains(.blink),
+            isInverse: attribute.style.contains(.inverse),
+            isInvisible: attribute.style.contains(.invisible),
+            isDim: attribute.style.contains(.dim),
+            isItalic: attribute.style.contains(.italic),
+            isCrossedOut: attribute.style.contains(.crossedOut),
+            underlineStyleRawValue: attribute.underlineStyle.rawValue
+        )
     }
 
     private func resolveForegroundColor(_ color: Attribute.Color) -> TerminalRGBColor {

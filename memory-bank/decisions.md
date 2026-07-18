@@ -125,7 +125,7 @@
 - References: `tasks/2026-03/260316_sprint2-spatial-leap.md` (in README)
 
 ## 2026-03-16: visionOS keyboard focus maintenance timer
-- Status: Approved
+- Status: Superseded by the approved 2026-07-17 explicit focus-ownership decision below
 - Context: visionOS RTI (Remote Text Input) system silently drops first responder from TerminalView after a few seconds of keyboard idle. User loses ability to type — `RTIInputSystemClient remoteTextInputSessionWithID:performInputOperation: perform input operation requires a valid sessionID` errors flood the log.
 - Decision: Add a 2-second periodic timer in `SwiftTermHostModel` that checks `isFirstResponder` and re-asserts `becomeFirstResponder()` if lost. Timer starts on attach, stops on disappear.
 - Alternatives: Tried initial focus retry (3×50ms) — insufficient for ongoing idle loss. Could override `resignFirstResponder` on TerminalView but SwiftTerm's UIView subclass isn't easily extensible from outside.
@@ -175,3 +175,72 @@
   - Internal keychain operations use secure memory representation.
   - No API-breaking changes for existing callers.
   - Incremental step toward full secure memory handling for key material.
+
+## 2026-06-12: Transition from Version Zero acceleration to Functional hardening
+- Status: Approved
+- Context:
+  - The Version Zero phase intentionally optimized for rapid product exploration and established a broad native visionOS SSH feature surface.
+  - A fresh codebase audit found that several user-visible controls stop before completing their advertised workflow, and some security-sensitive entry paths do not share the same authorization policy.
+  - The repository is public and open source, so status documentation should distinguish implemented scaffolding, experimentally reachable behavior, and release-ready end-to-end functionality.
+- Decision:
+  - Treat work through March 2026 as the **Version Zero rapid acceleration** phase.
+  - Begin a **Functional hardening** phase before App Store submission.
+  - Define a feature as functional only when its UI entry point, runtime behavior, failure handling, security policy, cleanup, and tests complete end to end.
+  - Centralize session opening before fixing individual reconnect-like call sites. The shared policy must resolve credentials, perform user-presence checks, apply host-key policy, and distinguish user-initiated external requests.
+  - Complete or hide experimental surfaces rather than leaving controls that imply unsupported behavior.
+  - Keep historical sprint records intact, but use `activeContext.md`, `progress.md`, and `release-checklist.md` for current readiness status.
+- Initial priority order:
+  1. Unified session-opening and authorization policy.
+  2. Recording protection and sensitive-log redaction.
+  3. Explicit legacy SSH compatibility policy.
+  4. SFTP destination safety and AI command confirmation.
+  5. HTML Preview, SharePlay, and port-forwarding end-to-end completion or release-build removal.
+  6. Security-focused integration tests and TestFlight verification.
+- Consequences:
+  - App Store submission work pauses until Functional release gates pass.
+  - Existing Version Zero code is reused as scaffolding where it has valid integration points.
+  - Feature count is no longer used as a readiness proxy; verified end-to-end behavior is the release criterion.
+
+## 2026-07-17: Codex-completions release scope and Vision Pro invariant
+- Status: Approved
+- Context:
+  - The product exists to provide a premium terminal on Apple Vision Pro, including a terminal canvas that can be genuinely 100% transparent.
+  - The release targets Apple OS 26 or newer on Apple Silicon, with visionOS as the current shipping target and reference experience.
+  - An audit recommendation for a near-opaque terminal conflicted with the product's defining purpose.
+- Decision:
+  - Preserve independent continuous opacity and blur controls; both at zero must remain a supported fully transparent state.
+  - Keep Vision Pro spatial presentation and user choice above generic cross-platform defaults.
+  - Use Liquid Glass for controls and hierarchy without forcing opacity onto the terminal canvas.
+  - Treat native macOS/iPadOS/iOS, workspace expansion, metadata sync, and alternate-engine evaluation as open program phases until explicitly completed or given a user-approved disposition.
+  - Approve the 2026-07-17 code and automated-QA checkpoint, but keep physical-device, matching-Xcode-26, signing, TestFlight, and App Store go/no-go gates open.
+- Consequences:
+  - Accessibility guidance may recommend readable combinations but cannot clamp away full transparency.
+  - The current candidate is arm64-only with a visionOS 26.0 deployment floor.
+  - The release program remains honest about unfinished Phases 06–09 and manual/distribution work.
+- References: `memory-bank/releases/codex-completions/README.md`, `memory-bank/tasks/2026-07/170726_codex-completions-release.md`
+
+## 2026-07-17: Explicit terminal focus ownership supersedes periodic focus stealing
+- Status: Approved
+- Context: The earlier two-second first-responder timer prevented RTI idle loss but could reclaim focus from search, sheets, command composition, and other controls. SwiftTerm also creates its caret after becoming first responder, so the initial theme assignment could leave a black caret.
+- Decision:
+  - Replace unconditional periodic reclamation with aggregate focus ownership, explicit resign, and bounded key-window-aware retry.
+  - Replay the configured caret theme after focus succeeds.
+  - Preserve live ANSI palette installation independently from default unstyled shell text.
+- Consequences:
+  - Terminal focus no longer competes with active controls or IME ownership.
+  - The focused caret uses the selected theme instead of SwiftTerm's transient default.
+  - Physical Vision Pro keyboard/IME/dictation validation remains required.
+- References: `Packages/RealityKitContent/Sources/RealityKitContent/SwiftTermHostView.swift`, `memory-bank/releases/codex-completions/04-terminal-correctness-and-engine-boundary.md`
+
+## 2026-07-17: Forward-only credential migration and artifact-aware key deletion
+- Status: Approved
+- Context: Shared legacy Keychain sources can be read by more than one app, concurrent destination writes must not be overwritten, and partial SSH-key representations can survive when material retrieval returns `notFound`.
+- Decision:
+  - Migrations atomically add a destination only when absent, preserve conflicting/concurrent destinations, and never delete shared legacy sources.
+  - SSH-key deletion snapshots all generic representations, resolves deterministic legacy Secure Enclave tags, deletes hardware last, verifies expected absence, and restores exact artifacts on recoverable failure.
+  - If the original representation cannot be reconstructed, retain a recovery-required journal and fail closed rather than claiming verified restoration.
+- Consequences:
+  - Migration is retryable and downgrade-compatible without destructive shared-source cleanup.
+  - Orphaned passphrases/tags/hardware keys are detected even when full material retrieval is nil.
+  - GlasSecretStore's 75-test suite and app regression coverage protect the lifecycle contract.
+- References: `Packages/GlasSecretStore/Sources/GlasSecretStore/Keychain/SSHKeyKeychainStore.swift`, `glas.sh/SettingsManager.swift`, `memory-bank/releases/codex-completions/02-secrets-authentication-and-host-trust.md`

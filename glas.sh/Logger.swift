@@ -17,5 +17,4 @@ extension Logger {
     nonisolated static let tailscale = Logger(subsystem: "sh.glas", category: "tailscale")
     nonisolated static let recording = Logger(subsystem: "sh.glas", category: "recording")
     nonisolated static let immersive = Logger(subsystem: "sh.glas", category: "immersive")
-    nonisolated static let shareplay = Logger(subsystem: "sh.glas", category: "shareplay")
 }

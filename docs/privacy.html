@@ -64,7 +64,7 @@
         <ul class="flow">
           <li><strong>SSH server configurations</strong> — hostnames, ports, usernames, tags, jump-host relationships. Stored in <code>UserDefaults</code> inside a shared App Group accessible only to apps you've installed from us (currently glas.sh and glassdb).</li>
           <li><strong>Passwords and SSH private keys</strong> — stored in iOS / visionOS Keychain with accessibility level <code>kSecAttrAccessibleWhenUnlockedThisDeviceOnly</code>. Never synced to iCloud. Never leave your device.</li>
-          <li><strong>Secure Enclave-protected keys</strong> — when enabled, your SSH key material is encrypted at rest with a P-256 keypair that lives in the Apple Secure Enclave and never leaves it. Retrieval requires biometric or device-passcode authentication.</li>
+          <li><strong>Secure Enclave signing keys</strong> — when enabled, a hardware-bound P-256 private key is generated inside the Apple Secure Enclave and never leaves it. Each signing operation requires biometric or device-passcode authentication.</li>
           <li><strong>Session recordings</strong> — when you record a terminal session, the recording is written to the app's sandboxed container on your device.</li>
           <li><strong>AI command assistant interactions</strong> — your prompts and the AI's responses are processed entirely on-device using Apple's Foundation Models framework. No prompts, responses, or terminal contents are sent to any cloud AI service.</li>
           <li><strong>App preferences and layouts</strong> — terminal themes, window arrangements, font sizes, and other personalization stay in local <code>UserDefaults</code>.</li>
@@ -76,7 +76,6 @@
         <ul class="flow">
           <li><strong>SSH traffic.</strong> When you connect to a server, encrypted SSH traffic flows between your device and the server you specified. We aren't a man-in-the-middle. We don't proxy, log, or relay your sessions through any infrastructure of ours.</li>
           <li><strong>Tailscale device discovery.</strong> If you opt in to Tailscale integration, the app makes API calls directly from your device to <code>api.tailscale.com</code> using credentials you provide (API key or OAuth client). These credentials are stored in Keychain and used only to fetch your tailnet's device list. We have no relationship with Tailscale; the connection is between your device and Tailscale's API.</li>
-          <li><strong>SharePlay.</strong> If you start a SharePlay session to share a terminal view with someone in a FaceTime call, terminal video frames are transmitted through Apple's Group Activities infrastructure. This uses Apple's services, not ours, and is governed by Apple's privacy policy. The viewer receives a read-only stream.</li>
         </ul>
       </section>
 
@@ -86,7 +85,6 @@
           <li><strong>Network access.</strong> Required to make SSH connections to the servers you specify.</li>
           <li><strong>Keychain access.</strong> Required to securely store SSH credentials.</li>
           <li><strong>Local Authentication (Face ID / Optic ID / passcode).</strong> Required only if you enable Secure Enclave–protected SSH keys, to authorize each use of a protected key.</li>
-          <li><strong>Group Activities.</strong> Required only if you start a SharePlay session.</li>
         </ul>
         <p class="muted">
           The app does not request access to your contacts, location, photos, microphone, or camera. We don't ask for tracking permission because there's nothing to track.

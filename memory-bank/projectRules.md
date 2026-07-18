@@ -10,11 +10,19 @@
 - Concurrency safety: use `OSAllocatedUnfairLock` for thread-safe caches accessed from non-actor contexts. Use `nonisolated(unsafe)` only for `deinit` access to actor-isolated task properties.
 
 ## Keychain Handling
-- Keychain account key format: `"\(username)@\(host):\(port)"`. Changing any component requires deleting the old entry after saving to the new key.
+- Use protocol/purpose/terminal-namespaced, profile-stable accounts from `KeychainAccountNamespace`; do not compose bare credential account strings at call sites.
+- Shared legacy migrations are forward-only and non-destructive: atomic add-if-absent, verified readback, conflict preservation, and no source deletion.
+- User-authorized app-owned credential replacement may remove an exact old account only after the new secret and metadata commit and only when concurrent replacement is not overwritten.
+- Destructive secret operations require durable secret-free recovery state, artifact-level verification, and fail-closed behavior when exact restoration cannot be proven.
 - Never use `try?` for keychain saves — use `do/catch` with `Logger.keychain.error()` + user-facing alert.
 - Pre-load existing passwords in edit flows.
 - Clean up orphaned keychain entries when auth method switches away from password.
 - Suppress visionOS AutoFill on app-managed SecureFields via `.textContentType(.init(rawValue: ""))`.
+
+## Terminal Focus and Appearance
+- Terminal focus must respect aggregate ownership by search, sheets, editors, alerts, file pickers, and IME composition. Use explicit resign plus bounded key-window-aware retry; never use an unconditional periodic focus timer.
+- Reapply configured caret color after first-responder acquisition because SwiftTerm creates its UIKit caret during focus.
+- Preserve independent opacity and blur controls. Both zero is a supported fully transparent terminal and must not be clamped away by defaults, accessibility guidance, or Liquid Glass composition.
 
 ## Collaboration
 - Use PR-first workflow for all non-trivial changes.

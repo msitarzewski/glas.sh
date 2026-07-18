@@ -19,14 +19,6 @@ struct WidgetServerInfo: Codable, Identifiable, Hashable {
     let isFavorite: Bool
     let colorTag: String
 
-    var statusColor: Color {
-        guard let lastConnected else { return .red }
-        let elapsed = Date().timeIntervalSince(lastConnected)
-        if elapsed < 3600 { return .green }       // < 1 hour
-        if elapsed < 86400 { return .yellow }     // < 24 hours
-        return .red
-    }
-
     var lastSeenText: String {
         guard let lastConnected else { return "Never" }
         let formatter = RelativeDateTimeFormatter()
@@ -127,7 +119,7 @@ struct ServerHealthSmallView: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(server.statusColor)
+                        .fill(.secondary)
                         .frame(width: 8, height: 8)
                     Text(server.name)
                         .font(.headline)
@@ -160,7 +152,7 @@ struct ServerHealthMediumView: View {
                     Link(destination: URL(string: "glassh://connect?serverID=\(server.id.uuidString)")!) {
                         HStack(spacing: 8) {
                             Circle()
-                                .fill(server.statusColor)
+                                .fill(.secondary)
                                 .frame(width: 8, height: 8)
 
                             VStack(alignment: .leading, spacing: 2) {
@@ -199,19 +191,28 @@ struct ServerHealthWidget: Widget {
 
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: ServerHealthTimelineProvider()) { entry in
-            Group {
-                switch entry.servers.isEmpty {
-                case true:
-                    ContentUnavailableView("No Servers", systemImage: "server.rack")
-                case false:
-                    ServerHealthMediumView(entry: entry)
-                }
-            }
+            ServerRecentsWidgetView(entry: entry)
             .containerBackground(.fill.tertiary, for: .widget)
         }
-        .configurationDisplayName("Server Health")
-        .description("Monitor your SSH server connection status.")
+        .configurationDisplayName("Recent Servers")
+        .description("Open servers from your recent SSH connection history.")
         .supportedFamilies([.systemSmall, .systemMedium])
+    }
+}
+
+private struct ServerRecentsWidgetView: View {
+    @Environment(\.widgetFamily) private var family
+    let entry: ServerHealthEntry
+
+    @ViewBuilder
+    var body: some View {
+        if entry.servers.isEmpty {
+            ContentUnavailableView("No Servers", systemImage: "server.rack")
+        } else if family == .systemSmall {
+            ServerHealthSmallView(entry: entry)
+        } else {
+            ServerHealthMediumView(entry: entry)
+        }
     }
 }
 

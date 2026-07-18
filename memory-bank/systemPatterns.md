@@ -2,7 +2,7 @@
 
 ## Terminal Architecture
 - SSH transport via Citadel and `withPTY` interactive sessions.
-- Terminal rendering via SwiftTerm host view.
+- Terminal rendering via the SwiftTerm host view behind the narrow `TerminalEngine`/`SwiftTermHostEngine` boundary in `Packages/RealityKitContent/Sources/RealityKitContent/SwiftTermHostView.swift`.
 - Resize loop: UI geometry -> PTY rows/cols -> remote window change.
 - Terminal bell: SwiftTerm fires `bell(source:)` delegate -> `onBell` callback -> visual flash (white overlay) or system audio (sound 1007) based on `bellEnabled`/`visualBell` settings.
 - Auth diagnostics surfaced through user-facing + raw error messaging to reduce field debugging time.
@@ -14,6 +14,8 @@
   - never use single-value overwrite semantics for terminal chunk handoff
   - queue/drain pending output chunks and emit by nonce to avoid dropping control-byte updates under high-frequency output bursts.
 - SwiftTerm context menu workaround: the library uses deprecated `UIMenuController.shared` which gets stuck on visionOS (eye+hand input doesn't reliably dismiss it). A `UITapGestureRecognizer` with `cancelsTouchesInView=false` is added in `makeUIView` to call `hideMenu()` on every tap.
+- Theme application installs foreground/background, selection, caret, and the full 16-color ANSI palette. Because SwiftTerm creates its UIKit caret during first-responder acquisition, replay the configured caret theme after focus succeeds.
+- Terminal appearance keeps theme opacity and system blur as independent dimensions. `TerminalGlassAppearance(opacity:blur:)` clamps each dimension separately; opacity 0 plus blur 0 is the supported fully transparent endpoint.
 
 ## SSH Secret Handling Pattern
 - App-facing secret API routes through a `SecretStore` abstraction (currently keychain-backed).
@@ -24,6 +26,8 @@
   - algorithm kind (`rsa`, `ed25519`, `ecdsa-p256`, etc.)
   - migration state (`pending`, `migrated`, etc.)
 - UI pattern: every visible key selection/listing includes a key-type badge to avoid ambiguity for mixed-format fleets.
+- Shared legacy credential migration is forward-only: atomically add a missing destination, preserve conflicts and concurrent replacement, verify readback, and never delete a source another app or downgrade may still require.
+- SSH-key deletion uses a durable secret-free journal. Snapshot all generic representations, resolve a deterministic legacy Secure Enclave tag when metadata is missing, delete recoverable artifacts before hardware, verify expected absence, and restore exact bytes only when provenance is provable. A nil material snapshot on failure is recovery-required, never “restored and verified.”
 
 ## SSH Auth Algorithm Pattern
 - Keep OpenSSH key blob encoding unchanged for RSA public keys (`ssh-rsa`) while selecting modern userauth signature algorithms (`rsa-sha2-*`) in auth request framing/signing.
@@ -40,15 +44,15 @@
 - Liquid Glass material strategy:
   - `.glassBackgroundEffect()` for window-level chrome (SettingsView, HTMLPreviewWindow).
   - `.regularMaterial` for secondary surfaces (port forward rows, tag chip backgrounds, URL bars).
-  - `.ultraThinMaterial` retained only for terminal content area (blur-behind for readability).
+  - Terminal frost is composited only when the resolved blur value is greater than zero; it must not force an opaque theme fill or eliminate the zero-blur endpoint.
   - Never stack glass-on-glass.
 - All interactive targets must be >= 60pt for visionOS eye-tracking accuracy. Use `.frame(minWidth:minHeight:)` + `.contentShape()` to expand hit areas beyond visual size.
 - Scene management: disable restoration on ephemeral windows (terminal, html-preview); use `.defaultLaunchBehavior(.presented)` on primary window.
 - Hover effects: `.hoverEffect(.highlight)` for small controls; never `.hoverEffect(.lift)` on large compound views.
 
 ## Repo Layout Pattern
-- Runtime app code in `/Users/michael/Developer/glas.sh/glas.sh`.
-- Reusable/shared package code in `/Users/michael/Developer/glas.sh/Packages`.
+- Runtime app code in `/Users/michael/Software/glass/glas.sh/glas.sh`.
+- Reusable/shared package code in `/Users/michael/Software/glass/glas.sh/Packages`.
 
 ## File Organization (post code-quality overhaul)
 - **Single-responsibility files**: Each manager/service in its own file.
@@ -70,7 +74,8 @@
 - **Concurrency safety**: Use `OSAllocatedUnfairLock` for thread-safe caches accessed from non-actor contexts. Use `nonisolated(unsafe)` only for `deinit` access to actor-isolated task properties.
 
 ## Keychain Lifecycle Pattern
-- Keychain account key format: `"\(username)@\(host):\(port)"`. Changing any component requires deleting the old entry after saving to the new key.
+- Canonical accounts are protocol/purpose/terminal-namespaced and profile-stable; use `KeychainAccountNamespace` rather than composing a bare `user@host:port` account at call sites.
+- A user-authorized identity edit may remove its verified old app-owned account only after the new account and metadata commit. A shared legacy migration must retain the source and use atomic add-if-absent at the destination.
 - Save errors must be surfaced via `Logger.keychain.error()` + user-facing alert. Never use `try?` for keychain saves — silent failures cause "no saved password" errors at connect time.
 - Pre-load existing passwords in edit flows so users can see whether a password is saved and changes are intentional.
 - Clean up orphaned entries when auth method switches away from password.
@@ -81,9 +86,10 @@
 - For multi-field forms, use a `Field` enum with `@FocusState private var focusedField: Field?`. For single-field forms, use `@FocusState private var isNameFocused: Bool`.
 
 ## Terminal Focus Pattern
-- Terminal keyboard focus uses `becomeFirstResponder()` retry loop (3 attempts × 50ms).
-- Do not add redundant delayed focus calls — the retry loop handles transient failures.
-- Single `focus()` call on `.onAppear` and `.onChange(of: scenePhase)` is sufficient.
+- Track aggregate focus ownership for search, sheets, editors, alerts, file pickers, and text composition. The terminal may request focus only when no competing owner is active and its window is key.
+- Use bounded retry for transient window activation; cancel retry and explicitly resign when another control owns focus or the terminal disappears.
+- Never restore the historical unconditional periodic first-responder timer; it steals focus from controls and IME composition.
+- Replay the configured caret theme after `becomeFirstResponder()` succeeds.
 
 ## NIO ChannelHandler Propagation Pattern
 - Every `ChannelDuplexHandler` that handles a lifecycle event (channelActive, channelInactive, channelWritabilityChanged, etc.) MUST forward the event downstream via `context.fire*()` after its own processing. Omitting this silently breaks handlers later in the pipeline.
@@ -124,6 +130,7 @@
 - `SFTPBrowserView` is a separate window scene ("sftp" WindowGroup, SFTPBrowserContext with sessionID).
 - Opened from terminal toolbar menu. Navigates directories, download/upload files, create/rename/delete.
 - `SFTPPathComponent` provides filename, longname, attributes (size, permissions, times).
+- Validate remote basenames and retained-directory containment. Downloads use protected identity-bound partials with explicit collision/resume policy and atomic commit; uploads use exclusive no-clobber creation and exact-size verification.
 
 ## Quick Connect Pattern
 - Search bar in ConnectionManagerView parses `user@host` or `user@host:port` via `quickConnectConfig` computed property.

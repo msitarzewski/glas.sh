@@ -169,10 +169,12 @@ final class ExecHandler: ChannelDuplexHandler {
             }
         }.flatMap { pipeChannel in
             successPromise.futureResult.flatMap { code in
-                pipeChannel.close(mode: .all).map { code }
+                channel.triggerUserOutboundEvent(
+                    SSHChannelRequestEvent.ExitStatus(exitStatus: code)
+                ).flatMap {
+                    pipeChannel.close(mode: .all)
+                }
             }
-        }.flatMap { code in
-            channel.triggerUserOutboundEvent(SSHChannelRequestEvent.ExitStatus(exitStatus: code))
         }.whenComplete { result in
             switch result {
             case .success:

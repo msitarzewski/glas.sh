@@ -2,7 +2,7 @@
 
 **The SSH terminal that Apple Vision Pro deserves.**
 
-A native visionOS terminal built from scratch for spatial computing. Float terminal windows in your space. AI runs privately on your device. Connect to your entire Tailscale network with one tap. Record sessions and get AI summaries. No cloud. No subscriptions. No compromises.
+A native visionOS terminal built from scratch for spatial computing. Float truly transparent terminal windows in your space, then tune opacity and blur independently. AI runs privately on your device. Connect to your Tailscale network, transfer files, and record sessions without a subscription.
 
 **[glas.sh](https://glas.sh)** &nbsp;|&nbsp; **[GitHub Sponsors](https://github.com/sponsors/msitarzewski)** &nbsp;|&nbsp; **MIT Licensed**
 
@@ -33,8 +33,7 @@ Every other SSH client on visionOS is a port from iPad. glas.sh is purpose-built
 | **On-device AI** | **Foundation Models** | Cloud API | No | No |
 | **Tailscale auto-discovery** | **Yes** | No | No | No |
 | **Immersive focus mode** | **Yes** | No | No | No |
-| **SharePlay terminal sharing** | **Yes** | No | No | No |
-| **Session recording + AI summary** | **Yes** | No | No | No |
+| **Session recording** | **Yes** | No | No | No |
 | **Spatial widgets** | **Yes** | No | No | No |
 | **SFTP with batch ops + search** | **Yes** | Basic | No | Yes |
 | **Remote + SOCKS forwarding** | **Yes** | No | No | Yes |
@@ -56,7 +55,6 @@ Powered by Apple's Foundation Models framework. Everything runs on your Vision P
 
 - **Command Assistant** — describe what you want in plain English, get a shell command with risk assessment (safe / moderate / destructive)
 - **Error Explainer** — automatically detects errors in terminal output and shows a floating card with diagnosis + suggested fix
-- **Session Summary** — AI-generated highlights of recorded terminal sessions
 
 <p align="center">
   <img src="docs/images/shots/ai-assistant.jpg" alt="glas.sh AI Assistant turning the request 'List files in my Downloads folder. Filter by images' into a find command tagged Safe, with Run and Copy actions" width="820">
@@ -70,7 +68,7 @@ Connect your entire Tailscale network. Enter your API key or OAuth credentials o
 
 ### Connections
 
-Server management with favorites, tags, search, and recent connections. Quick connect bar parses `user@host:port` on the fly. Host key verification with fingerprint display. Layout presets save and restore multi-server window arrangements — open your entire production stack with one tap.
+Server management with favorites, tags, search, and recent connections. Quick connect bar parses `user@host:port` on the fly. Host key verification with fingerprint display. Layout presets reopen saved groups of server sessions — open your production stack with one tap.
 
 <p align="center">
   <img src="docs/images/shots/connections.jpg" alt="glas.sh Connections window showing the All Servers list with a sidebar for Favorites, Recent, Tags, and Tailscale" width="820">
@@ -101,23 +99,22 @@ Full directory browsing with breadcrumb navigation. Tap files to select, batch d
 ### Security
 
 - **True Secure Enclave signing** — P-256 keys generated inside the hardware chip. The private key never exists in memory. Signing happens in silicon.
-- **Optic ID** authentication before Secure Enclave key use
-- **Keychain** storage with shared access group for cross-app credential sharing
+- **User presence** authentication before Secure Enclave key use
+- **Keychain** storage with terminal-specific, purpose-namespaced credential accounts
 - **Host key trust** with per-server fingerprint tracking
-- RSA SHA-2, Ed25519, and legacy wrapped SE key support
+- RSA SHA-2 and Ed25519 imported-key support, hardware-bound Secure Enclave P-256 signing keys, and migration support for legacy device-wrapped exportable keys
 
 ### Spatial Features
 
 - **Immersive Focus Mode** — dims the passthrough for distraction-free terminal work. Digital Crown controls depth.
-- **Spatial Widgets** — server health widget (small + medium sizes) with tap-to-connect deep links via `glassh://` URL scheme
-- **SharePlay** — share your terminal session over FaceTime. Participant tracking with count badge.
+- **Spatial Widgets** — recent-server widget (small + medium sizes) with tap-to-connect deep links via `glassh://` URL scheme
 - **Notification Overlays** — in-window banners for connection events. Auto-dismiss after 4 seconds, max 3 visible.
 - **Glass Material** — choose from ultraThin, thin, regular, or thick material density. Per-session overrides.
 - **Color Tint** — preset swatches + full color picker for window tinting
 
 ### Session Recording
 
-Asciicast v2 format (NDJSON) — compatible with [asciinema](https://asciinema.org). Records terminal input and output with timestamps. Typically 50KB–5MB per hour of session time. AI-powered session summaries via Foundation Models. Auto-record option in settings.
+Asciicast v2 format (NDJSON), compatible with [asciinema](https://asciinema.org). Recording is output-only by default; input capture requires explicit consent for each recording and stays visibly disclosed while active. Recordings are protected on disk and stop at a 512 MiB safety limit.
 
 ### Auto-Reconnect
 
@@ -132,10 +129,9 @@ glas.sh/                          Native visionOS 26 app
 ├── Models.swift                  SSH sessions, connections, server config
 ├── TerminalWindowView.swift      Terminal UI with glass ornaments
 ├── ConnectionManagerView.swift   Server list, Tailscale, layouts
-├── AIAssistant.swift             Foundation Models (command, error, summary)
+├── AIAssistant.swift             Foundation Models command and error assistance
 ├── SessionRecorder.swift         Asciicast v2 recording engine
 ├── TailscaleClient.swift         Tailscale REST API v2 + OAuth
-├── SharePlayManager.swift        GroupActivity terminal sharing
 ├── FocusEnvironmentView.swift    Immersive focus environment
 ├── NotificationOverlay.swift     In-window notification banners
 ├── SFTPBrowserView.swift         File browser with batch operations
@@ -165,14 +161,14 @@ Packages/
 | Input path | SwiftTerm delegate → raw bytes → SSH channel |
 | Output path | SSH channel → buffered chunks → SwiftTerm `feed(byteArray:)` |
 | Resize | SwiftTerm callback → `TerminalSession` → remote PTY resize |
-| AI | Foundation Models (`LanguageModelSession`, `@Generable` structs) |
+| AI | Foundation Models (`LanguageModelSession`) with deterministic response parsing and mandatory user confirmation |
 
 ---
 
 ## Requirements
 
-- **Xcode 26 beta** (Foundation Models + WidgetKit visionOS 26 APIs)
-- **visionOS 26 SDK**
+- **Apple Silicon Mac** with the Metal Toolchain installed
+- **Xcode 26.4 or newer** with the visionOS 26 SDK
 - **Apple Vision Pro** for Secure Enclave and on-device AI features
 
 ## Build & Run
@@ -206,11 +202,10 @@ glas.sh is free, open source, and built by one person. If it's useful to you:
 
 ## Known Limitations
 
-- SSH Agent auth path is present in UI but not yet wired to agent-based authentication
+- SSH Agent authentication is not offered in this release
 - visionOS does not provide an API to spatialize short audio effects per-window — bell sound plays globally
 - visionOS does not provide an API for custom passthrough blur — only system Materials
 - Secure Enclave keys are device-bound and cannot be transferred to another device
-- SharePlay viewer mode is currently read-only (no remote input yet)
 - `SecureEnclave.isAvailable` returns false in the visionOS Simulator
 
 ## License

@@ -6,14 +6,14 @@
 //
 
 import SwiftUI
-import LocalAuthentication
 import GlasSecretStore
 import os
 
 struct ConnectionManagerView: View {
     @Environment(SessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
-    @State private var serverManager = ServerManager(loadImmediately: false)
+
+    private var serverManager: ServerManager { sessionManager.serverManager }
     
     @State private var selectedSection: ConnectionSection = .all
     @State private var showingAddServer = false
@@ -23,14 +23,15 @@ struct ConnectionManagerView: View {
     @State private var activeTagFilters: [String] = []
     @State private var pendingTrustSession: TerminalSession?
     @State private var pendingTrustChallenge: HostKeyTrustChallenge?
-    @State private var pendingConnectPassword: String?
     @State private var connectionFailureMessage: String?
+    @State private var pendingLegacyAlgorithmServer: ServerConfiguration?
     @State private var quickConnectPasswordPrompt: ServerConfiguration?
     @State private var quickConnectPassword: String = ""
     @State private var quickConnectUsername: String = ""
     @State private var quickConnectPort: String = "22"
     @State private var tailscaleClient = TailscaleClient()
     @State private var tailscaleUsernamePromptDevice: TailscaleDevice?
+    @State private var serverPendingDeletion: ServerConfiguration?
     
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
@@ -129,29 +130,77 @@ struct ConnectionManagerView: View {
             )
         }
         .alert(
-            "Trust SSH Host Key?",
+            trustPromptTitle,
             isPresented: trustPromptBinding,
             presenting: pendingTrustChallenge
         ) { challenge in
-            Button("Trust and Connect") {
-                settingsManager.trustHostKey(challenge)
-                if let session = pendingTrustSession {
-                    serverManager.trustHostKey(challenge, for: session.server.id)
+            Button(trustPromptConfirmTitle, role: challenge.reason == .changed ? .destructive : nil) {
+                guard let session = pendingTrustSession else {
+                    clearPendingTrustPrompt()
+                    return
                 }
-                retryPendingConnection()
+                guard interactiveHostKeyTrustIsAllowed else {
+                    rejectStrictHostKeyChallenge(challenge, for: session)
+                    return
+                }
+                do {
+                    try sessionManager.trustHostKey(challenge, for: session)
+                    retryPendingConnection()
+                } catch {
+                    connectionFailureMessage = error.localizedDescription
+                    sessionManager.closePendingHostTrustSession(session)
+                    clearPendingTrustPrompt()
+                }
             }
             Button("Cancel", role: .cancel) {
-                clearPendingTrustPrompt()
+                closePendingTrustSessionAndClearPrompt()
             }
         } message: { challenge in
-            Text(
-                "\(challenge.summary)\n\nAlgorithm: \(challenge.algorithm)\nFingerprint (SHA-256): \(challenge.fingerprintSHA256)"
-            )
+            Text(trustPromptMessage(for: challenge))
         }
         .alert("Connection Failed", isPresented: connectionFailureAlertBinding) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(connectionFailureMessage ?? "Unable to connect.")
+        }
+        .confirmationDialog(
+            "Delete Server?",
+            isPresented: Binding(
+                get: { serverPendingDeletion != nil },
+                set: { if !$0 { serverPendingDeletion = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: serverPendingDeletion
+        ) { server in
+            Button("Delete \(server.name)", role: .destructive) {
+                do {
+                    try serverManager.deleteServer(server)
+                    serverPendingDeletion = nil
+                } catch {
+                    connectionFailureMessage = "The server was not deleted because its saved credential could not be removed: \(error.localizedDescription)"
+                    serverPendingDeletion = nil
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                serverPendingDeletion = nil
+            }
+        } message: { server in
+            Text("This removes '\(server.name)' and its terminal-specific saved password. SSH keys shared by other servers are kept.")
+        }
+        .alert(
+            "Use Legacy SSH Algorithms?",
+            isPresented: legacyAlgorithmPromptBinding,
+            presenting: pendingLegacyAlgorithmServer
+        ) { server in
+            Button("Connect with Legacy Algorithms", role: .destructive) {
+                pendingLegacyAlgorithmServer = nil
+                connectToServer(server, legacyAlgorithmsConfirmed: true)
+            }
+            Button("Cancel", role: .cancel) {
+                pendingLegacyAlgorithmServer = nil
+            }
+        } message: { server in
+            Text("\(server.name) permits obsolete SSH algorithms. They provide weaker protection and should only be used for a server you control when upgrading it is not currently possible.")
         }
         .alert("Enter Password", isPresented: quickConnectPasswordPromptBinding) {
             SecureField("Password", text: $quickConnectPassword)
@@ -160,13 +209,26 @@ struct ConnectionManagerView: View {
                     let password = quickConnectPassword
                     quickConnectPassword = ""
                     Task { @MainActor in
-                        let session = await sessionManager.createSession(for: config, password: password)
-                        if session.state == .connected {
-                            openWindow(id: "terminal", value: session.id)
-                            dismissWindow(id: "main")
-                        } else if case .error(let message) = session.state {
-                            connectionFailureMessage = message
-                            sessionManager.closeSession(session)
+                        do {
+                            let launch = try await sessionManager.createTransientAuthorizedSession(
+                                for: config,
+                                settingsManager: settingsManager,
+                                password: password
+                            )
+                            if launch.session.state == .connected {
+                                openWindow(id: "terminal", value: launch.session.id)
+                                dismissWindow(id: "main")
+                            } else if let challenge = launch.session.pendingHostKeyChallenge {
+                                stageHostKeyChallenge(
+                                    challenge,
+                                    for: launch.session
+                                )
+                            } else if case .error(let message) = launch.session.state {
+                                connectionFailureMessage = message
+                                sessionManager.closeSession(launch.session)
+                            }
+                        } catch {
+                            connectionFailureMessage = error.localizedDescription
                         }
                     }
                 }
@@ -200,7 +262,9 @@ struct ConnectionManagerView: View {
         let port: Int
         if hostPart.contains(":"), let colonIndex = hostPart.lastIndex(of: ":") {
             host = String(hostPart[hostPart.startIndex..<colonIndex])
-            port = Int(hostPart[hostPart.index(after: colonIndex)...]) ?? 22
+            guard let parsedPort = Int(hostPart[hostPart.index(after: colonIndex)...]),
+                  (1...65_535).contains(parsedPort) else { return nil }
+            port = parsedPort
         } else {
             host = hostPart
             port = 22
@@ -270,7 +334,7 @@ struct ConnectionManagerView: View {
                             editingServer = server
                         },
                         onDelete: {
-                            serverManager.deleteServer(server)
+                            serverPendingDeletion = server
                         },
                         onToggleFavorite: {
                             serverManager.toggleFavorite(server)
@@ -354,7 +418,10 @@ struct ConnectionManagerView: View {
                 .keyboardType(.numberPad)
             Button("Connect") {
                 if let device = tailscaleUsernamePromptDevice {
-                    let port = Int(quickConnectPort) ?? 22
+                    guard let port = Int(quickConnectPort), (1...65_535).contains(port) else {
+                        connectionFailureMessage = "Enter an SSH port from 1 through 65535."
+                        return
+                    }
                     let config = ServerConfiguration(
                         name: device.hostname,
                         host: device.sshAddress,
@@ -367,13 +434,26 @@ struct ConnectionManagerView: View {
                     quickConnectPort = "22"
                     tailscaleUsernamePromptDevice = nil
                     Task { @MainActor in
-                        let session = await sessionManager.createSession(for: config, password: password)
-                        if session.state == .connected {
-                            openWindow(id: "terminal", value: session.id)
-                            dismissWindow(id: "main")
-                        } else if case .error(let message) = session.state {
-                            connectionFailureMessage = message
-                            sessionManager.closeSession(session)
+                        do {
+                            let launch = try await sessionManager.createTransientAuthorizedSession(
+                                for: config,
+                                settingsManager: settingsManager,
+                                password: password
+                            )
+                            if launch.session.state == .connected {
+                                openWindow(id: "terminal", value: launch.session.id)
+                                dismissWindow(id: "main")
+                            } else if let challenge = launch.session.pendingHostKeyChallenge {
+                                stageHostKeyChallenge(
+                                    challenge,
+                                    for: launch.session
+                                )
+                            } else if case .error(let message) = launch.session.state {
+                                connectionFailureMessage = message
+                                sessionManager.closeSession(launch.session)
+                            }
+                        } catch {
+                            connectionFailureMessage = error.localizedDescription
                         }
                     }
                 }
@@ -528,32 +608,29 @@ struct ConnectionManagerView: View {
     
     // MARK: - Actions
     
-    private func connectToServer(_ server: ServerConfiguration) {
+    private func connectToServer(
+        _ server: ServerConfiguration,
+        legacyAlgorithmsConfirmed: Bool = false
+    ) {
+        if server.legacyAlgorithmsEnabled && !legacyAlgorithmsConfirmed {
+            pendingLegacyAlgorithmServer = server
+            return
+        }
+
         Task { @MainActor in
-            if !(await ensureUserPresenceIfRequired(for: server)) {
+            let launch: AuthorizedSessionLaunch
+            do {
+                launch = try await sessionManager.createAuthorizedSession(for: server, settingsManager: settingsManager)
+            } catch {
+                connectionFailureMessage = error.localizedDescription
                 return
             }
 
-            // Get password from keychain or prompt
-            let password: String?
-            if server.authMethod == .password {
-                do {
-                    password = try KeychainManager.retrievePassword(for: server)
-                } catch {
-                    connectionFailureMessage =
-                        "No saved password found for \(server.username)@\(server.host):\(server.port).\n\nOpen Edit Server and save the password in Keychain, then try again."
-                    return
-                }
-            } else {
-                password = nil
-            }
-            
-            let session = await sessionManager.createSession(for: server, password: password)
+            let session = launch.session
             if let challenge = session.pendingHostKeyChallenge,
                settingsManager.hostKeyVerificationMode == HostKeyVerificationMode.ask.rawValue {
                 pendingTrustSession = session
                 pendingTrustChallenge = challenge
-                pendingConnectPassword = password
                 return
             }
 
@@ -574,44 +651,68 @@ struct ConnectionManagerView: View {
         }
     }
 
-    private func selectedSSHKey(for server: ServerConfiguration) -> StoredSSHKey? {
-        guard let keyID = server.sshKeyID else { return nil }
-        return settingsManager.sshKeys.first(where: { $0.id == keyID })
-    }
-
-    @MainActor
-    private func ensureUserPresenceIfRequired(for server: ServerConfiguration) async -> Bool {
-        guard server.authMethod == .sshKey else { return true }
-        guard let key = selectedSSHKey(for: server), key.storageKind == .secureEnclave else { return true }
-
-        let context = LAContext()
-        var error: NSError?
-        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
-            connectionFailureMessage = "Secure Enclave authentication unavailable: \(error?.localizedDescription ?? "Unknown error")."
-            return false
-        }
-
-        do {
-            let ok = try await context.evaluatePolicy(
-                .deviceOwnerAuthentication,
-                localizedReason: "Authenticate to use Secure Enclave key '\(key.name)'."
-            )
-            return ok
-        } catch {
-            connectionFailureMessage = "Authentication canceled or failed for Secure Enclave key '\(key.name)'."
-            return false
-        }
-    }
-
     private var trustPromptBinding: Binding<Bool> {
         Binding(
-            get: { pendingTrustChallenge != nil },
+            get: { interactiveHostKeyTrustIsAllowed && pendingTrustChallenge != nil },
             set: { isPresented in
                 if !isPresented {
-                    clearPendingTrustPrompt()
+                    if !interactiveHostKeyTrustIsAllowed,
+                       let challenge = pendingTrustChallenge,
+                       let session = pendingTrustSession {
+                        rejectStrictHostKeyChallenge(challenge, for: session)
+                    } else {
+                        closePendingTrustSessionAndClearPrompt()
+                    }
                 }
             }
         )
+    }
+
+    private var interactiveHostKeyTrustIsAllowed: Bool {
+        settingsManager.hostKeyVerificationMode == HostKeyVerificationMode.ask.rawValue
+    }
+
+    private var trustPromptTitle: String {
+        pendingTrustChallenge?.reason == .changed ? "SSH Host Key Changed" : "Trust SSH Host Key?"
+    }
+
+    private var trustPromptConfirmTitle: String {
+        pendingTrustChallenge?.reason == .changed ? "Trust Changed Key" : "Trust and Connect"
+    }
+
+    private func trustPromptMessage(for challenge: HostKeyTrustChallenge) -> String {
+        switch challenge.reason {
+        case .unknown:
+            return "\(challenge.summary)\n\nAlgorithm: \(challenge.algorithm)\nFingerprint (SHA-256): \(challenge.fingerprintSHA256)"
+        case .changed:
+            return "The saved host key for \(challenge.host):\(challenge.port) no longer matches the server. This can happen after a legitimate server rebuild, but it can also indicate a security risk.\n\nNew algorithm: \(challenge.algorithm)\nNew fingerprint (SHA-256): \(challenge.fingerprintSHA256)"
+        }
+    }
+
+    private func stageHostKeyChallenge(
+        _ challenge: HostKeyTrustChallenge,
+        for session: TerminalSession
+    ) {
+        guard interactiveHostKeyTrustIsAllowed else {
+            rejectStrictHostKeyChallenge(challenge, for: session)
+            return
+        }
+        pendingTrustSession = session
+        pendingTrustChallenge = challenge
+    }
+
+    private func rejectStrictHostKeyChallenge(
+        _ challenge: HostKeyTrustChallenge,
+        for session: TerminalSession
+    ) {
+        let reason = challenge.reason == .changed
+            ? "the presented key does not match the saved key"
+            : "the presented key has not been saved"
+        connectionFailureMessage =
+            "Strict host-key verification blocked the connection to \(challenge.host):\(challenge.port) because \(reason). No trust decision was recorded."
+        session.pendingHostKeyChallenge = nil
+        sessionManager.closeSession(session)
+        clearPendingTrustPrompt()
     }
 
     private var connectionFailureAlertBinding: Binding<Bool> {
@@ -620,6 +721,17 @@ struct ConnectionManagerView: View {
             set: { isPresented in
                 if !isPresented {
                     connectionFailureMessage = nil
+                }
+            }
+        )
+    }
+
+    private var legacyAlgorithmPromptBinding: Binding<Bool> {
+        Binding(
+            get: { pendingLegacyAlgorithmServer != nil },
+            set: { isPresented in
+                if !isPresented {
+                    pendingLegacyAlgorithmServer = nil
                 }
             }
         )
@@ -639,28 +751,44 @@ struct ConnectionManagerView: View {
 
     private func retryPendingConnection() {
         guard let session = pendingTrustSession else { return }
-        let password = pendingConnectPassword
 
         Task { @MainActor in
             if let updatedServer = serverManager.server(for: session.server.id) {
                 session.server = updatedServer
             }
             session.pendingHostKeyChallenge = nil
-            await session.connect(password: password)
+            do {
+                try await sessionManager.reconnect(session, settingsManager: settingsManager)
+            } catch {
+                connectionFailureMessage = error.localizedDescription
+                sessionManager.closePendingHostTrustSession(session)
+                clearPendingTrustPrompt()
+                return
+            }
             if session.state == .connected {
                 openWindow(id: "terminal", value: session.id)
                 dismissWindow(id: "main")
                 clearPendingTrustPrompt()
-            } else if session.pendingHostKeyChallenge == nil {
+            } else {
+                if case .error(let message) = session.state {
+                    connectionFailureMessage = message
+                }
+                sessionManager.closePendingHostTrustSession(session)
                 clearPendingTrustPrompt()
             }
         }
     }
 
+    private func closePendingTrustSessionAndClearPrompt() {
+        if let session = pendingTrustSession {
+            sessionManager.closePendingHostTrustSession(session)
+        }
+        clearPendingTrustPrompt()
+    }
+
     private func clearPendingTrustPrompt() {
         pendingTrustSession = nil
         pendingTrustChallenge = nil
-        pendingConnectPassword = nil
     }
 
     // MARK: - Layout Presets
@@ -675,15 +803,84 @@ struct ConnectionManagerView: View {
 
     private func openLayout(_ preset: LayoutPreset) {
         settingsManager.updateLayoutPresetLastUsed(preset.id)
+        let restorationPlan = LayoutRestorationPlan(
+            preset: preset,
+            availableServers: serverManager.servers
+        )
         Task { @MainActor in
-            for serverID in preset.serverIDs {
-                guard let server = serverManager.server(for: serverID) else { continue }
-                let session = await sessionManager.createSession(for: server)
-                if session.state == .connected {
-                    openWindow(id: "terminal", value: session.id)
+            var failures = restorationPlan.failures
+            for target in restorationPlan.targets {
+                let server = target.server
+                do {
+                    let launch = try await sessionManager.createAuthorizedSessionByServerID(
+                        target.intent.serverID,
+                        settingsManager: settingsManager
+                    )
+                    if launch.session.state == .connected {
+                        openWindow(id: "terminal", value: launch.session.id)
+                    } else if let challenge = launch.session.pendingHostKeyChallenge {
+                        if interactiveHostKeyTrustIsAllowed {
+                            // Each terminal owns its exact per-connection trust prompt.
+                            openWindow(id: "terminal", value: launch.session.id)
+                        } else {
+                            let reason = challenge.reason == .changed
+                                ? "presented a changed host key"
+                                : "presented an unknown host key"
+                            failures.append("\(server.name): Strict host-key verification blocked the connection because it \(reason).")
+                            launch.session.pendingHostKeyChallenge = nil
+                            sessionManager.closeSession(launch.session)
+                        }
+                    } else if case .error(let message) = launch.session.state {
+                        failures.append("\(server.name): \(message)")
+                        sessionManager.closeSession(launch.session)
+                    }
+                } catch {
+                    failures.append("\(server.name): \(error.localizedDescription)")
                 }
             }
+            if !failures.isEmpty {
+                connectionFailureMessage = failures.joined(separator: "\n")
+            }
         }
+    }
+}
+
+struct LayoutRestorationTarget {
+    let intent: LayoutPreset.SessionIntent
+    let server: ServerConfiguration
+}
+
+struct LayoutRestorationPlan {
+    let targets: [LayoutRestorationTarget]
+    let failures: [String]
+
+    init(preset: LayoutPreset, availableServers: [ServerConfiguration]) {
+        let serversByID = Dictionary(
+            availableServers.map { ($0.id, $0) },
+            uniquingKeysWith: { existing, _ in existing }
+        )
+        var targets: [LayoutRestorationTarget] = []
+        var failures: [String] = []
+
+        for (index, intent) in preset.sessionIntents.enumerated() {
+            let sessionNumber = index + 1
+            guard intent.isSupported else {
+                failures.append("Session \(sessionNumber): this saved session intention is not supported by this version of glas.sh.")
+                continue
+            }
+            guard let server = serversByID[intent.serverID] else {
+                failures.append("Session \(sessionNumber): a saved server in this layout no longer exists.")
+                continue
+            }
+            guard !server.legacyAlgorithmsEnabled else {
+                failures.append("\(server.name): legacy algorithms require a direct security review.")
+                continue
+            }
+            targets.append(LayoutRestorationTarget(intent: intent, server: server))
+        }
+
+        self.targets = targets
+        self.failures = failures
     }
 }
 
@@ -851,10 +1048,8 @@ private struct ServerInfoView: View {
 
                 Section("Advanced") {
                     infoRow("TERM", server.terminalType)
-                    infoRow("Compression", "Coming Soon")
                     infoRow("Keep Alive", "\(server.keepAliveInterval)s")
-                    infoRow("PTY Requested", server.requestPTY ? "Yes" : "No")
-                    infoRow("Forward Agent", "Coming Soon")
+                    infoRow("Legacy Algorithms", server.legacyAlgorithmsEnabled ? "Allowed" : "Disabled")
                 }
 
                 if !server.tags.isEmpty {
@@ -899,7 +1094,7 @@ private struct ServerInfoView: View {
         case .imported:
             return "Imported Keychain"
         case .secureEnclave:
-            return "Secure Enclave Wrapped"
+            return "Secure Enclave Hardware"
         }
     }
 

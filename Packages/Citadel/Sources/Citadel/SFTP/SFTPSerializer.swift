@@ -5,7 +5,11 @@ final class SFTPMessageSerializer: MessageToByteEncoder {
     
     func encode(data: SFTPMessage, out: inout ByteBuffer) throws {
         let lengthIndex = out.writerIndex
-        out.moveWriterIndex(forwardBy: 4)
+        // A MessageToByteEncoder must support an empty, zero-capacity output
+        // buffer. Advancing the writer index does not grow ByteBuffer storage;
+        // writing the placeholder does, and it is backfilled below once the
+        // packet body length is known.
+        out.writeInteger(UInt32(0))
         
         switch data {
         case .initialize(let initialize):
@@ -131,6 +135,11 @@ final class SFTPMessageSerializer: MessageToByteEncoder {
             out.writeSSHString(rename.oldPath)
             out.writeSSHString(rename.newPath)
             out.writeInteger(rename.flags)
+        case .extended(var extended):
+            out.writeInteger(SFTPMessage.ExtendedRequest.id.rawValue)
+            out.writeInteger(extended.requestId)
+            out.writeSSHString(extended.requestName)
+            out.writeBuffer(&extended.payload)
         }
         
         let length = out.writerIndex - lengthIndex - 4

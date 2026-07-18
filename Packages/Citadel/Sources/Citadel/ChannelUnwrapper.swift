@@ -15,7 +15,8 @@ final class SSHChannelDataUnwrapper: ChannelInboundHandler {
         let data = self.unwrapInboundIn(data)
 
         guard case .byteBuffer(let bytes) = data.data else {
-            fatalError("Unexpected read type")
+            context.fireErrorCaught(SSHChannelError.invalidDataType)
+            return
         }
 
         guard case .channel = data.type else {

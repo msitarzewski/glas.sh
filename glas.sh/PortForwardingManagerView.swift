@@ -9,7 +9,10 @@ import SwiftUI
 
 struct PortForwardingManagerView: View {
     @Environment(SessionManager.self) private var sessionManager
-    @State private var portForwardManager = PortForwardManager()
+
+    private var portForwardManager: PortForwardManager {
+        sessionManager.portForwardManager
+    }
     
     @State private var selectedSession: TerminalSession?
     @State private var showingAddForward = false
@@ -135,11 +138,6 @@ struct PortForwardRow: View {
     let onToggle: () -> Void
     let onDelete: () -> Void
 
-    /// Remote and dynamic forwards are not yet implemented.
-    private var isToggleDisabled: Bool {
-        forward.type != .local
-    }
-
     private var statusColor: Color {
         switch forward.status {
         case .active: return .green
@@ -200,8 +198,6 @@ struct PortForwardRow: View {
                         set: { _ in onToggle() }
                     ))
                     .labelsHidden()
-                    .disabled(isToggleDisabled)
-                    .help(isToggleDisabled ? "Remote and dynamic forwarding coming in a future update." : "")
                     .accessibilityLabel("Toggle \(forward.type.displayName) forward")
 
                     Button(role: .destructive, action: onDelete) {
@@ -245,6 +241,8 @@ struct AddPortForwardView: View {
     @State private var localPort: String = ""
     @State private var remoteHost: String = "localhost"
     @State private var remotePort: String = ""
+    @State private var socks5Username: String = ""
+    @State private var socks5Password: String = ""
     
     var body: some View {
         NavigationStack {
@@ -278,6 +276,19 @@ struct AddPortForwardView: View {
                             .keyboardType(.numberPad)
                     }
                 }
+
+                if forwardType == .dynamic {
+                    Section("SOCKS5 Authentication") {
+                        TextField("Username", text: $socks5Username)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        SecureField("Password", text: $socks5Password)
+
+                        Text("Required for every local SOCKS5 client. These credentials stay only in app memory for this session and are never saved with the forward.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 
                 Section {
                     Text(previewString)
@@ -285,6 +296,14 @@ struct AddPortForwardView: View {
                         .foregroundStyle(.secondary)
                 } header: {
                     Text("Preview")
+                }
+
+                if forwardType == .remote {
+                    Section("Remote Bind Safety") {
+                        Text("This release limits remote listeners to loopback addresses so a tunnel cannot unexpectedly expose a local service to the server's network.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .navigationTitle("Add Port Forward")
@@ -338,6 +357,22 @@ struct AddPortForwardView: View {
                 return false
             }
         }
+
+        if forwardType == .remote {
+            let normalizedHost = remoteHost.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard ["localhost", "127.0.0.1", "::1"].contains(normalizedHost) else {
+                return false
+            }
+        }
+
+        if forwardType == .dynamic {
+            guard PortForwardManager.socks5Credentials(
+                username: socks5Username,
+                password: socks5Password
+            ) != nil else {
+                return false
+            }
+        }
         
         return true
     }
@@ -350,7 +385,18 @@ struct AddPortForwardView: View {
             remotePort: forwardType == .dynamic ? 0 : Int(remotePort)!
         )
         
-        portForwardManager.addForward(forward, to: sessionID)
+        if forwardType == .dynamic {
+            guard portForwardManager.addForward(
+                forward,
+                to: sessionID,
+                socks5Username: socks5Username,
+                socks5Password: socks5Password
+            ) else {
+                return
+            }
+        } else {
+            portForwardManager.addForward(forward, to: sessionID)
+        }
         dismiss()
     }
 }

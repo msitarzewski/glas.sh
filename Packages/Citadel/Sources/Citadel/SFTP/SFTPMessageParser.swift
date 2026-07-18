@@ -2,15 +2,28 @@ import NIO
 
 struct SFTPMessageParser: ByteToMessageDecoder {
     typealias InboundOut = SFTPMessage
+
+    /// SFTP's uint32 frame length is peer-controlled. Bound it before asking
+    /// NIO to retain the declared body so a malicious peer cannot pin up to 4 GiB.
+    static let maximumPacketLength: UInt32 = 16 * 1024 * 1024
     
     mutating func decode(context: ChannelHandlerContext, buffer: inout ByteBuffer) throws -> DecodingState {
         let oldReaderIndex = buffer.readerIndex
         
-        guard
-            let length = buffer.readInteger(as: UInt32.self),
-            let typeByte = buffer.readInteger(as: UInt8.self),
-            var payload = buffer.readSlice(length: Int(length) - 1) // 1 for the already parsed type
-        else {
+        guard let length = buffer.readInteger(as: UInt32.self) else {
+            buffer.moveReaderIndex(to: oldReaderIndex)
+            return .needMoreData
+        }
+
+        guard length >= 1, length <= Self.maximumPacketLength else {
+            throw SFTPError.invalidPacketLength(length)
+        }
+
+        // The declared length includes the type byte. A valid but incomplete
+        // frame remains buffered from its original reader index for the next read.
+        guard buffer.readableBytes >= Int(length),
+              let typeByte = buffer.readInteger(as: UInt8.self),
+              var payload = buffer.readSlice(length: Int(length) - 1) else {
             buffer.moveReaderIndex(to: oldReaderIndex)
             return .needMoreData
         }
@@ -423,7 +436,18 @@ struct SFTPMessageParser: ByteToMessageDecoder {
                     targetPath: targetPath
                 )
             )
-        case .extended, .extendedReply:
+        case .extended:
+            guard let requestId = payload.readInteger(as: UInt32.self),
+                  let requestName = payload.readSSHString()
+            else {
+                throw SFTPError.invalidPayload(type: type)
+            }
+            message = .extended(.init(
+                requestId: requestId,
+                requestName: requestName,
+                payload: payload
+            ))
+        case .extendedReply:
             throw SFTPError.invalidPayload(type: type)
         }
         

@@ -9,6 +9,7 @@ import SwiftUI
 import Foundation
 import Observation
 import os
+import Security
 #if canImport(NIOSSH)
 import NIOSSH
 #endif
@@ -18,9 +19,130 @@ import CryptoKit
 import Citadel
 import GlasSecretStore
 
+struct SSHKeyLifecycleStore {
+    let retrieve: (UUID) throws -> SSHKeyMaterial?
+    let delete: (UUID) throws -> Void
+    let restore: (UUID, SSHKeyMaterial) throws -> Void
+    let addIfAbsent: (UUID, SSHKeyMaterial) throws -> Bool
+    let verifiesLegacySecureEnclaveBacking: (UUID, SSHKeyMaterial) throws -> Bool
+    let hasAnyArtifacts: (UUID) throws -> Bool
+
+    init(
+        retrieve: @escaping (UUID) throws -> SSHKeyMaterial?,
+        delete: @escaping (UUID) throws -> Void,
+        restore: @escaping (UUID, SSHKeyMaterial) throws -> Void,
+        addIfAbsent: @escaping (UUID, SSHKeyMaterial) throws -> Bool,
+        verifiesLegacySecureEnclaveBacking: @escaping (UUID, SSHKeyMaterial) throws -> Bool = { _, _ in false },
+        hasAnyArtifacts: ((UUID) throws -> Bool)? = nil
+    ) {
+        self.retrieve = retrieve
+        self.delete = delete
+        self.restore = restore
+        self.addIfAbsent = addIfAbsent
+        self.verifiesLegacySecureEnclaveBacking = verifiesLegacySecureEnclaveBacking
+        self.hasAnyArtifacts = hasAnyArtifacts ?? { keyID in
+            try retrieve(keyID) != nil
+        }
+    }
+
+    static let live = SSHKeyLifecycleStore(
+        retrieve: { keyID in
+            do {
+                return try KeychainManager.retrieveSSHKey(for: keyID)
+            } catch SecretStoreError.notFound {
+                return nil
+            }
+        },
+        delete: { keyID in try KeychainManager.deleteSSHKey(for: keyID) },
+        restore: { keyID, material in
+            guard let privateKey = material.privateKey.toUTF8String() else {
+                throw SecretStoreError.encodingFailed
+            }
+            let passphrase = material.passphrase?.toUTF8String()
+            try KeychainManager.saveSSHKey(privateKey, passphrase: passphrase, for: keyID)
+        },
+        addIfAbsent: { keyID, material in
+            try SSHKeyKeychainStore.addIfAbsent(
+                privateKey: material.privateKey,
+                passphrase: material.passphrase,
+                for: keyID,
+                config: KeychainManager.config
+            )
+        },
+        verifiesLegacySecureEnclaveBacking: { keyID, material in
+            try SSHKeyKeychainStore.verifiesLegacySecureEnclaveBacking(
+                material,
+                for: keyID,
+                config: KeychainManager.config
+            )
+        },
+        hasAnyArtifacts: { keyID in
+            try SSHKeyKeychainStore.hasAnyArtifacts(
+                for: keyID,
+                config: KeychainManager.config
+            )
+        }
+    )
+}
+
+enum SSHKeyDeletionPhase: String, Codable, Equatable {
+    case prepared
+    case metadataRemoved
+    case recoveryRequired
+}
+
+struct SSHKeyDeletionJournal: Codable, Equatable {
+    static let currentVersion = 1
+    static let maximumEntries = 16
+    static let maximumReferencedServers = 512
+    static let maximumEncodedBytes = 64 * 1024
+
+    struct Entry: Codable, Equatable {
+        let key: StoredSSHKey
+        let referencedServerIDs: [UUID]
+        let createdAt: Date
+        var phase: SSHKeyDeletionPhase
+        var recoveryMessage: String?
+    }
+
+    let version: Int
+    var entries: [Entry]
+}
+
+enum SettingsPersistenceError: LocalizedError {
+    case invalidSSHKeyCatalog
+    case readbackMismatch
+    case rollbackFailed
+    case invalidSSHKeyDeletionJournal
+    case secretDeletionUnverified
+    case sshKeyDeletionRecoveryRequired
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidSSHKeyCatalog:
+            return "The persisted SSH key catalog is malformed, unreadable, or too large. No key changes were made."
+        case .readbackMismatch:
+            return "The SSH key catalog could not be verified after saving."
+        case .rollbackFailed:
+            return "The SSH key operation failed and its metadata or credential rollback could not be verified."
+        case .invalidSSHKeyDeletionJournal:
+            return "SSH key deletion recovery data is invalid. Keep the app data intact and contact support before deleting another key."
+        case .secretDeletionUnverified:
+            return "The SSH key secret deletion could not be verified. The recovery record was retained."
+        case .sshKeyDeletionRecoveryRequired:
+            return "An interrupted SSH key deletion was recovered conservatively. Review server key assignments and retry the deletion."
+        }
+    }
+}
+
 @MainActor
 @Observable
 class SettingsManager {
+    private static let appearanceSchemaVersionKey = "appearanceSchemaVersion"
+    private static let currentAppearanceSchemaVersion = 2
+    private static let maximumScrollbackLines = 100_000
+    static let maximumSSHKeyCatalogBytes = 1024 * 1024
+
     var currentTheme: TerminalTheme = .default
     var snippets: [CommandSnippet] = []
     var autoReconnect: Bool = true
@@ -30,27 +152,46 @@ class SettingsManager {
     var bellEnabled: Bool = false
     var visualBell: Bool = true
     var hostKeyVerificationMode: String = HostKeyVerificationMode.ask.rawValue
-    var trustedHostKeys: [TrustedHostKeyEntry] = []
     var sshKeys: [StoredSSHKey] = []
+    private(set) var sshKeyCatalogLoadError: SettingsPersistenceError?
+    private(set) var sshKeyDeletionRecoveryError: String?
     var cursorStyle: String = "Block"
     var blinkingCursor: Bool = true
-    var windowOpacity: Double = 0.95
+    var glassFrost: String = "ultraThin"
+    /// Theme-color coverage. Zero leaves the terminal canvas fully transparent.
+    var windowOpacity: Double = 0.0
+    /// Strength of the independently composited system blur layer.
     var blurBackground: Double = 1.0
-    var interactiveGlassEffects: Bool = true
+    var interactiveGlass: Bool = true
     var glassTint: String = "None"
-    var showSidebarByDefault: Bool = true
-    var showInfoPanelByDefault: Bool = false
-    var sidebarPosition: String = "Left"
+    /// Compatibility alias for the short-lived glass redesign schema.
+    var backgroundFill: Double {
+        get { windowOpacity }
+        set { windowOpacity = newValue }
+    }
     var sessionOverrides: [String: TerminalSessionOverride] = [:]
     var layoutPresets: [LayoutPreset] = []
-    var secretMigrationStatus: SecretStoreMigrationStatus?
-    var tailscaleAutoDiscover: Bool = false
     var tailscaleTailnet: String = ""
-    var autoRecordSessions: Bool = false
-    var glassMaterialStyle: String = "ultraThin"
     private var hasLoadedPersistentState = false
+    private let settingsDefaults: UserDefaults
+    private let sshKeyDefaults: UserDefaults
+    private let sshKeyLifecycleStore: SSHKeyLifecycleStore
+    private let sshKeyCatalogWriter: (Data) -> Void
 
-    init(loadImmediately: Bool = true) {
+    init(
+        loadImmediately: Bool = true,
+        settingsDefaults: UserDefaults? = nil,
+        sshKeyDefaults: UserDefaults? = nil,
+        sshKeyLifecycleStore: SSHKeyLifecycleStore? = nil,
+        sshKeyCatalogWriter: ((Data) -> Void)? = nil
+    ) {
+        self.settingsDefaults = settingsDefaults ?? .standard
+        let resolvedSSHKeyDefaults = sshKeyDefaults ?? SharedDefaults.defaults
+        self.sshKeyDefaults = resolvedSSHKeyDefaults
+        self.sshKeyLifecycleStore = sshKeyLifecycleStore ?? .live
+        self.sshKeyCatalogWriter = sshKeyCatalogWriter ?? { data in
+            resolvedSSHKeyDefaults.set(data, forKey: UserDefaultsKeys.sshKeys)
+        }
         if loadImmediately {
             loadPersistentStateIfNeeded()
         }
@@ -60,63 +201,64 @@ class SettingsManager {
         guard !hasLoadedPersistentState else { return }
         hasLoadedPersistentState = true
 
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.autoReconnect) != nil {
-            autoReconnect = UserDefaults.standard.bool(forKey: UserDefaultsKeys.autoReconnect)
+        if settingsDefaults.object(forKey: UserDefaultsKeys.autoReconnect) != nil {
+            autoReconnect = settingsDefaults.bool(forKey: UserDefaultsKeys.autoReconnect)
         }
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.confirmBeforeClosing) != nil {
-            confirmBeforeClosing = UserDefaults.standard.bool(forKey: UserDefaultsKeys.confirmBeforeClosing)
+        if settingsDefaults.object(forKey: UserDefaultsKeys.confirmBeforeClosing) != nil {
+            confirmBeforeClosing = settingsDefaults.bool(forKey: UserDefaultsKeys.confirmBeforeClosing)
         }
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.saveScrollback) != nil {
-            saveScrollback = UserDefaults.standard.bool(forKey: UserDefaultsKeys.saveScrollback)
+        if settingsDefaults.object(forKey: UserDefaultsKeys.saveScrollback) != nil {
+            saveScrollback = settingsDefaults.bool(forKey: UserDefaultsKeys.saveScrollback)
         }
-        let savedMaxLines = UserDefaults.standard.integer(forKey: UserDefaultsKeys.maxScrollbackLines)
-        if savedMaxLines > 0 {
-            maxScrollbackLines = savedMaxLines
+        if settingsDefaults.object(forKey: UserDefaultsKeys.maxScrollbackLines) != nil {
+            maxScrollbackLines = Self.clampedScrollbackLines(
+                settingsDefaults.integer(forKey: UserDefaultsKeys.maxScrollbackLines)
+            )
         }
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.bellEnabled) != nil {
-            bellEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.bellEnabled)
+        if settingsDefaults.object(forKey: UserDefaultsKeys.bellEnabled) != nil {
+            bellEnabled = settingsDefaults.bool(forKey: UserDefaultsKeys.bellEnabled)
         }
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.visualBell) != nil {
-            visualBell = UserDefaults.standard.bool(forKey: UserDefaultsKeys.visualBell)
+        if settingsDefaults.object(forKey: UserDefaultsKeys.visualBell) != nil {
+            visualBell = settingsDefaults.bool(forKey: UserDefaultsKeys.visualBell)
         }
-        if let savedHostKeyMode = UserDefaults.standard.string(forKey: UserDefaultsKeys.hostKeyVerificationMode),
-           HostKeyVerificationMode(rawValue: savedHostKeyMode) != nil {
-            hostKeyVerificationMode = savedHostKeyMode
+        if let savedHostKeyMode = settingsDefaults.string(forKey: UserDefaultsKeys.hostKeyVerificationMode),
+           let mode = HostKeyVerificationMode(rawValue: savedHostKeyMode) {
+            hostKeyVerificationMode = mode.rawValue
         }
-        if let savedCursorStyle = UserDefaults.standard.string(forKey: UserDefaultsKeys.cursorStyle) {
+        if let savedCursorStyle = settingsDefaults.string(forKey: UserDefaultsKeys.cursorStyle) {
             cursorStyle = savedCursorStyle
         }
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.blinkingCursor) != nil {
-            blinkingCursor = UserDefaults.standard.bool(forKey: UserDefaultsKeys.blinkingCursor)
+        if settingsDefaults.object(forKey: UserDefaultsKeys.blinkingCursor) != nil {
+            blinkingCursor = settingsDefaults.bool(forKey: UserDefaultsKeys.blinkingCursor)
         }
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.windowOpacity) != nil {
-            windowOpacity = UserDefaults.standard.double(forKey: UserDefaultsKeys.windowOpacity)
+        // Keep opacity and blur as separate persisted dimensions. The
+        // short-lived backgroundFill key maps only to opacity; it must never
+        // erase a user's blur preference during migration.
+        if let v = settingsDefaults.string(forKey: UserDefaultsKeys.glassFrost) {
+            glassFrost = v
+        } else if let old = settingsDefaults.string(forKey: UserDefaultsKeys.glassMaterialStyle) {
+            glassFrost = old
         }
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.blurBackground) != nil {
-            let saved = UserDefaults.standard.double(forKey: UserDefaultsKeys.blurBackground)
-            // Migrate old bool (true=1.0) to slider value
-            if saved == 1.0 && UserDefaults.standard.object(forKey: UserDefaultsKeys.blurBackground) is Bool {
-                blurBackground = 0.5
-            } else {
-                blurBackground = saved
-            }
+        let canonicalOpacity = settingsDefaults.object(forKey: UserDefaultsKeys.windowOpacity)
+        let legacyOpacity = settingsDefaults.object(forKey: UserDefaultsKeys.backgroundFill)
+        if canonicalOpacity != nil || legacyOpacity != nil {
+            windowOpacity = Self.resolvedWindowOpacity(
+                canonical: canonicalOpacity,
+                legacy: legacyOpacity
+            )
         }
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.interactiveGlassEffects) != nil {
-            interactiveGlassEffects = UserDefaults.standard.bool(forKey: UserDefaultsKeys.interactiveGlassEffects)
+        if let savedBlur = settingsDefaults.object(forKey: UserDefaultsKeys.blurBackground) {
+            blurBackground = Self.resolvedBlurBackground(savedBlur)
         }
-        if let savedGlassTint = UserDefaults.standard.string(forKey: UserDefaultsKeys.glassTint) {
+        if settingsDefaults.object(forKey: UserDefaultsKeys.interactiveGlass) != nil {
+            interactiveGlass = settingsDefaults.bool(forKey: UserDefaultsKeys.interactiveGlass)
+        } else if settingsDefaults.object(forKey: UserDefaultsKeys.interactiveGlassEffects) != nil {
+            interactiveGlass = settingsDefaults.bool(forKey: UserDefaultsKeys.interactiveGlassEffects)
+        }
+        if let savedGlassTint = settingsDefaults.string(forKey: UserDefaultsKeys.glassTint) {
             glassTint = savedGlassTint
         }
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.showSidebarByDefault) != nil {
-            showSidebarByDefault = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showSidebarByDefault)
-        }
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.showInfoPanelByDefault) != nil {
-            showInfoPanelByDefault = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showInfoPanelByDefault)
-        }
-        if let savedSidebarPosition = UserDefaults.standard.string(forKey: UserDefaultsKeys.sidebarPosition) {
-            sidebarPosition = savedSidebarPosition
-        }
-        if let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.sessionOverrides) {
+        if let data = settingsDefaults.data(forKey: UserDefaultsKeys.sessionOverrides) {
             do {
                 sessionOverrides = try JSONDecoder().decode([String: TerminalSessionOverride].self, from: data)
             } catch {
@@ -125,52 +267,64 @@ class SettingsManager {
             }
         }
 
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.tailscaleAutoDiscover) != nil {
-            tailscaleAutoDiscover = UserDefaults.standard.bool(forKey: UserDefaultsKeys.tailscaleAutoDiscover)
-        }
-        if let savedTailnet = UserDefaults.standard.string(forKey: UserDefaultsKeys.tailscaleTailnet) {
+        if let savedTailnet = settingsDefaults.string(forKey: UserDefaultsKeys.tailscaleTailnet) {
             tailscaleTailnet = savedTailnet
         }
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.autoRecordSessions) != nil {
-            autoRecordSessions = UserDefaults.standard.bool(forKey: UserDefaultsKeys.autoRecordSessions)
-        }
-        if let savedGlassMaterialStyle = UserDefaults.standard.string(forKey: UserDefaultsKeys.glassMaterialStyle) {
-            glassMaterialStyle = savedGlassMaterialStyle
+
+        if settingsDefaults.integer(forKey: Self.appearanceSchemaVersionKey)
+            < Self.currentAppearanceSchemaVersion {
+            // Persist the canonical representation immediately so migration is
+            // deterministic and idempotent even if the user changes nothing.
+            saveSettings()
+            settingsDefaults.set(
+                Self.currentAppearanceSchemaVersion,
+                forKey: Self.appearanceSchemaVersionKey
+            )
         }
 
         loadTheme()
         loadSnippets()
         loadLayoutPresets()
-        loadTrustedHostKeys()
         loadSSHKeys()
-        KeychainManager.runMigrationsIfNeeded()
-        refreshSecretMigrationStatus()
+        reconcileSSHKeyDeletionJournalAtStartup()
     }
 
     func saveSettings() {
-        UserDefaults.standard.set(autoReconnect, forKey: UserDefaultsKeys.autoReconnect)
-        UserDefaults.standard.set(confirmBeforeClosing, forKey: UserDefaultsKeys.confirmBeforeClosing)
-        UserDefaults.standard.set(saveScrollback, forKey: UserDefaultsKeys.saveScrollback)
-        UserDefaults.standard.set(maxScrollbackLines, forKey: UserDefaultsKeys.maxScrollbackLines)
-        UserDefaults.standard.set(bellEnabled, forKey: UserDefaultsKeys.bellEnabled)
-        UserDefaults.standard.set(visualBell, forKey: UserDefaultsKeys.visualBell)
-        UserDefaults.standard.set(hostKeyVerificationMode, forKey: UserDefaultsKeys.hostKeyVerificationMode)
-        UserDefaults.standard.set(cursorStyle, forKey: UserDefaultsKeys.cursorStyle)
-        UserDefaults.standard.set(blinkingCursor, forKey: UserDefaultsKeys.blinkingCursor)
-        UserDefaults.standard.set(windowOpacity, forKey: UserDefaultsKeys.windowOpacity)
-        UserDefaults.standard.set(blurBackground, forKey: UserDefaultsKeys.blurBackground)
-        UserDefaults.standard.set(interactiveGlassEffects, forKey: UserDefaultsKeys.interactiveGlassEffects)
-        UserDefaults.standard.set(glassTint, forKey: UserDefaultsKeys.glassTint)
-        UserDefaults.standard.set(showSidebarByDefault, forKey: UserDefaultsKeys.showSidebarByDefault)
-        UserDefaults.standard.set(showInfoPanelByDefault, forKey: UserDefaultsKeys.showInfoPanelByDefault)
-        UserDefaults.standard.set(sidebarPosition, forKey: UserDefaultsKeys.sidebarPosition)
-        UserDefaults.standard.set(tailscaleAutoDiscover, forKey: UserDefaultsKeys.tailscaleAutoDiscover)
-        UserDefaults.standard.set(tailscaleTailnet, forKey: UserDefaultsKeys.tailscaleTailnet)
-        UserDefaults.standard.set(autoRecordSessions, forKey: UserDefaultsKeys.autoRecordSessions)
-        UserDefaults.standard.set(glassMaterialStyle, forKey: UserDefaultsKeys.glassMaterialStyle)
+        maxScrollbackLines = Self.clampedScrollbackLines(maxScrollbackLines)
+        windowOpacity = Self.unitValue(windowOpacity)
+        blurBackground = Self.unitValue(blurBackground)
+        sessionOverrides = sessionOverrides.reduce(into: [:]) { result, element in
+            var override = element.value
+            override.canonicalizeAppearance()
+            if override != TerminalSessionOverride() {
+                result[element.key] = override
+            }
+        }
+        settingsDefaults.set(autoReconnect, forKey: UserDefaultsKeys.autoReconnect)
+        settingsDefaults.set(confirmBeforeClosing, forKey: UserDefaultsKeys.confirmBeforeClosing)
+        settingsDefaults.set(saveScrollback, forKey: UserDefaultsKeys.saveScrollback)
+        settingsDefaults.set(maxScrollbackLines, forKey: UserDefaultsKeys.maxScrollbackLines)
+        settingsDefaults.set(bellEnabled, forKey: UserDefaultsKeys.bellEnabled)
+        settingsDefaults.set(visualBell, forKey: UserDefaultsKeys.visualBell)
+        settingsDefaults.set(hostKeyVerificationMode, forKey: UserDefaultsKeys.hostKeyVerificationMode)
+        settingsDefaults.set(cursorStyle, forKey: UserDefaultsKeys.cursorStyle)
+        settingsDefaults.set(blinkingCursor, forKey: UserDefaultsKeys.blinkingCursor)
+        settingsDefaults.set(glassFrost, forKey: UserDefaultsKeys.glassFrost)
+        settingsDefaults.set(windowOpacity, forKey: UserDefaultsKeys.windowOpacity)
+        settingsDefaults.set(blurBackground, forKey: UserDefaultsKeys.blurBackground)
+        settingsDefaults.set(interactiveGlass, forKey: UserDefaultsKeys.interactiveGlass)
+        settingsDefaults.set(glassTint, forKey: UserDefaultsKeys.glassTint)
+        settingsDefaults.set(tailscaleTailnet, forKey: UserDefaultsKeys.tailscaleTailnet)
+        settingsDefaults.set(
+            Self.currentAppearanceSchemaVersion,
+            forKey: Self.appearanceSchemaVersionKey
+        )
+        settingsDefaults.removeObject(forKey: UserDefaultsKeys.backgroundFill)
+        settingsDefaults.removeObject(forKey: UserDefaultsKeys.glassMaterialStyle)
+        settingsDefaults.removeObject(forKey: UserDefaultsKeys.interactiveGlassEffects)
         do {
             let data = try JSONEncoder().encode(sessionOverrides)
-            UserDefaults.standard.set(data, forKey: UserDefaultsKeys.sessionOverrides)
+            settingsDefaults.set(data, forKey: UserDefaultsKeys.sessionOverrides)
         } catch {
             Logger.settings.error("Failed to save session overrides: \(error)")
         }
@@ -183,56 +337,313 @@ class SettingsManager {
     func updateSessionOverride(for sessionID: UUID, mutate: (inout TerminalSessionOverride) -> Void) {
         var override = sessionOverride(for: sessionID) ?? TerminalSessionOverride()
         mutate(&override)
-        sessionOverrides[sessionID.uuidString] = override
+        override.canonicalizeAppearance()
+        if override == TerminalSessionOverride() {
+            sessionOverrides.removeValue(forKey: sessionID.uuidString)
+        } else {
+            sessionOverrides[sessionID.uuidString] = override
+        }
         saveSettings()
     }
 
-    func loadTrustedHostKeys() {
-        guard let data = SharedDefaults.defaults.data(forKey: UserDefaultsKeys.trustedHostKeys) else {
-            trustedHostKeys = []
-            return
-        }
-
-        do {
-            trustedHostKeys = try JSONDecoder().decode([TrustedHostKeyEntry].self, from: data)
-        } catch {
-            Logger.settings.error("Failed to load trusted host keys: \(error)")
-            trustedHostKeys = []
-        }
+    nonisolated static func unitValue(_ value: Double) -> Double {
+        guard value.isFinite else { return 0 }
+        return min(1, max(0, value))
     }
 
-    func saveTrustedHostKeys() {
-        do {
-            let data = try JSONEncoder().encode(trustedHostKeys)
-            SharedDefaults.defaults.set(data, forKey: UserDefaultsKeys.trustedHostKeys)
-        } catch {
-            Logger.settings.error("Failed to save trusted host keys: \(error)")
+    static func clampedScrollbackLines(_ value: Int) -> Int {
+        min(maximumScrollbackLines, max(0, value))
+    }
+
+    static func resolvedWindowOpacity(canonical: Any?, legacy: Any?) -> Double {
+        guard let selected = canonical ?? legacy else { return 0 }
+        return numericUnitValue(selected) ?? 0
+    }
+
+    static func resolvedBlurBackground(_ value: Any) -> Double {
+        if isBoolean(value) {
+            return (value as? Bool) == true ? 1 : 0
         }
+        return numericUnitValue(value) ?? 0
+    }
+
+    private static func numericUnitValue(_ value: Any) -> Double? {
+        guard !isBoolean(value), let number = value as? NSNumber else { return nil }
+        return unitValue(number.doubleValue)
+    }
+
+    private static func isBoolean(_ value: Any) -> Bool {
+        guard let number = value as? NSNumber else { return false }
+        return CFGetTypeID(number) == CFBooleanGetTypeID()
     }
 
     func loadSSHKeys() {
-        guard let data = SharedDefaults.defaults.data(forKey: UserDefaultsKeys.sshKeys) else {
-            sshKeys = []
-            return
-        }
         do {
-            sshKeys = try JSONDecoder().decode([StoredSSHKey].self, from: data)
+            let persistedObject = sshKeyDefaults.object(forKey: UserDefaultsKeys.sshKeys)
+            let loadedKeys: [StoredSSHKey]
+            if let data = sshKeyDefaults.data(forKey: UserDefaultsKeys.sshKeys) {
+                guard data.count <= Self.maximumSSHKeyCatalogBytes else {
+                    throw SettingsPersistenceError.invalidSSHKeyCatalog
+                }
+                loadedKeys = try JSONDecoder().decode([StoredSSHKey].self, from: data)
+            } else if persistedObject == nil {
+                loadedKeys = []
+            } else {
+                // A persisted value of the wrong type is corruption, not absence.
+                throw SettingsPersistenceError.invalidSSHKeyCatalog
+            }
+            sshKeys = loadedKeys
+            sshKeyCatalogLoadError = nil
         } catch {
             Logger.settings.error("Failed to load ssh keys: \(error)")
-            sshKeys = []
+            // Retain the last verified in-memory view and block every metadata or
+            // Keychain mutation until a subsequent load verifies the catalog.
+            sshKeyCatalogLoadError = .invalidSSHKeyCatalog
         }
-    }
-
-    func refreshSecretMigrationStatus() {
-        secretMigrationStatus = KeychainManager.currentStatus()
     }
 
     private func saveSSHKeys() {
         do {
-            let data = try JSONEncoder().encode(sshKeys)
-            SharedDefaults.defaults.set(data, forKey: UserDefaultsKeys.sshKeys)
+            try persistSSHKeysAndVerify(sshKeys)
         } catch {
             Logger.settings.error("Failed to save ssh keys: \(error)")
+        }
+    }
+
+    private func persistSSHKeysAndVerify(_ candidateKeys: [StoredSSHKey]) throws {
+        try ensureSSHKeyCatalogAvailable()
+        let data = try JSONEncoder().encode(candidateKeys)
+        guard data.count <= Self.maximumSSHKeyCatalogBytes else {
+            throw SettingsPersistenceError.readbackMismatch
+        }
+        sshKeyCatalogWriter(data)
+        guard let persistedData = sshKeyDefaults.data(forKey: UserDefaultsKeys.sshKeys),
+              persistedData.count <= Self.maximumSSHKeyCatalogBytes,
+              let persistedKeys = try? JSONDecoder().decode([StoredSSHKey].self, from: persistedData),
+              persistedKeys == candidateKeys else {
+            throw SettingsPersistenceError.readbackMismatch
+        }
+    }
+
+    private func verifiedPersistedSSHKeyCatalog() throws -> [StoredSSHKey] {
+        guard let data = sshKeyDefaults.data(forKey: UserDefaultsKeys.sshKeys),
+              data.count <= Self.maximumSSHKeyCatalogBytes,
+              let keys = try? JSONDecoder().decode([StoredSSHKey].self, from: data) else {
+            // Missing, oversized, or malformed catalog bytes are ambiguous and
+            // must never be interpreted as a committed destructive mutation.
+            throw SettingsPersistenceError.readbackMismatch
+        }
+        return keys
+    }
+
+    private func loadSSHKeyDeletionJournal() throws -> SSHKeyDeletionJournal? {
+        guard let data = sshKeyDefaults.data(forKey: UserDefaultsKeys.sshKeyDeletionJournal) else {
+            return nil
+        }
+        guard data.count <= SSHKeyDeletionJournal.maximumEncodedBytes,
+              let journal = try? JSONDecoder().decode(SSHKeyDeletionJournal.self, from: data),
+              journal.version == SSHKeyDeletionJournal.currentVersion,
+              journal.entries.count <= SSHKeyDeletionJournal.maximumEntries,
+              journal.entries.allSatisfy({
+                  $0.referencedServerIDs.count <= SSHKeyDeletionJournal.maximumReferencedServers
+              }) else {
+            throw SettingsPersistenceError.invalidSSHKeyDeletionJournal
+        }
+        return journal
+    }
+
+    private func persistSSHKeyDeletionJournal(_ journal: SSHKeyDeletionJournal) throws {
+        guard journal.version == SSHKeyDeletionJournal.currentVersion,
+              journal.entries.count <= SSHKeyDeletionJournal.maximumEntries,
+              journal.entries.allSatisfy({
+                  $0.referencedServerIDs.count <= SSHKeyDeletionJournal.maximumReferencedServers
+              }) else {
+            throw SettingsPersistenceError.invalidSSHKeyDeletionJournal
+        }
+        let data = try JSONEncoder().encode(journal)
+        guard data.count <= SSHKeyDeletionJournal.maximumEncodedBytes else {
+            throw SettingsPersistenceError.invalidSSHKeyDeletionJournal
+        }
+        sshKeyDefaults.set(data, forKey: UserDefaultsKeys.sshKeyDeletionJournal)
+        guard let readback = sshKeyDefaults.data(forKey: UserDefaultsKeys.sshKeyDeletionJournal),
+              readback.count <= SSHKeyDeletionJournal.maximumEncodedBytes,
+              let decoded = try? JSONDecoder().decode(SSHKeyDeletionJournal.self, from: readback),
+              decoded == journal else {
+            throw SettingsPersistenceError.readbackMismatch
+        }
+    }
+
+    private func clearVerifiedSSHKeyDeletionJournal() throws {
+        sshKeyDefaults.removeObject(forKey: UserDefaultsKeys.sshKeyDeletionJournal)
+        guard sshKeyDefaults.data(forKey: UserDefaultsKeys.sshKeyDeletionJournal) == nil else {
+            throw SettingsPersistenceError.readbackMismatch
+        }
+    }
+
+    private static func sshKeyMaterialMatches(_ lhs: SSHKeyMaterial, _ rhs: SSHKeyMaterial) -> Bool {
+        guard lhs.privateKey.toData() == rhs.privateKey.toData() else { return false }
+        switch (lhs.passphrase, rhs.passphrase) {
+        case (nil, nil):
+            return true
+        case let (left?, right?):
+            return left.toData() == right.toData()
+        default:
+            return false
+        }
+    }
+
+    private func verifySSHKeySecretDeleted(_ keyID: UUID) throws {
+        guard !(try sshKeyLifecycleStore.hasAnyArtifacts(keyID)) else {
+            throw SettingsPersistenceError.secretDeletionUnverified
+        }
+    }
+
+    private func persistedServerMetadataReferences(_ entry: SSHKeyDeletionJournal.Entry) throws -> Bool {
+        guard !entry.referencedServerIDs.isEmpty else { return false }
+        guard let data = sshKeyDefaults.data(forKey: UserDefaultsKeys.servers) else {
+            // Missing server metadata is ambiguous when the prepared journal recorded references.
+            return true
+        }
+        guard let servers = try? JSONDecoder().decode([ServerConfiguration].self, from: data) else {
+            throw SettingsPersistenceError.readbackMismatch
+        }
+        return servers.contains { $0.sshKeyID == entry.key.id }
+    }
+
+    private func reconcileSSHKeyDeletionJournalAtStartup() {
+        if let catalogError = sshKeyCatalogLoadError {
+            do {
+                if try loadSSHKeyDeletionJournal() != nil {
+                    sshKeyDeletionRecoveryError = catalogError.localizedDescription
+                }
+            } catch {
+                sshKeyDeletionRecoveryError = error.localizedDescription
+            }
+            return
+        }
+        do {
+            guard var journal = try loadSSHKeyDeletionJournal() else { return }
+            let persistedKeys = try verifiedPersistedSSHKeyCatalog()
+            var retained: [SSHKeyDeletionJournal.Entry] = []
+            for var entry in journal.entries {
+                if entry.phase == .recoveryRequired {
+                    // The journal intentionally contains no secret material, so
+                    // restart cannot prove that an arbitrary nonnil Keychain item
+                    // is the exact private key and passphrase captured before the
+                    // failed deletion. Preserve the warning until explicit retry.
+                    entry.recoveryMessage = entry.recoveryMessage
+                        ?? SettingsPersistenceError.sshKeyDeletionRecoveryRequired.localizedDescription
+                    sshKeyDeletionRecoveryError = entry.recoveryMessage
+                    retained.append(entry)
+                    continue
+                }
+
+                let catalogContainsKey = persistedKeys.contains { $0.id == entry.key.id }
+                let serverMetadataReferencesKey = try persistedServerMetadataReferences(entry)
+                if catalogContainsKey || serverMetadataReferencesKey {
+                    // Persisted metadata is the commit marker. If either side still refers to
+                    // the key, the deletion never committed and its live secret must survive.
+                    if !catalogContainsKey {
+                        sshKeys.append(entry.key)
+                        try persistSSHKeysAndVerify(sshKeys)
+                    }
+                    guard try sshKeyLifecycleStore.retrieve(entry.key.id) != nil else {
+                        entry.phase = .recoveryRequired
+                        entry.recoveryMessage = SettingsPersistenceError
+                            .sshKeyDeletionRecoveryRequired.localizedDescription
+                        sshKeyDeletionRecoveryError = entry.recoveryMessage
+                        retained.append(entry)
+                        continue
+                    }
+                    // The deletion was safely aborted; omit its completed recovery record.
+                } else {
+                    try sshKeyLifecycleStore.delete(entry.key.id)
+                    try verifySSHKeySecretDeleted(entry.key.id)
+                    // Metadata removal committed, so omit only after verified secret deletion.
+                }
+            }
+            journal.entries = retained
+            if journal.entries.isEmpty {
+                try clearVerifiedSSHKeyDeletionJournal()
+            } else {
+                try persistSSHKeyDeletionJournal(journal)
+            }
+        } catch {
+            sshKeyDeletionRecoveryError = error.localizedDescription
+            Logger.settings.error("SSH key deletion startup reconciliation requires attention: \(error.localizedDescription)")
+        }
+    }
+
+    private func persistNewSSHKey(
+        _ key: StoredSSHKey,
+        material: SSHKeyMaterial
+    ) throws {
+        try ensureSSHKeyCatalogAvailable()
+        let originalKeys = sshKeys
+        var journal = try loadSSHKeyDeletionJournal()
+            ?? SSHKeyDeletionJournal(
+                version: SSHKeyDeletionJournal.currentVersion,
+                entries: []
+            )
+        journal.entries.removeAll { $0.key.id == key.id }
+        guard journal.entries.count < SSHKeyDeletionJournal.maximumEntries else {
+            throw SettingsPersistenceError.invalidSSHKeyDeletionJournal
+        }
+        journal.entries.append(.init(
+            key: key,
+            referencedServerIDs: [],
+            createdAt: Date(),
+            phase: .prepared,
+            recoveryMessage: nil
+        ))
+        // The secret-free journal makes a crash after secret creation recoverable.
+        try persistSSHKeyDeletionJournal(journal)
+
+        do {
+            try sshKeyLifecycleStore.restore(key.id, material)
+            guard let readback = try sshKeyLifecycleStore.retrieve(key.id),
+                  Self.sshKeyMaterialMatches(readback, material) else {
+                throw SettingsPersistenceError.readbackMismatch
+            }
+            sshKeys = originalKeys + [key]
+            try persistSSHKeysAndVerify(sshKeys)
+
+            journal.entries.removeAll { $0.key.id == key.id }
+            if journal.entries.isEmpty {
+                try clearVerifiedSSHKeyDeletionJournal()
+            } else {
+                try persistSSHKeyDeletionJournal(journal)
+            }
+        } catch {
+            var rollbackSucceeded = true
+            sshKeys = originalKeys
+            do {
+                try persistSSHKeysAndVerify(originalKeys)
+            } catch {
+                rollbackSucceeded = false
+            }
+            do {
+                try sshKeyLifecycleStore.delete(key.id)
+                try verifySSHKeySecretDeleted(key.id)
+            } catch {
+                rollbackSucceeded = false
+            }
+            if rollbackSucceeded {
+                journal.entries.removeAll { $0.key.id == key.id }
+                do {
+                    if journal.entries.isEmpty {
+                        try clearVerifiedSSHKeyDeletionJournal()
+                    } else {
+                        try persistSSHKeyDeletionJournal(journal)
+                    }
+                } catch {
+                    rollbackSucceeded = false
+                }
+            }
+            guard rollbackSucceeded else {
+                throw SettingsPersistenceError.rollbackFailed
+            }
+            throw error
         }
     }
 
@@ -247,12 +658,18 @@ class SettingsManager {
             algorithm: keyType.description,
             storageKind: .imported,
             algorithmKind: SSHKeyAlgorithmKind.fromLegacyDescription(keyType.description),
-            migrationState: .pending,
+            // This key is written directly to the canonical UUID-namespaced
+            // Keychain account, so no migration remains outstanding.
+            migrationState: .migrated,
             createdAt: Date()
         )
-        try KeychainManager.saveSSHKey(privateKey, passphrase: passphrase, for: key.id)
-        sshKeys.append(key)
-        saveSSHKeys()
+        try persistNewSSHKey(
+            key,
+            material: SSHKeyMaterial(
+                privateKey: SecureBytes(Data(privateKey.utf8)),
+                passphrase: passphrase.map { SecureBytes(Data($0.utf8)) }
+            )
+        )
         return key
     }
 
@@ -264,13 +681,26 @@ class SettingsManager {
         guard SecureEnclave.isAvailable else {
             throw SecretStoreError.secureEnclaveUnavailable
         }
-        let seKey = try SecureEnclave.P256.Signing.PrivateKey(compactRepresentable: false)
+        var accessControlError: Unmanaged<CFError>?
+        guard let accessControl = SecAccessControlCreateWithFlags(
+            nil,
+            kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            [.privateKeyUsage, .userPresence],
+            &accessControlError
+        ) else {
+            if let error = accessControlError?.takeRetainedValue() {
+                throw error
+            }
+            throw SecretStoreError.secureEnclaveUnavailable
+        }
+        let seKey = try SecureEnclave.P256.Signing.PrivateKey(
+            compactRepresentable: false,
+            accessControl: accessControl
+        )
         let dataRep = seKey.dataRepresentation // opaque device-bound token, NOT raw key material
 
         // Store the opaque token via Keychain — prefixed so auth flow knows it's true SE
         let encoded = "TRUE_SE_P256:" + dataRep.base64EncodedString()
-        try KeychainManager.saveSSHKey(encoded, passphrase: nil, for: keyID)
-
         let key = StoredSSHKey(
             id: keyID,
             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -281,8 +711,13 @@ class SettingsManager {
             keyTag: nil,
             createdAt: Date()
         )
-        sshKeys.append(key)
-        saveSSHKeys()
+        try persistNewSSHKey(
+            key,
+            material: SSHKeyMaterial(
+                privateKey: SecureBytes(Data(encoded.utf8)),
+                passphrase: nil
+            )
+        )
         return key
         #else
         throw SecretStoreError.secureEnclaveUnavailable
@@ -290,9 +725,22 @@ class SettingsManager {
     }
 
     func renameSSHKey(_ keyID: UUID, name: String) {
-        guard let index = sshKeys.firstIndex(where: { $0.id == keyID }) else { return }
-        sshKeys[index].name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        saveSSHKeys()
+        do {
+            try renameSSHKeyOrThrow(keyID, name: name)
+        } catch {
+            Logger.settings.error("Failed to rename SSH key: \(error.localizedDescription)")
+        }
+    }
+
+    func renameSSHKeyOrThrow(_ keyID: UUID, name: String) throws {
+        try ensureSSHKeyCatalogAvailable()
+        guard let index = sshKeys.firstIndex(where: { $0.id == keyID }) else {
+            throw SecretStoreError.notFound
+        }
+        var candidateKeys = sshKeys
+        candidateKeys[index].name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        try persistSSHKeysAndVerify(candidateKeys)
+        sshKeys = candidateKeys
     }
 
     func openSSHPublicKey(for keyID: UUID) throws -> String {
@@ -336,19 +784,156 @@ class SettingsManager {
         return "\(String(openSSHPublicKey: publicKey)) \(keyMetadata.name)"
     }
 
-    func deleteSSHKey(_ keyID: UUID, serverManager: ServerManager? = nil) {
-        sshKeys.removeAll { $0.id == keyID }
-        try? KeychainManager.deleteSSHKey(for: keyID)
+    func deleteSSHKey(_ keyID: UUID, serverManager: ServerManager? = nil) throws {
+        try ensureSSHKeyCatalogAvailable()
+        guard let keyMetadata = sshKeys.first(where: { $0.id == keyID }) else {
+            throw SecretStoreError.notFound
+        }
+        let originalKeys = sshKeys
+        let originalServers = serverManager?.servers
+        let material = try sshKeyLifecycleStore.retrieve(keyID)
+        let referencedServerIDs = (originalServers ?? [])
+            .filter { $0.sshKeyID == keyID }
+            .map(\.id)
+            .sorted { $0.uuidString < $1.uuidString }
+        guard referencedServerIDs.count <= SSHKeyDeletionJournal.maximumReferencedServers else {
+            throw SettingsPersistenceError.invalidSSHKeyDeletionJournal
+        }
 
+        var journal = try loadSSHKeyDeletionJournal()
+            ?? SSHKeyDeletionJournal(
+                version: SSHKeyDeletionJournal.currentVersion,
+                entries: []
+            )
+        journal.entries.removeAll { $0.key.id == keyID }
+        guard journal.entries.count < SSHKeyDeletionJournal.maximumEntries else {
+            throw SettingsPersistenceError.invalidSSHKeyDeletionJournal
+        }
+        journal.entries.append(.init(
+            key: keyMetadata,
+            referencedServerIDs: referencedServerIDs,
+            createdAt: Date(),
+            phase: .prepared,
+            recoveryMessage: nil
+        ))
+        // The secret-free journal is durable before either catalog or reference mutation.
+        try persistSSHKeyDeletionJournal(journal)
+
+        sshKeys.removeAll { $0.id == keyID }
         if let serverManager {
-            for i in serverManager.servers.indices {
-                if serverManager.servers[i].sshKeyID == keyID {
-                    serverManager.servers[i].sshKeyID = nil
+            for index in serverManager.servers.indices where serverManager.servers[index].sshKeyID == keyID {
+                serverManager.servers[index].sshKeyID = nil
+            }
+        }
+
+        do {
+            try persistSSHKeysAndVerify(sshKeys)
+            try serverManager?.persistServersOrThrow()
+            if let index = journal.entries.firstIndex(where: { $0.key.id == keyID }) {
+                journal.entries[index].phase = .metadataRemoved
+            }
+            try persistSSHKeyDeletionJournal(journal)
+        } catch {
+            sshKeys = originalKeys
+            if let serverManager, let originalServers {
+                serverManager.servers = originalServers
+            }
+            do {
+                try persistSSHKeysAndVerify(originalKeys)
+                try serverManager?.persistServersOrThrow()
+            } catch {
+                sshKeyDeletionRecoveryError = SettingsPersistenceError.rollbackFailed.localizedDescription
+                throw SettingsPersistenceError.rollbackFailed
+            }
+            throw error
+        }
+
+        do {
+            try sshKeyLifecycleStore.delete(keyID)
+            try verifySSHKeySecretDeleted(keyID)
+
+            journal.entries.removeAll { $0.key.id == keyID }
+            if journal.entries.isEmpty {
+                try clearVerifiedSSHKeyDeletionJournal()
+            } else {
+                try persistSSHKeyDeletionJournal(journal)
+            }
+        } catch {
+            // A nil material snapshot means the original partial representation
+            // cannot be reconstructed or compared after a failed delete. Even if
+            // metadata rollback succeeds, retain a recovery-required journal and
+            // fail closed instead of claiming that the secret was restored.
+            var rollbackSucceeded = material != nil
+            if let material {
+                do {
+                    try restoreSSHKeySecretIfUnchanged(keyID, original: material)
+                } catch {
+                    rollbackSucceeded = false
                 }
             }
-            serverManager.saveServers()
+            sshKeys = originalKeys
+            if let serverManager, let originalServers {
+                serverManager.servers = originalServers
+            }
+            do {
+                try persistSSHKeysAndVerify(originalKeys)
+                try serverManager?.persistServersOrThrow()
+            } catch {
+                rollbackSucceeded = false
+            }
+            if let index = journal.entries.firstIndex(where: { $0.key.id == keyID }) {
+                journal.entries[index].phase = .recoveryRequired
+                journal.entries[index].recoveryMessage = rollbackSucceeded
+                    ? "SSH key deletion failed; the secret and metadata were restored and verified. Retry the deletion."
+                    : SettingsPersistenceError.rollbackFailed.localizedDescription
+            }
+            do {
+                try persistSSHKeyDeletionJournal(journal)
+                sshKeyDeletionRecoveryError = journal.entries
+                    .first(where: { $0.key.id == keyID })?.recoveryMessage
+            } catch {
+                rollbackSucceeded = false
+                sshKeyDeletionRecoveryError = SettingsPersistenceError.rollbackFailed.localizedDescription
+            }
+            guard rollbackSucceeded else { throw SettingsPersistenceError.rollbackFailed }
+            throw error
         }
-        saveSSHKeys()
+    }
+
+    /// Restores a secret deleted by this transaction only when the account is
+    /// still absent. A concurrent replacement is preserved and surfaced as a
+    /// recovery-required rollback instead of being overwritten by stale bytes.
+    private func restoreSSHKeySecretIfUnchanged(
+        _ keyID: UUID,
+        original: SSHKeyMaterial
+    ) throws {
+        if Self.isLegacySecureEnclaveMaterial(original) {
+            guard try sshKeyLifecycleStore.verifiesLegacySecureEnclaveBacking(keyID, original),
+                  let current = try sshKeyLifecycleStore.retrieve(keyID),
+                  Self.sshKeyMaterialMatches(current, original) else {
+                throw SettingsPersistenceError.rollbackFailed
+            }
+            return
+        }
+
+        if let current = try sshKeyLifecycleStore.retrieve(keyID) {
+            guard Self.sshKeyMaterialMatches(current, original) else {
+                throw SettingsPersistenceError.rollbackFailed
+            }
+            return
+        }
+
+        guard try sshKeyLifecycleStore.addIfAbsent(keyID, original) else {
+            throw SettingsPersistenceError.rollbackFailed
+        }
+        guard let restored = try sshKeyLifecycleStore.retrieve(keyID),
+              Self.sshKeyMaterialMatches(restored, original) else {
+            throw SettingsPersistenceError.rollbackFailed
+        }
+    }
+
+    private static func isLegacySecureEnclaveMaterial(_ material: SSHKeyMaterial) -> Bool {
+        material.privateKey.toUTF8String()?.hasPrefix("SECURE_ENCLAVE_P256:") == true
     }
 
     func importSSHConfig(_ text: String, serverManager: ServerManager) -> SSHConfigImportResult {
@@ -415,34 +1000,14 @@ class SettingsManager {
         }?.id
     }
 
-    func trustedHostKeyBase64Set(host: String, port: Int) -> Set<String> {
-        Set(
-            trustedHostKeys
-                .filter { $0.host == host && $0.port == port }
-                .map { $0.keyDataBase64 }
-        )
-    }
-
-    func trustHostKey(_ challenge: HostKeyTrustChallenge) {
-        let entry = TrustedHostKeyEntry(
-            host: challenge.host,
-            port: challenge.port,
-            algorithm: challenge.algorithm,
-            fingerprintSHA256: challenge.fingerprintSHA256,
-            keyDataBase64: challenge.keyDataBase64,
-            addedAt: Date()
-        )
-        trustedHostKeys.removeAll {
-            $0.host == challenge.host
-                && $0.port == challenge.port
-                && $0.keyDataBase64 == challenge.keyDataBase64
+    private func ensureSSHKeyCatalogAvailable() throws {
+        if let sshKeyCatalogLoadError {
+            throw sshKeyCatalogLoadError
         }
-        trustedHostKeys.append(entry)
-        saveTrustedHostKeys()
     }
 
     func loadTheme() {
-        guard let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.theme) else {
+        guard let data = settingsDefaults.data(forKey: UserDefaultsKeys.theme) else {
             currentTheme = .default
             return
         }
@@ -458,7 +1023,7 @@ class SettingsManager {
     func saveTheme(_ theme: TerminalTheme) {
         do {
             let data = try JSONEncoder().encode(theme)
-            UserDefaults.standard.set(data, forKey: UserDefaultsKeys.theme)
+            settingsDefaults.set(data, forKey: UserDefaultsKeys.theme)
             currentTheme = theme
         } catch {
             Logger.settings.error("Failed to save theme: \(error)")
@@ -466,7 +1031,7 @@ class SettingsManager {
     }
 
     func loadSnippets() {
-        guard let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.snippets) else {
+        guard let data = settingsDefaults.data(forKey: UserDefaultsKeys.snippets) else {
             snippets = []
             return
         }
@@ -482,7 +1047,7 @@ class SettingsManager {
     func saveSnippets() {
         do {
             let data = try JSONEncoder().encode(snippets)
-            UserDefaults.standard.set(data, forKey: UserDefaultsKeys.snippets)
+            settingsDefaults.set(data, forKey: UserDefaultsKeys.snippets)
         } catch {
             Logger.settings.error("Failed to save snippets: \(error)")
         }
@@ -516,12 +1081,19 @@ class SettingsManager {
     // MARK: - Layout Presets
 
     func loadLayoutPresets() {
-        guard let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.layoutPresets) else {
+        guard let data = settingsDefaults.data(forKey: UserDefaultsKeys.layoutPresets) else {
             layoutPresets = []
             return
         }
         do {
-            layoutPresets = try JSONDecoder().decode([LayoutPreset].self, from: data)
+            let decoded = try JSONDecoder().decode([LayoutPreset].self, from: data)
+            let requiresMigration = decoded.contains(where: \.needsMigration)
+            layoutPresets = decoded.map { $0.migratedToCurrentSchema() }
+            if requiresMigration {
+                // Rewrite legacy serverID-only records once as canonical,
+                // versioned session intentions. Migration is idempotent.
+                saveLayoutPresets()
+            }
         } catch {
             Logger.settings.error("Failed to load layout presets: \(error)")
             layoutPresets = []
@@ -531,7 +1103,7 @@ class SettingsManager {
     func saveLayoutPresets() {
         do {
             let data = try JSONEncoder().encode(layoutPresets)
-            UserDefaults.standard.set(data, forKey: UserDefaultsKeys.layoutPresets)
+            settingsDefaults.set(data, forKey: UserDefaultsKeys.layoutPresets)
         } catch {
             Logger.settings.error("Failed to save layout presets: \(error)")
         }
@@ -553,4 +1125,32 @@ class SettingsManager {
             saveLayoutPresets()
         }
     }
+}
+
+/// Canonical, independently resolved levels for the terminal's two appearance
+/// dimensions. Opacity paints the theme color; blur composites passthrough
+/// frosting. Keeping them separate preserves all four endpoint combinations.
+struct TerminalGlassAppearance: Equatable {
+    let opacity: Double
+    let blur: Double
+
+    init(opacity: Double, blur: Double) {
+        self.opacity = SettingsManager.unitValue(opacity)
+        self.blur = SettingsManager.unitValue(blur)
+    }
+
+    static func resolved(
+        globalOpacity: Double,
+        globalBlur: Double,
+        sessionOverride: TerminalSessionOverride?
+    ) -> Self {
+        Self(
+            opacity: sessionOverride?.windowOpacity ?? globalOpacity,
+            blur: sessionOverride?.blurBackground ?? globalBlur
+        )
+    }
+
+    var paintsTheme: Bool { opacity > 0 }
+    var compositesBlur: Bool { blur > 0 }
+    var isFullyTransparent: Bool { !paintsTheme && !compositesBlur }
 }

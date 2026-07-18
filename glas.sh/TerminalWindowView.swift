@@ -17,6 +17,7 @@ struct TerminalWindowView: View {
     @Environment(SettingsManager.self) private var settingsManager
     
     @State private var searchQuery: String = ""
+    @State private var terminalSearchFound: Bool?
     @State private var showingSearchOverlay = false
     @FocusState private var isSearchFieldFocused: Bool
     @State private var showingTerminalSettings = false
@@ -28,13 +29,17 @@ struct TerminalWindowView: View {
     @State private var aiAssistant = AIAssistant()
     @State private var terminalSettingsTab: TerminalSettingsModalTab = .terminal
     @StateObject private var terminalHostModel = SwiftTermHostModel()
-    @State private var didRunCloseGooseCall = false
     @State private var errorCheckTask: Task<Void, Never>?
     @State private var terminalAudioManager = TerminalAudioManager()
     @State private var notificationManager = NotificationManager()
     @State private var isImmersiveFocusActive = false
     @State private var showingRecordings = false
-    @State private var sharePlayManager = SharePlayManager()
+    @State private var recordings: [SessionRecording] = []
+    @State private var recordingPendingDeletion: SessionRecording?
+    @State private var recordingDeletionError: String?
+    @State private var showingRecordingConsent = false
+    @State private var terminalColumns = 120
+    @State private var terminalRows = 40
     @State private var previousSessionState: SessionState?
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
@@ -43,11 +48,102 @@ struct TerminalWindowView: View {
     @Environment(\.scenePhase) private var scenePhase
     
     var body: some View {
+        terminalFocusTracking
+            .sheet(isPresented: $showingRecordings) {
+                recordingsListSheet
+            }
+            .confirmationDialog(
+                "Start Session Recording",
+                isPresented: $showingRecordingConsent,
+                titleVisibility: .visible
+            ) {
+                Button("Record Output Only") {
+                    startRecording(capturesInput: false)
+                }
+                Button("Record Output and Keyboard Input", role: .destructive) {
+                    startRecording(capturesInput: true)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Output-only is the safest default. Keyboard input may include passwords, tokens, and other secrets because remote password prompts cannot be detected reliably. This choice applies only to this recording.")
+            }
+    }
+
+    private var terminalLifecycle: some View {
+        terminalPresentation
+            .onAppear {
+                handleTerminalAppear()
+            }
+            .onChange(of: settingsManager.hostKeyVerificationMode) { _, _ in
+                rejectPendingHostKeyChallengeInStrictMode()
+            }
+            .onChange(of: session.pendingHostKeyChallenge?.fingerprintSHA256) { _, _ in
+                rejectPendingHostKeyChallengeInStrictMode()
+                updateTerminalFocusOwnership(
+                    competingControlPresented: session.pendingHostKeyChallenge != nil
+                )
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active && terminalCanOwnFocus {
+                    terminalHostModel.focus()
+                }
+            }
+            .onChange(of: session.closeWindowNonce) { _, _ in
+                sessionManager.closeSession(session)
+                dismiss()
+            }
+            .onDisappear {
+                handleTerminalDisappear()
+            }
+            .onChange(of: showingSearchOverlay) { oldValue, showing in
+                handleSearchPresentationChange(oldValue, showing)
+            }
+    }
+
+    private var terminalFocusTracking: some View {
+        terminalLifecycle
+            .onChange(of: showingTerminalSettings) { _, showing in
+                updateTerminalFocusOwnership(competingControlPresented: showing)
+            }
+            .onChange(of: showingSnippetPicker) { _, showing in
+                updateTerminalFocusOwnership(competingControlPresented: showing)
+            }
+            .onChange(of: showingAIAssistant) { _, showing in
+                updateTerminalFocusOwnership(competingControlPresented: showing)
+            }
+            .onChange(of: showingRecordings) { _, showing in
+                updateTerminalFocusOwnership(competingControlPresented: showing)
+            }
+            .onChange(of: showingRecordingConsent) { _, showing in
+                updateTerminalFocusOwnership(competingControlPresented: showing)
+            }
+            .onChange(of: terminalHostModel.pendingPasteReview?.id) { _, requestID in
+                updateTerminalFocusOwnership(competingControlPresented: requestID != nil)
+            }
+            .onChange(of: terminalHostModel.pendingExternalLink?.id) { _, requestID in
+                updateTerminalFocusOwnership(competingControlPresented: requestID != nil)
+            }
+            .onChange(of: showingCloseConfirmation) { _, showing in
+                updateTerminalFocusOwnership(competingControlPresented: showing)
+            }
+            .onChange(of: showingErrorCard) { _, showing in
+                updateTerminalFocusOwnership(competingControlPresented: showing)
+            }
+            .onChange(of: session.state) { oldState, newState in
+                handleSessionStateNotification(from: oldState, to: newState)
+            }
+    }
+
+    private var terminalSurface: some View {
         VStack(spacing: 0) {
             terminalContent
                 .padding(10)
         }
-        .background(resolvedMaterial, in: .rect(cornerRadius: 24))
+        .modifier(GlassWindowBackground(
+            interactive: effectiveInteractiveGlass,
+            material: resolvedMaterial,
+            blurAmount: effectiveBlurBackground
+        ))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, 22)
         .padding(.top, 34)
@@ -60,6 +156,10 @@ struct TerminalWindowView: View {
             bottomStatusBar
                 .glassBackgroundEffect(in: .capsule)
         }
+    }
+
+    private var terminalPresentation: some View {
+        terminalSurface
         .sheet(isPresented: $showingTerminalSettings) {
             terminalSettingsModal
         }
@@ -71,46 +171,96 @@ struct TerminalWindowView: View {
                 aiAssistant: aiAssistant,
                 host: session.server.host,
                 username: session.server.username,
+                currentDirectory: terminalHostModel.currentDirectory,
                 onRunCommand: { command in
                     session.sendCommand(command)
                 }
             )
         }
+        .sheet(item: pendingPasteReviewBinding) { request in
+            TerminalPasteReviewSheet(
+                request: request,
+                onCancel: { terminalHostModel.resolvePendingPaste(approvedText: nil) },
+                onPaste: { text in terminalHostModel.resolvePendingPaste(approvedText: text) }
+            )
+        }
         .alert("Close Connection?", isPresented: $showingCloseConfirmation) {
             Button("Disconnect", role: .destructive) {
-                session.disconnect()
-                dismiss()
+                closeTerminalSession()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("You have an active SSH connection to \(session.server.name).")
         }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active {
-                terminalHostModel.focus()
+        .alert(
+            session.pendingHostKeyChallenge?.reason == .changed ? "SSH Host Key Changed" : "Trust SSH Host Key?",
+            isPresented: hostTrustBinding,
+            presenting: session.pendingHostKeyChallenge
+        ) { challenge in
+            Button(
+                challenge.reason == .changed ? "Trust Changed Key & Reconnect" : "Trust & Reconnect",
+                role: challenge.reason == .changed ? .destructive : nil
+            ) {
+                guard interactiveHostKeyTrustIsAllowed else {
+                    rejectPendingHostKeyChallengeInStrictMode()
+                    return
+                }
+                trustAndReconnect(challenge)
             }
-        }
-        .onChange(of: session.closeWindowNonce) { _, _ in
-            runCloseGooseCallIfNeeded()
-            dismiss()
-        }
-        .onDisappear {
-            terminalHostModel.stopFocusMaintenance()
-            runCloseGooseCallIfNeeded()
-            if isImmersiveFocusActive {
-                Task { await dismissImmersiveSpace() }
-                isImmersiveFocusActive = false
+            Button("Cancel", role: .cancel) {
+                session.pendingHostKeyChallenge = nil
             }
-            sharePlayManager.stopSharing()
+        } message: { challenge in
+            Text("\(challenge.summary)\n\nAlgorithm: \(challenge.algorithm)\nFingerprint (SHA-256): \(challenge.fingerprintSHA256)")
         }
-        .onChange(of: showingSearchOverlay) { _, showing in
-            if showing { isSearchFieldFocused = true }
+        .alert(
+            "Open External Link?",
+            isPresented: externalLinkConfirmationBinding,
+            presenting: terminalHostModel.pendingExternalLink
+        ) { request in
+            Button("Open") {
+                #if canImport(UIKit)
+                if let url = terminalHostModel.resolvePendingExternalLink(approved: true) {
+                    UIApplication.shared.open(url)
+                }
+                #else
+                _ = terminalHostModel.resolvePendingExternalLink(approved: false)
+                #endif
+            }
+            Button("Cancel", role: .cancel) {
+                _ = terminalHostModel.resolvePendingExternalLink(approved: false)
+            }
+        } message: { request in
+            let authority = request.port.map { "\(request.normalizedHost):\($0)" }
+                ?? request.normalizedHost
+            Text("A remote terminal link wants to open this address.\n\nHost: \(authority)\n\nExact URL:\n\(request.exactURL)")
         }
-        .onChange(of: session.state) { oldState, newState in
-            handleSessionStateNotification(from: oldState, to: newState)
+    }
+
+    private func handleTerminalAppear() {
+        rejectPendingHostKeyChallengeInStrictMode()
+        updateTerminalFocusOwnership(
+            competingControlPresented: session.pendingHostKeyChallenge != nil || showingErrorCard
+        )
+    }
+
+    private func handleTerminalDisappear() {
+        terminalHostModel.stopFocusMaintenance()
+        sessionManager.closeSession(session)
+        if isImmersiveFocusActive {
+            Task { await dismissImmersiveSpace() }
+            isImmersiveFocusActive = false
         }
-        .sheet(isPresented: $showingRecordings) {
-            recordingsListSheet
+    }
+
+    private func handleSearchPresentationChange(_ oldValue: Bool, _ showing: Bool) {
+        if showing {
+            updateTerminalFocusOwnership(competingControlPresented: true)
+            isSearchFieldFocused = true
+        } else {
+            terminalHostModel.clearSearch()
+            terminalSearchFound = nil
+            updateTerminalFocusOwnership(competingControlPresented: false)
         }
     }
     
@@ -134,12 +284,7 @@ struct TerminalWindowView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Cancel reconnect")
             } else {
-                if session.recorder?.isRecording == true {
-                    Circle()
-                        .fill(.red)
-                        .frame(width: 8, height: 8)
-                        .accessibilityLabel("Recording")
-                }
+                recordingIndicator
 
                 Text(session.server.name)
                     .font(.caption)
@@ -149,15 +294,6 @@ struct TerminalWindowView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                if sharePlayManager.isActive {
-                    HStack(spacing: 3) {
-                        Image(systemName: "shareplay")
-                            .font(.caption2)
-                        Text("\(sharePlayManager.participantCount)")
-                            .font(.caption2.weight(.semibold))
-                    }
-                    .foregroundStyle(.green)
-                }
             }
         }
         .padding(.horizontal, 16)
@@ -175,20 +311,25 @@ struct TerminalWindowView: View {
             terminalDisplayBackground
             if let tintColor = tintColor {
                 Rectangle()
-                    .fill(
-                        tintColor.opacity(
-                            (effectiveInteractiveGlassEffects ? 0.08 : 0.14) * effectiveWindowOpacity
-                        )
-                    )
+                    .fill(tintColor.opacity(0.12 * effectiveWindowOpacity))
                     .allowsHitTesting(false)
             }
             SwiftTermHostView(
                 model: terminalHostModel,
                 theme: swiftTermTheme,
+                runtimeSettings: SwiftTermRuntimeSettings(
+                    cursorStyle: settingsManager.cursorStyle,
+                    blinkingCursor: settingsManager.blinkingCursor,
+                    scrollbackLines: settingsManager.saveScrollback
+                        ? settingsManager.maxScrollbackLines
+                        : 0
+                ),
                 onSendData: { data in
                     session.sendTerminalData(data)
                 },
                 onResize: { cols, rows in
+                    terminalColumns = max(20, cols)
+                    terminalRows = max(8, rows)
                     session.updateTerminalGeometry(rows: rows, columns: cols)
                 },
                 onBell: {
@@ -209,10 +350,16 @@ struct TerminalWindowView: View {
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .contentShape(.rect)
         .onTapGesture {
-            terminalHostModel.focus()
+            if terminalCanOwnFocus {
+                terminalHostModel.focus()
+            }
         }
         .onAppear {
-            terminalHostModel.focus()
+            if terminalCanOwnFocus {
+                terminalHostModel.focus()
+            } else {
+                terminalHostModel.stopFocusMaintenance()
+            }
             if session.terminalInputNonce > 0 {
                 let chunks = session.drainTerminalInputChunks()
                 if !chunks.isEmpty {
@@ -288,15 +435,125 @@ struct TerminalWindowView: View {
     }
 
     private var swiftTermTheme: SwiftTermTheme {
-        let fg = rgbaComponents(settingsManager.currentTheme.foreground.color)
-        let bg = rgbaComponents(settingsManager.currentTheme.background.color)
-        let cursor = rgbaComponents(settingsManager.currentTheme.cursor.color)
+        let theme = settingsManager.currentTheme
+        let fg = rgbaComponents(theme.foreground.color)
+        let bg = rgbaComponents(theme.background.color)
+        let cursor = rgbaComponents(theme.cursor.color)
+        let selection = rgbaComponents(theme.selection.color)
+        let ansiColors = [
+            theme.black, theme.red, theme.green, theme.yellow,
+            theme.blue, theme.magenta, theme.cyan, theme.white,
+            theme.brightBlack, theme.brightRed, theme.brightGreen, theme.brightYellow,
+            theme.brightBlue, theme.brightMagenta, theme.brightCyan, theme.brightWhite,
+        ].map { color in
+            let components = rgbaComponents(color.color)
+            return SwiftTermThemeColor(
+                red: components.red,
+                green: components.green,
+                blue: components.blue
+            )
+        }
 
         return SwiftTermTheme(
-            fontSize: max(10, settingsManager.currentTheme.fontSize),
+            fontSize: max(10, theme.fontSize),
             foreground: (fg.red, fg.green, fg.blue),
             background: (bg.red, bg.green, bg.blue, 0),
-            cursor: (cursor.red, cursor.green, cursor.blue)
+            cursor: (cursor.red, cursor.green, cursor.blue),
+            fontName: theme.fontName,
+            selection: (selection.red, selection.green, selection.blue, selection.alpha),
+            ansiColors: ansiColors
+        )
+    }
+
+    private var terminalCanOwnFocus: Bool {
+        !showingSearchOverlay
+            && !showingTerminalSettings
+            && !showingCloseConfirmation
+            && !showingSnippetPicker
+            && !showingAIAssistant
+            && !showingRecordings
+            && !showingRecordingConsent
+            && session.pendingHostKeyChallenge == nil
+            && !showingErrorCard
+            && terminalHostModel.pendingPasteReview == nil
+            && terminalHostModel.pendingExternalLink == nil
+    }
+
+    private var pendingPasteReviewBinding: Binding<SwiftTermPasteReview?> {
+        Binding(
+            get: { terminalHostModel.pendingPasteReview },
+            set: { value in
+                if value == nil {
+                    terminalHostModel.resolvePendingPaste(approvedText: nil)
+                }
+            }
+        )
+    }
+
+    private var externalLinkConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { terminalHostModel.pendingExternalLink != nil },
+            set: { isPresented in
+                if !isPresented {
+                    _ = terminalHostModel.resolvePendingExternalLink(approved: false)
+                }
+            }
+        )
+    }
+
+    private func updateTerminalFocusOwnership(competingControlPresented: Bool) {
+        terminalHostModel.setFocusOwnershipAllowed(
+            !competingControlPresented && terminalCanOwnFocus
+        )
+    }
+
+    @ViewBuilder
+    private var recordingIndicator: some View {
+        if let recorder = session.recorder, recorder.isRecording {
+            if recorder.capturesInput {
+                Label("INPUT REC", systemImage: "keyboard.fill")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.red, in: Capsule())
+                    .accessibilityLabel("Recording terminal output and keyboard input")
+            } else {
+                Circle()
+                    .fill(.red)
+                    .frame(width: 9, height: 9)
+                    .accessibilityLabel("Recording terminal output only")
+            }
+        }
+    }
+
+    private func startRecording(capturesInput: Bool) {
+        if session.recorder == nil {
+            session.recorder = SessionRecorder()
+        }
+        session.recorder?.start(
+            sessionID: session.id,
+            serverName: session.server.name,
+            host: session.server.host,
+            width: terminalColumns,
+            height: terminalRows,
+            capturesInput: capturesInput
+        )
+
+        guard session.recorder?.isRecording == true else {
+            notificationManager.post(
+                icon: "exclamationmark.triangle.fill",
+                title: "Recording failed",
+                message: session.recorder?.lastError,
+                style: .error
+            )
+            return
+        }
+        notificationManager.post(
+            icon: capturesInput ? "keyboard.fill" : "record.circle",
+            title: capturesInput ? "Recording input and output" : "Recording output only",
+            message: capturesInput ? "Keyboard input may contain secrets." : nil,
+            style: capturesInput ? .warning : .info
         )
     }
 
@@ -316,16 +573,13 @@ struct TerminalWindowView: View {
 
     @ViewBuilder
     private var terminalDisplayBackground: some View {
-        // The window-level .ultraThinMaterial (line 42) blurs the passthrough.
-        // This background just provides the theme color overlay.
-        // Lower glassAmount = more solid color. Higher = more see-through to the
-        // window's frosted glass blur underneath.
+        // Opacity is deliberately separate from the window's blur layer.
+        // Zero leaves the terminal canvas completely unpainted.
         let bg = rgbaComponents(settingsManager.currentTheme.background.color)
-        let glassAmount = effectiveBlurBackground
 
         Rectangle()
             .fill(Color(red: bg.red, green: bg.green, blue: bg.blue))
-            .opacity(effectiveWindowOpacity * (1.0 - glassAmount))
+            .opacity(effectiveWindowOpacity)
     }
 
     private var tintColor: Color? {
@@ -342,28 +596,36 @@ struct TerminalWindowView: View {
         return Color(hex: tint)
     }
 
+    private var effectiveGlassFrost: String {
+        settingsManager.sessionOverride(for: session.id)?.glassFrost ?? settingsManager.glassFrost
+    }
+
+    private var effectiveGlassAppearance: TerminalGlassAppearance {
+        TerminalGlassAppearance.resolved(
+            globalOpacity: settingsManager.windowOpacity,
+            globalBlur: settingsManager.blurBackground,
+            sessionOverride: settingsManager.sessionOverride(for: session.id)
+        )
+    }
+
     private var effectiveWindowOpacity: Double {
-        settingsManager.sessionOverride(for: session.id)?.windowOpacity ?? settingsManager.windowOpacity
+        effectiveGlassAppearance.opacity
     }
 
     private var effectiveBlurBackground: Double {
-        settingsManager.sessionOverride(for: session.id)?.blurBackground ?? settingsManager.blurBackground
+        effectiveGlassAppearance.blur
     }
 
-    private var effectiveInteractiveGlassEffects: Bool {
-        settingsManager.sessionOverride(for: session.id)?.interactiveGlassEffects ?? settingsManager.interactiveGlassEffects
+    private var effectiveInteractiveGlass: Bool {
+        settingsManager.sessionOverride(for: session.id)?.interactiveGlass ?? settingsManager.interactiveGlass
     }
 
     private var effectiveGlassTint: String {
         settingsManager.sessionOverride(for: session.id)?.glassTint ?? settingsManager.glassTint
     }
 
-    private var effectiveGlassMaterialStyle: String {
-        settingsManager.sessionOverride(for: session.id)?.glassMaterialStyle ?? settingsManager.glassMaterialStyle
-    }
-
     private var resolvedMaterial: Material {
-        switch effectiveGlassMaterialStyle {
+        switch effectiveGlassFrost {
         case "thin": return .thinMaterial
         case "regular": return .regularMaterial
         case "thick": return .thickMaterial
@@ -371,23 +633,125 @@ struct TerminalWindowView: View {
         }
     }
 
-    private func runCloseGooseCallIfNeeded() {
-        guard !didRunCloseGooseCall else { return }
-        didRunCloseGooseCall = true
-    }
-
     private func duplicateSession() {
         Task {
-            let _ = await sessionManager.createSession(for: session.server)
+            do {
+                let launch = try await sessionManager.duplicateAuthorizedSession(
+                    from: session,
+                    settingsManager: settingsManager
+                )
+                if launch.session.state == .connected {
+                    openWindow(id: "terminal", value: launch.session.id)
+                } else if let challenge = launch.session.pendingHostKeyChallenge {
+                    if interactiveHostKeyTrustIsAllowed {
+                        // The new window owns the exact trust prompt and reconnect
+                        // lifecycle for its per-connection challenge.
+                        openWindow(id: "terminal", value: launch.session.id)
+                    } else {
+                        notificationManager.post(
+                            icon: "lock.shield",
+                            title: "Duplicate Blocked",
+                            message: strictHostKeyFailureMessage(for: challenge),
+                            style: .error
+                        )
+                        launch.session.pendingHostKeyChallenge = nil
+                        sessionManager.closeSession(launch.session)
+                    }
+                } else if case .error(let message) = launch.session.state {
+                    notificationManager.post(
+                        icon: "exclamationmark.triangle",
+                        title: "Duplicate Failed",
+                        message: message,
+                        style: .error
+                    )
+                    sessionManager.closeSession(launch.session)
+                }
+            } catch {
+                notificationManager.post(
+                    icon: "exclamationmark.triangle",
+                    title: "Duplicate Failed",
+                    message: error.localizedDescription,
+                    style: .error
+                )
+            }
         }
+    }
+
+    private var hostTrustBinding: Binding<Bool> {
+        Binding(
+            get: { interactiveHostKeyTrustIsAllowed && session.pendingHostKeyChallenge != nil },
+            set: { isPresented in
+                if !isPresented {
+                    if interactiveHostKeyTrustIsAllowed {
+                        session.pendingHostKeyChallenge = nil
+                    } else {
+                        rejectPendingHostKeyChallengeInStrictMode()
+                    }
+                }
+            }
+        )
+    }
+
+    private var interactiveHostKeyTrustIsAllowed: Bool {
+        settingsManager.hostKeyVerificationMode == HostKeyVerificationMode.ask.rawValue
+    }
+
+    private func strictHostKeyFailureMessage(for challenge: HostKeyTrustChallenge) -> String {
+        let reason = challenge.reason == .changed
+            ? "the presented key does not match the saved key"
+            : "the presented key has not been saved"
+        return "Strict host-key verification blocked the connection to \(challenge.host):\(challenge.port) because \(reason). No trust decision was recorded."
+    }
+
+    private func rejectPendingHostKeyChallengeInStrictMode() {
+        guard !interactiveHostKeyTrustIsAllowed,
+              let challenge = session.pendingHostKeyChallenge else { return }
+        session.pendingHostKeyChallenge = nil
+        notificationManager.post(
+            icon: "lock.shield",
+            title: "Host Key Rejected",
+            message: strictHostKeyFailureMessage(for: challenge),
+            style: .error
+        )
+    }
+
+    private func trustAndReconnect(_ challenge: HostKeyTrustChallenge) {
+        guard interactiveHostKeyTrustIsAllowed else {
+            rejectPendingHostKeyChallengeInStrictMode()
+            return
+        }
+        do {
+            try sessionManager.trustHostKey(challenge, for: session)
+            session.pendingHostKeyChallenge = nil
+            reconnectSession()
+        } catch {
+            notificationManager.post(
+                icon: "exclamationmark.triangle",
+                title: "Trust Failed",
+                message: error.localizedDescription,
+                style: .error
+            )
+        }
+    }
+
+    private func closeTerminalSession() {
+        sessionManager.closeSession(session)
+        dismiss()
     }
 
     private func reconnectSession() {
         session.cancelReconnect()
         Task {
-            session.disconnect()
-            try? await Task.sleep(for: .seconds(1))
-            await session.connect()
+            do {
+                try await sessionManager.reconnect(session, settingsManager: settingsManager)
+            } catch {
+                notificationManager.post(
+                    icon: "exclamationmark.triangle",
+                    title: "Reconnect Failed",
+                    message: error.localizedDescription,
+                    style: .error
+                )
+            }
         }
     }
 
@@ -459,32 +823,7 @@ struct TerminalWindowView: View {
             .accessibilityLabel(isImmersiveFocusActive ? "Exit Focus Mode" : "Focus Mode")
             .help(isImmersiveFocusActive ? "Exit Focus Mode" : "Focus Mode")
 
-            Button {
-                Task {
-                    if sharePlayManager.isActive {
-                        sharePlayManager.stopSharing()
-                    } else {
-                        await sharePlayManager.startSharing(
-                            serverName: session.server.name,
-                            sessionID: session.id
-                        )
-                    }
-                }
-            } label: {
-                Image(systemName: "shareplay")
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(sharePlayManager.isActive ? .green : .primary)
-            .disabled(session.state != .connected)
-            .accessibilityLabel(sharePlayManager.isActive ? "Stop Sharing" : "Share Terminal")
-            .help(sharePlayManager.isActive ? "Stop Sharing" : "Share Terminal")
-
-            if session.recorder?.isRecording == true {
-                Circle()
-                    .fill(.red)
-                    .frame(width: 10, height: 10)
-                    .accessibilityLabel("Recording in progress")
-            }
+            recordingIndicator
 
             Menu {
                 Button {
@@ -501,6 +840,7 @@ struct TerminalWindowView: View {
                     Label("Clear", systemImage: "trash")
                 }
 
+                #if DEBUG
                 Button {
                     let context = HTMLPreviewContext(
                         sessionID: session.id,
@@ -510,6 +850,7 @@ struct TerminalWindowView: View {
                 } label: {
                     Label("HTML Preview", systemImage: "safari")
                 }
+                #endif
 
                 Button {
                     showingSnippetPicker = true
@@ -522,25 +863,25 @@ struct TerminalWindowView: View {
 
                 if session.recorder?.isRecording == true {
                     Button {
-                        let _ = session.recorder?.stop()
-                        notificationManager.post(icon: "stop.circle", title: "Recording saved", style: .info)
+                        let recording = session.recorder?.stop()
+                        if recording?.isComplete == true {
+                            notificationManager.post(icon: "stop.circle", title: "Recording saved", style: .info)
+                        } else {
+                            notificationManager.post(
+                                icon: "exclamationmark.triangle.fill",
+                                title: "Recording was not saved",
+                                message: session.recorder?.lastError,
+                                style: .error
+                            )
+                        }
                     } label: {
                         Label("Stop Recording", systemImage: "stop.circle.fill")
                     }
                 } else {
                     Button {
-                        if session.recorder == nil {
-                            session.recorder = SessionRecorder()
-                        }
-                        session.recorder?.start(
-                            sessionID: session.id,
-                            serverName: session.server.name,
-                            host: session.server.host,
-                            width: 140, height: 40
-                        )
-                        notificationManager.post(icon: "record.circle", title: "Recording started", style: .info)
+                        showingRecordingConsent = true
                     } label: {
-                        Label("Start Recording", systemImage: "record.circle")
+                        Label("Start Recording…", systemImage: "record.circle")
                     }
                     .disabled(session.state != .connected)
                 }
@@ -577,8 +918,7 @@ struct TerminalWindowView: View {
                         if settingsManager.confirmBeforeClosing && session.state == .connected {
                             showingCloseConfirmation = true
                         } else {
-                            session.disconnect()
-                            dismiss()
+                            closeTerminalSession()
                         }
                     } label: {
                         Label("Disconnect", systemImage: "xmark.circle")
@@ -596,6 +936,7 @@ struct TerminalWindowView: View {
             } label: {
                 Image(systemName: "gearshape")
             }
+            .menuOrder(.fixed)
             .menuStyle(.button)
             .buttonStyle(.borderless)
             .help("Tools")
@@ -615,13 +956,38 @@ struct TerminalWindowView: View {
                 .textFieldStyle(.plain)
                 .submitLabel(.search)
                 .focused($isSearchFieldFocused)
+                .onSubmit {
+                    terminalSearchFound = terminalHostModel.findNext(searchQuery)
+                }
+                .onChange(of: searchQuery) { _, _ in
+                    terminalHostModel.clearSearch()
+                    terminalSearchFound = nil
+                }
                 .accessibilityLabel("Search terminal output")
 
-            if !searchQuery.isEmpty {
-                Text("\(session.searchOutput(searchQuery).count)")
+            if terminalSearchFound == false {
+                Text("No match")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+
+            Button {
+                terminalSearchFound = terminalHostModel.findPrevious(searchQuery)
+            } label: {
+                Image(systemName: "chevron.up")
+            }
+            .buttonStyle(.plain)
+            .disabled(searchQuery.isEmpty)
+            .accessibilityLabel("Previous match")
+
+            Button {
+                terminalSearchFound = terminalHostModel.findNext(searchQuery)
+            } label: {
+                Image(systemName: "chevron.down")
+            }
+            .buttonStyle(.plain)
+            .disabled(searchQuery.isEmpty)
+            .accessibilityLabel("Next match")
 
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
@@ -711,6 +1077,74 @@ struct TerminalWindowView: View {
     }
 }
 
+private struct TerminalPasteReviewSheet: View {
+    let request: SwiftTermPasteReview
+    let onCancel: () -> Void
+    let onPaste: (String) -> Void
+    @State private var editedText: String
+
+    init(
+        request: SwiftTermPasteReview,
+        onCancel: @escaping () -> Void,
+        onPaste: @escaping (String) -> Void
+    ) {
+        self.request = request
+        self.onCancel = onCancel
+        self.onPaste = onPaste
+        _editedText = State(initialValue: request.content)
+    }
+
+    private var editedByteCount: Int { editedText.utf8.count }
+    private var canPaste: Bool {
+        !request.exceedsMaximumSize && SwiftTermPastePolicy.isAllowed(editedText)
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(request.bracketedPasteMode
+                    ? "The remote program requested bracketed paste. Review the content before it is sent."
+                    : "Multiline or large pasted content can execute multiple shell commands. Review it before sending.")
+                    .foregroundStyle(.secondary)
+
+                LabeledContent("Original size", value: "\(request.byteCount) bytes, \(request.lineCount) lines")
+
+                if request.exceedsMaximumSize {
+                    ContentUnavailableView(
+                        "Paste Too Large",
+                        systemImage: "doc.badge.ellipsis",
+                        description: Text("The clipboard exceeds the \(SwiftTermPastePolicy.maximumPayloadBytes)-byte terminal paste limit. Nothing was sent.")
+                    )
+                } else {
+                    TextEditor(text: $editedText)
+                        .font(.system(.body, design: .monospaced))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityLabel("Editable terminal paste content")
+                    Text("\(editedByteCount) of \(SwiftTermPastePolicy.maximumPayloadBytes) bytes")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(editedByteCount > SwiftTermPastePolicy.maximumPayloadBytes ? .red : .secondary)
+                }
+            }
+            .padding()
+            .navigationTitle("Review Terminal Paste")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: onCancel)
+                }
+                if !request.exceedsMaximumSize {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Paste") { onPaste(editedText) }
+                            .disabled(!canPaste)
+                    }
+                }
+            }
+        }
+        .frame(minWidth: 560, minHeight: 420)
+        .interactiveDismissDisabled()
+    }
+}
+
 
 private enum TerminalSettingsModalTab: Hashable {
     case terminal
@@ -736,60 +1170,72 @@ struct TerminalOverridesSettingsView: View {
                 LabeledContent("Status", value: session.state.displayName)
             }
 
-            Section("Window Overrides") {
-                HStack {
-                    Text("Window opacity")
-                    Spacer()
-                    Slider(
-                        value: Binding(
-                            get: { sessionOverride.windowOpacity ?? settings.windowOpacity },
-                            set: { newValue in
-                                settings.updateSessionOverride(for: session.id) { override in
-                                    override.windowOpacity = newValue
-                                }
-                            }
-                        ),
-                        in: 0.5...1.0
-                    )
-                    .frame(maxWidth: 220)
-                    Text("\(Int((sessionOverride.windowOpacity ?? settings.windowOpacity) * 100))%")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 44, alignment: .trailing)
+            Section("Glass (this session)") {
+                Picker("Frost", selection: Binding(
+                    get: { sessionOverride.glassFrost ?? settings.glassFrost },
+                    set: { newValue in
+                        settings.updateSessionOverride(for: session.id) { override in
+                            override.glassFrost = newValue
+                        }
+                    }
+                )) {
+                    Text("Light").tag("ultraThin")
+                    Text("Medium").tag("thin")
+                    Text("Heavy").tag("regular")
+                    Text("Max").tag("thick")
                 }
 
-                HStack {
-                    Text("Glass material")
-                    Spacer()
-                    Slider(
-                        value: Binding(
-                            get: { sessionOverride.blurBackground ?? settings.blurBackground },
-                            set: { newValue in
-                                settings.updateSessionOverride(for: session.id) { override in
-                                    override.blurBackground = newValue
-                                }
+                Slider(
+                    value: Binding(
+                        get: { sessionOverride.windowOpacity ?? settings.windowOpacity },
+                        set: { newValue in
+                            settings.updateSessionOverride(for: session.id) { override in
+                                override.windowOpacity = newValue
                             }
-                        ),
-                        in: 0.0...1.0
-                    )
-                    .frame(maxWidth: 220)
-                    Text("\(Int((sessionOverride.blurBackground ?? settings.blurBackground) * 100))%")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 44, alignment: .trailing)
+                        }
+                    ),
+                    in: 0.0...1.0
+                ) {
+                    Text("Opacity")
+                } minimumValueLabel: {
+                    Text("Transparent")
+                } maximumValueLabel: {
+                    Text("Opaque")
+                }
+
+                Slider(
+                    value: Binding(
+                        get: { sessionOverride.blurBackground ?? settings.blurBackground },
+                        set: { newValue in
+                            settings.updateSessionOverride(for: session.id) { override in
+                                override.blurBackground = newValue
+                            }
+                        }
+                    ),
+                    in: 0.0...1.0
+                ) {
+                    Text("Blur")
+                } minimumValueLabel: {
+                    Text("None")
+                } maximumValueLabel: {
+                    Text("Maximum")
                 }
 
                 Toggle(
-                    "Interactive glass effects",
+                    "Interactive glass",
                     isOn: Binding(
-                        get: { sessionOverride.interactiveGlassEffects ?? settings.interactiveGlassEffects },
+                        get: { sessionOverride.interactiveGlass ?? settings.interactiveGlass },
                         set: { newValue in
                             settings.updateSessionOverride(for: session.id) { override in
-                                override.interactiveGlassEffects = newValue
+                                override.interactiveGlass = newValue
                             }
                         }
                     )
                 )
+
+                Text("Opacity and blur remain independent. Set both to zero for a completely transparent terminal.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 GlassTintPicker(
                     value: Binding(
@@ -802,27 +1248,13 @@ struct TerminalOverridesSettingsView: View {
                     )
                 )
 
-                Picker("Glass material", selection: Binding(
-                    get: { sessionOverride.glassMaterialStyle ?? settings.glassMaterialStyle },
-                    set: { newValue in
-                        settings.updateSessionOverride(for: session.id) { override in
-                            override.glassMaterialStyle = newValue
-                        }
-                    }
-                )) {
-                    Text("Ultra Thin").tag("ultraThin")
-                    Text("Thin").tag("thin")
-                    Text("Regular").tag("regular")
-                    Text("Thick").tag("thick")
-                }
-
                 Button("Reset Overrides", role: .destructive) {
                     settings.updateSessionOverride(for: session.id) { override in
+                        override.glassFrost = nil
                         override.windowOpacity = nil
                         override.blurBackground = nil
-                        override.interactiveGlassEffects = nil
+                        override.interactiveGlass = nil
                         override.glassTint = nil
-                        override.glassMaterialStyle = nil
                     }
                 }
             }
@@ -833,8 +1265,13 @@ struct TerminalOverridesSettingsView: View {
 }
 
 struct TerminalPortForwardingSettingsView: View {
+    @Environment(SessionManager.self) private var sessionManager
     @Bindable var session: TerminalSession
     @State private var showingAddForward = false
+
+    private var portForwards: [PortForward] {
+        sessionManager.portForwardManager.forwards(for: session.id)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -853,7 +1290,7 @@ struct TerminalPortForwardingSettingsView: View {
             .padding(.top, 14)
             .padding(.bottom, 8)
 
-            if session.portForwards.isEmpty {
+            if portForwards.isEmpty {
                 ContentUnavailableView {
                     Label("No Port Forwards", systemImage: "arrow.forward.square")
                 } description: {
@@ -861,7 +1298,7 @@ struct TerminalPortForwardingSettingsView: View {
                 }
             } else {
                 List {
-                    ForEach(session.portForwards) { forward in
+                    ForEach(portForwards) { forward in
                         HStack(spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(forward.type.displayName)
@@ -870,6 +1307,11 @@ struct TerminalPortForwardingSettingsView: View {
                                 Text(forward.displayString)
                                     .font(.subheadline)
                                     .fontWeight(.medium)
+                                if let errorMessage = forward.errorMessage {
+                                    Text(errorMessage)
+                                        .font(.caption)
+                                        .foregroundStyle(.red)
+                                }
                             }
 
                             Spacer()
@@ -884,6 +1326,7 @@ struct TerminalPortForwardingSettingsView: View {
                                 )
                             )
                             .labelsHidden()
+                            .disabled(forward.status == .starting || forward.status == .stopping)
 
                             Button(role: .destructive) {
                                 removeForward(forward.id)
@@ -898,30 +1341,51 @@ struct TerminalPortForwardingSettingsView: View {
             }
         }
         .sheet(isPresented: $showingAddForward) {
-            AddSessionPortForwardView { forward in
-                session.portForwards.append(forward)
+            AddSessionPortForwardView { forward, socks5Username, socks5Password in
+                if forward.type == .dynamic,
+                   let socks5Username,
+                   let socks5Password {
+                    sessionManager.portForwardManager.addForward(
+                        forward,
+                        to: session.id,
+                        socks5Username: socks5Username,
+                        socks5Password: socks5Password
+                    )
+                } else {
+                    sessionManager.portForwardManager.addForward(forward, to: session.id)
+                }
             }
         }
     }
 
     private func setForwardActive(_ id: UUID, isActive: Bool) {
-        guard let index = session.portForwards.firstIndex(where: { $0.id == id }) else { return }
-        session.portForwards[index].status = isActive ? .active : .inactive
+        guard let forward = portForwards.first(where: { $0.id == id }),
+              forward.isActive != isActive else {
+            return
+        }
+        sessionManager.portForwardManager.toggleForward(
+            forward,
+            in: session.id,
+            session: session
+        )
     }
 
     private func removeForward(_ id: UUID) {
-        session.portForwards.removeAll { $0.id == id }
+        guard let forward = portForwards.first(where: { $0.id == id }) else { return }
+        sessionManager.portForwardManager.removeForward(forward, from: session.id)
     }
 }
 
 struct AddSessionPortForwardView: View {
-    let onAdd: (PortForward) -> Void
+    let onAdd: (PortForward, String?, String?) -> Void
     @Environment(\.dismiss) private var dismiss
 
     @State private var forwardType: PortForward.ForwardType = .local
     @State private var localPort = ""
     @State private var remoteHost = "localhost"
     @State private var remotePort = ""
+    @State private var socks5Username = ""
+    @State private var socks5Password = ""
     @FocusState private var isLocalPortFocused: Bool
 
     var body: some View {
@@ -949,6 +1413,27 @@ struct AddSessionPortForwardView: View {
                             .keyboardType(.numberPad)
                     }
                 }
+
+                if forwardType == .dynamic {
+                    Section("SOCKS5 Authentication") {
+                        TextField("Username", text: $socks5Username)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        SecureField("Password", text: $socks5Password)
+
+                        Text("Required for every local SOCKS5 client. These credentials remain only in app memory for this session and are never saved with the forward.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if forwardType == .remote {
+                    Section("Remote Bind Safety") {
+                        Text("Remote listeners are limited to localhost, 127.0.0.1, or ::1 so the tunnel cannot expose a local service to the server's network.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             .navigationTitle("Add Port Forward")
             .onAppear { isLocalPortFocused = true }
@@ -966,7 +1451,11 @@ struct AddSessionPortForwardView: View {
                             remoteHost: forwardType == .dynamic ? "localhost" : remoteHost,
                             remotePort: forwardType == .dynamic ? 0 : remote
                         )
-                        onAdd(forward)
+                        onAdd(
+                            forward,
+                            forwardType == .dynamic ? socks5Username : nil,
+                            forwardType == .dynamic ? socks5Password : nil
+                        )
                         dismiss()
                     }
                     .disabled(!isValid)
@@ -977,9 +1466,18 @@ struct AddSessionPortForwardView: View {
 
     private var isValid: Bool {
         guard let local = Int(localPort), local > 0 && local <= 65535 else { return false }
-        if forwardType == .dynamic { return true }
+        if forwardType == .dynamic {
+            return PortForwardManager.socks5Credentials(
+                username: socks5Username,
+                password: socks5Password
+            ) != nil
+        }
         guard !remoteHost.isEmpty else { return false }
         guard let remote = Int(remotePort), remote > 0 && remote <= 65535 else { return false }
+        if forwardType == .remote {
+            let normalizedHost = remoteHost.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard ["localhost", "127.0.0.1", "::1"].contains(normalizedHost) else { return false }
+        }
         return true
     }
 }
@@ -1003,7 +1501,6 @@ extension TerminalWindowView {
     var recordingsListSheet: some View {
         NavigationStack {
             List {
-                let recordings = SessionRecorder.loadRecordings()
                 if recordings.isEmpty {
                     ContentUnavailableView("No Recordings", systemImage: "waveform", description: Text("Session recordings will appear here."))
                 } else {
@@ -1012,6 +1509,15 @@ extension TerminalWindowView {
                             HStack {
                                 Text(recording.serverName)
                                     .font(.headline)
+                                if !recording.isComplete {
+                                    Label("Interrupted", systemImage: "exclamationmark.triangle.fill")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(.orange)
+                                        .padding(.horizontal, 7)
+                                        .padding(.vertical, 3)
+                                        .background(Color.orange.opacity(0.15), in: Capsule())
+                                        .accessibilityLabel("Interrupted recording")
+                                }
                                 Spacer()
                                 Text("\(recording.eventCount) events")
                                     .font(.caption)
@@ -1035,15 +1541,18 @@ extension TerminalWindowView {
                                     .foregroundStyle(.tertiary)
                             }
                         }
-                        .swipeActions(edge: .trailing) {
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             Button(role: .destructive) {
-                                SessionRecorder.deleteRecording(recording)
+                                recordingPendingDeletion = recording
                             } label: {
                                 Label("Delete", systemImage: "trash")
                             }
                         }
                     }
                 }
+            }
+            .onAppear {
+                recordings = SessionRecorder.loadRecordings()
             }
             .navigationTitle("Recordings")
             .toolbar {
@@ -1052,7 +1561,73 @@ extension TerminalWindowView {
                 }
             }
         }
+        .alert(
+            "Delete Recording?",
+            isPresented: recordingDeletionBinding,
+            presenting: recordingPendingDeletion
+        ) { recording in
+            Button("Delete", role: .destructive) {
+                do {
+                    try SessionRecorder.deleteRecording(recording)
+                    recordings = SessionRecorder.loadRecordings()
+                } catch {
+                    recordingDeletionError = error.localizedDescription
+                }
+                recordingPendingDeletion = nil
+            }
+            Button("Cancel", role: .cancel) {
+                recordingPendingDeletion = nil
+            }
+        } message: { recording in
+            Text("Permanently delete the recording of \(recording.serverName)? This cannot be undone.")
+        }
+        .alert(
+            "Recording Deletion Failed",
+            isPresented: Binding(
+                get: { recordingDeletionError != nil },
+                set: { if !$0 { recordingDeletionError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { recordingDeletionError = nil }
+        } message: {
+            Text(recordingDeletionError ?? "The recording could not be deleted.")
+        }
         .frame(width: 520, height: 440)
+    }
+
+    private var recordingDeletionBinding: Binding<Bool> {
+        Binding(
+            get: { recordingPendingDeletion != nil },
+            set: { if !$0 { recordingPendingDeletion = nil } }
+        )
+    }
+}
+
+// MARK: - Glass Window Background
+
+/// Composites blur independently behind the terminal's theme-color opacity.
+/// A zero blur amount emits no backing at all, preserving true transparency.
+private struct GlassWindowBackground: ViewModifier {
+    let interactive: Bool
+    let material: Material
+    let blurAmount: Double
+
+    func body(content: Content) -> some View {
+        content.background {
+            if blurAmount > 0 {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(material)
+
+                    if interactive {
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .fill(.clear)
+                            .glassBackgroundEffect(in: .rect(cornerRadius: 24))
+                    }
+                }
+                .opacity(blurAmount)
+            }
+        }
     }
 }
 

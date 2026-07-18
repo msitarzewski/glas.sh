@@ -35,9 +35,12 @@ extension ByteBuffer {
             writeSFTPDate(accessModificationTime.modificationTime)
         }
         
-        for (key, value) in attributes.extended {
-            writeSSHString(key)
-            writeSSHString(value)
+        if !attributes.extended.isEmpty {
+            writeInteger(UInt32(attributes.extended.count))
+            for (key, value) in attributes.extended {
+                writeSSHString(key)
+                writeSSHString(value)
+            }
         }
     }
     
@@ -120,7 +123,9 @@ extension ByteBuffer {
     
     mutating func writeSSHString(_ string: String) {
         let oldWriterIndex = writerIndex
-        moveWriterIndex(forwardBy: 4)
+        // Writing the placeholder grows a zero-capacity buffer; moving the
+        // writer index alone would violate ByteBuffer's bounds precondition.
+        writeInteger(UInt32(0))
         writeString(string)
         setInteger(UInt32(writerIndex - oldWriterIndex - 4), at: oldWriterIndex)
     }

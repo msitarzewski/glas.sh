@@ -10,6 +10,7 @@
 		4C2451562E71897700F37CC4 /* RealityKitContent in Frameworks */ = {isa = PBXBuildFile; productRef = 4C2451552E71897700F37CC4 /* RealityKitContent */; };
 		AA000001000000000000000D /* glasWidgets.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = AA000001000000000000000E /* glasWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		D1A2B3C4E5F6789000AABB01 /* GlasSecretStore in Frameworks */ = {isa = PBXBuildFile; productRef = D1A2B3C4E5F6789000AABB02 /* GlasSecretStore */; };
+		E2A2B3C4E5F6789000AABB01 /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = E2A2B3C4E5F6789000AABB02 /* Citadel */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -100,6 +101,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				4C2451562E71897700F37CC4 /* RealityKitContent in Frameworks */,
+				E2A2B3C4E5F6789000AABB01 /* Citadel in Frameworks */,
 				D1A2B3C4E5F6789000AABB01 /* GlasSecretStore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -173,6 +175,7 @@
 			name = glas.sh;
 			packageProductDependencies = (
 				4C2451552E71897700F37CC4 /* RealityKitContent */,
+				E2A2B3C4E5F6789000AABB02 /* Citadel */,
 				D1A2B3C4E5F6789000AABB02 /* GlasSecretStore */,
 			);
 			productName = glas.sh;
@@ -256,7 +259,8 @@
 			mainGroup = 4C2451472E71897700F37CC4;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				D1A2B3C4E5F6789000AABB03 /* XCLocalSwiftPackageReference "../GlasSecretStore" */,
+				E2A2B3C4E5F6789000AABB03 /* XCLocalSwiftPackageReference "Packages/Citadel" */,
+				D1A2B3C4E5F6789000AABB03 /* XCLocalSwiftPackageReference "Packages/GlasSecretStore" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4C2451512E71897700F37CC4 /* Products */;
@@ -395,6 +399,7 @@
 		4C24516C2E71897900F37CC4 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -459,6 +464,7 @@
 		4C24516D2E71897900F37CC4 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -659,9 +665,13 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		D1A2B3C4E5F6789000AABB03 /* XCLocalSwiftPackageReference "../GlasSecretStore" */ = {
+		E2A2B3C4E5F6789000AABB03 /* XCLocalSwiftPackageReference "Packages/Citadel" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = ../GlasSecretStore;
+			relativePath = Packages/Citadel;
+		};
+		D1A2B3C4E5F6789000AABB03 /* XCLocalSwiftPackageReference "Packages/GlasSecretStore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/GlasSecretStore;
 		};
 /* End XCLocalSwiftPackageReference section */
 
@@ -672,8 +682,13 @@
 		};
 		D1A2B3C4E5F6789000AABB02 /* GlasSecretStore */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = D1A2B3C4E5F6789000AABB03 /* XCLocalSwiftPackageReference "../GlasSecretStore" */;
+			package = D1A2B3C4E5F6789000AABB03 /* XCLocalSwiftPackageReference "Packages/GlasSecretStore" */;
 			productName = GlasSecretStore;
+		};
+		E2A2B3C4E5F6789000AABB02 /* Citadel */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E2A2B3C4E5F6789000AABB03 /* XCLocalSwiftPackageReference "Packages/Citadel" */;
+			productName = Citadel;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

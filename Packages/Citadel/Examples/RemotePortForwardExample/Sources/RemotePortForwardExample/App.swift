@@ -75,7 +75,7 @@ struct RemotePortForwardExample: AsyncParsableCommand {
             print("🔑 Using password authentication")
             authMethod = .passwordBased(username: username, password: password)
         } else {
-            fatalError("Unreachable")
+            throw ValidationError("Either --password or --private-key must be provided")
         }
 
         // Capture values for use in the handler closure
