@@ -15,6 +15,18 @@
 
 ## Release (v1.0.0 App Store submission)
 - [Release Checklist](./release-checklist.md)
+- [Codex Completions Release Program](./releases/codex-completions/README.md)
+  - [Phase 00: Baseline and Governance](./releases/codex-completions/00-baseline-and-governance.md)
+  - [Phase 01: Session State and Authorization](./releases/codex-completions/01-session-state-and-authorization.md)
+  - [Phase 02: Secrets, Authentication, and Host Trust](./releases/codex-completions/02-secrets-authentication-and-host-trust.md)
+  - [Phase 03: Recording, Logging, Transfer, and AI Safety](./releases/codex-completions/03-recording-logging-transfer-and-ai-safety.md)
+  - [Phase 04: Terminal Correctness and Engine Boundary](./releases/codex-completions/04-terminal-correctness-and-engine-boundary.md)
+  - [Phase 05: Feature Completion and Honest UI](./releases/codex-completions/05-feature-completion-and-honest-ui.md)
+  - [Phase 06: Native Platform Foundation](./releases/codex-completions/06-native-platform-foundation.md)
+  - [Phase 07: Workspaces and Shell Integration](./releases/codex-completions/07-workspaces-and-shell-integration.md)
+  - [Phase 08: glassdb Metadata Sync](./releases/codex-completions/08-glassdb-metadata-sync.md)
+  - [Phase 09: Terminal Engine Evaluation](./releases/codex-completions/09-terminal-engine-evaluation.md)
+  - [Phase 10: Release Validation and Distribution](./releases/codex-completions/10-release-validation-and-distribution.md)
 - [App Store Listing Copy](./app-store-listing.md)
 - [Screenshot Shot-List](./screenshot-shotlist.md)
 
@@ -22,3 +34,4 @@
 - [2026-02](./tasks/2026-02/README.md)
 - [2026-03](./tasks/2026-03/README.md)
 - [2026-05](./tasks/2026-05/README.md)
+- [2026-07](./tasks/2026-07/README.md)

@@ -7,11 +7,13 @@
 
 import SwiftUI
 import Foundation
+import CoreGraphics
 import Security
 import Observation
 import Citadel
 import NIOCore
 import NIOSSH
+import Logging
 import RealityKitContent
 import os
 import GlasSecretStore
@@ -24,7 +26,6 @@ import CryptoKit
 enum HostKeyVerificationMode: String, Codable, CaseIterable {
     case ask = "Ask"
     case strict = "Strict"
-    case insecureAcceptAny = "Insecure (Accept Any)"
 }
 
 struct TrustedHostKeyEntry: Codable, Identifiable, Hashable {
@@ -94,6 +95,9 @@ struct ServerConfiguration: Identifiable, Codable, Hashable {
     var keepAliveInterval: Int // seconds
     var serverAliveCountMax: Int
     var forwardAgent: Bool
+    /// Explicit, per-host opt-in for compatibility algorithms. Existing
+    /// records with no value remain on the modern default policy.
+    var allowLegacyAlgorithms: Bool?
     var requestPTY: Bool
     var terminalType: String
     var environmentVariables: [String: String]
@@ -135,9 +139,14 @@ struct ServerConfiguration: Identifiable, Codable, Hashable {
         self.keepAliveInterval = 60
         self.serverAliveCountMax = 3
         self.forwardAgent = false
+        self.allowLegacyAlgorithms = false
         self.requestPTY = true
         self.terminalType = "xterm-256color"
         self.environmentVariables = [:]
+    }
+
+    var legacyAlgorithmsEnabled: Bool {
+        allowLegacyAlgorithms == true
     }
 }
 
@@ -188,34 +197,60 @@ struct HostKeyTrustRequiredError: Error {
     let challenge: HostKeyTrustChallenge
 }
 
-final class PromptingHostKeyValidator: NIOSSHClientServerAuthenticationDelegate, Sendable {
-    private static let challengeCache = OSAllocatedUnfairLock(initialState: [String: HostKeyTrustChallenge]())
+/// Per-connection challenge handoff for SSH libraries that wrap delegate errors.
+/// Avoiding global endpoint state prevents concurrent sessions from accepting
+/// one another's fingerprints.
+nonisolated final class HostKeyChallengeBox: Sendable {
+    private let value = OSAllocatedUnfairLock<HostKeyTrustChallenge?>(initialState: nil)
 
+    func store(_ challenge: HostKeyTrustChallenge) {
+        value.withLock { $0 = challenge }
+    }
+
+    func take() -> HostKeyTrustChallenge? {
+        value.withLock {
+            defer { $0 = nil }
+            return $0
+        }
+    }
+
+    func clear() {
+        value.withLock { $0 = nil }
+    }
+}
+
+final class PromptingHostKeyValidator: NIOSSHClientServerAuthenticationDelegate, Sendable {
     private let host: String
     private let port: Int
     private let trustedKeyBase64Set: Set<String>
     private let verificationMode: HostKeyVerificationMode
+    private let challengeBox: HostKeyChallengeBox
 
-    init(host: String, port: Int, trustedKeyBase64Set: Set<String>, verificationMode: HostKeyVerificationMode) {
+    init(
+        host: String,
+        port: Int,
+        trustedKeyBase64Set: Set<String>,
+        verificationMode: HostKeyVerificationMode,
+        challengeBox: HostKeyChallengeBox
+    ) {
         self.host = host
         self.port = port
         self.trustedKeyBase64Set = trustedKeyBase64Set
         self.verificationMode = verificationMode
+        self.challengeBox = challengeBox
     }
 
     func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
         let challenge = Self.challenge(from: hostKey, host: host, port: port, trustedKeyBase64Set: trustedKeyBase64Set)
-        Self.storeChallenge(challenge)
+        challengeBox.store(challenge)
 
         if trustedKeyBase64Set.contains(challenge.keyDataBase64) {
-            Self.clearChallenge(host: host, port: port)
+            challengeBox.clear()
             validationCompletePromise.succeed(())
             return
         }
 
         switch verificationMode {
-        case .insecureAcceptAny:
-            validationCompletePromise.succeed(())
         case .ask, .strict:
             validationCompletePromise.fail(HostKeyTrustRequiredError(challenge: challenge))
         }
@@ -245,28 +280,6 @@ final class PromptingHostKeyValidator: NIOSSHClientServerAuthenticationDelegate,
         )
     }
 
-    nonisolated private static func cacheKey(host: String, port: Int) -> String {
-        "\(host.lowercased()):\(port)"
-    }
-
-    private static func storeChallenge(_ challenge: HostKeyTrustChallenge) {
-        challengeCache.withLock {
-            $0[cacheKey(host: challenge.host, port: challenge.port)] = challenge
-        }
-    }
-
-    static func takeLatestChallenge(host: String, port: Int) -> HostKeyTrustChallenge? {
-        challengeCache.withLock {
-            $0.removeValue(forKey: cacheKey(host: host, port: port))
-        }
-    }
-
-    static func clearChallenge(host: String, port: Int) {
-        challengeCache.withLock {
-            _ = $0.removeValue(forKey: cacheKey(host: host, port: port))
-        }
-    }
-
     private static func hostKeyAlgorithm(fromWireData data: Data) -> String {
         guard data.count >= 4 else { return "unknown" }
         let length = data.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
@@ -284,9 +297,41 @@ final class PromptingHostKeyValidator: NIOSSHClientServerAuthenticationDelegate,
     }
 }
 
+enum SessionAuthenticationMaterial {
+    case password(SecureBytes)
+    case sshKey(SSHKeyMaterial)
+}
+
+struct PreparedServerAuthentication {
+    let serverID: UUID
+    let material: SessionAuthenticationMaterial
+}
+
+struct SessionConnectionPreparation {
+    let target: PreparedServerAuthentication
+    let jumpHosts: [PreparedServerAuthentication]
+}
+
+enum TerminalSessionLifecycleTransition: CaseIterable, Sendable {
+    case manualReconnect
+    case automaticReconnect
+    case explicitDisconnect
+    case cleanRemoteExit
+    case terminalError
+}
+
 @MainActor
 @Observable
 class TerminalSession: Identifiable, Hashable {
+    typealias TerminalWriteSink = @MainActor (Data) async throws -> Void
+    typealias TerminalResizeSink = @MainActor (_ rows: Int, _ columns: Int) async throws -> Void
+    typealias LifecycleHook = @MainActor (TerminalSessionLifecycleTransition) -> Task<Void, Never>?
+
+    private struct PendingTerminalWrite {
+        let data: Data
+        let presentsFailure: Bool
+    }
+
     let id: UUID
     var server: ServerConfiguration
     
@@ -295,46 +340,105 @@ class TerminalSession: Identifiable, Hashable {
     var terminalInputNonce: UInt64 = 0
     var closeWindowNonce: UInt64 = 0
     var currentDirectory: String = "~"
-    var portForwards: [PortForward] = []
     var pendingHostKeyChallenge: HostKeyTrustChallenge?
     var lastConnectionDiagnostics: String?
     var connectionProgress: ConnectionProgressStage?
     
     // Terminal properties
-    var scrollbackBuffer: [TerminalLine] = []
     let maxScrollback: Int = 10000
     
     // Jump host chain (resolved before connect, ordered first-hop to last-hop)
     var jumpHostChain: [ServerConfiguration] = []
+    var connectionPreparation: SessionConnectionPreparation?
 
     // SSH Connection
     private var sshConnection: SSHConnection?
-    nonisolated(unsafe) private var connectionTask: Task<Void, Never>?
-    nonisolated(unsafe) private var outputTask: Task<Void, Never>?
     private var pendingTerminalOutput = Data()
     private var pendingTerminalInputChunks: [Data] = []
-    nonisolated(unsafe) private var terminalFlushTask: Task<Void, Never>?
+    private var terminalFlushTask: Task<Void, Never>?
+    private var terminalFlushGeneration: UInt64 = 0
     private let terminalFlushInterval: Duration = .milliseconds(8)
+    private let terminalWriteSink: TerminalWriteSink?
+    private var pendingTerminalWrites: [PendingTerminalWrite] = []
+    private var terminalWriteTask: Task<Void, Never>?
+    private var terminalWriteGeneration: UInt64 = 0
+    private let terminalResizeSink: TerminalResizeSink?
+    private var pendingTerminalResize: (rows: Int, columns: Int)?
+    private var terminalResizeTask: Task<Void, Never>?
+    private var terminalResizeGeneration: UInt64 = 0
+    private var latestTerminalRows: Int = 40
+    private var latestTerminalColumns: Int = 140
     private var userInitiatedDisconnect: Bool = false
-    nonisolated(unsafe) private var reconnectTask: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
     var reconnectAttemptCount: Int = 0
     var recorder: SessionRecorder?
-    var sharePlayManager: SharePlayManager?
+    var reconnectPreparation: ((ServerConfiguration) async throws -> SessionConnectionPreparation)?
+    var automaticReconnectSucceeded: (() -> Void)?
+    private var lifecycleHook: LifecycleHook?
+    private var lifecycleCleanupPerformed = false
+    private var lifecycleCleanupTask: Task<Void, Never>?
 
-    init(server: ServerConfiguration) {
+    init(
+        server: ServerConfiguration,
+        terminalWriteSink: TerminalWriteSink? = nil,
+        terminalResizeSink: TerminalResizeSink? = nil
+    ) {
         self.id = UUID()
         self.server = server
-        self.sshConnection = SSHConnection(session: self)
+        self.terminalWriteSink = terminalWriteSink
+        self.terminalResizeSink = terminalResizeSink
+        let connection = SSHConnection(session: self)
+        connection.setPreferredTerminalSize(
+            rows: latestTerminalRows,
+            columns: latestTerminalColumns
+        )
+        self.sshConnection = connection
     }
 
-    deinit {
-        connectionTask?.cancel()
-        outputTask?.cancel()
+    isolated deinit {
         terminalFlushTask?.cancel()
+        terminalWriteTask?.cancel()
+        terminalResizeTask?.cancel()
         reconnectTask?.cancel()
     }
 
     func getSSHConnection() -> SSHConnection? { sshConnection }
+
+    func installLifecycleHook(_ hook: @escaping LifecycleHook) {
+        lifecycleHook = hook
+    }
+
+    /// Runs once for each attached SSH connection. Repeated terminal errors,
+    /// reconnect signals, and close requests for the same transport are harmless.
+    func performLifecycleCleanup(for transition: TerminalSessionLifecycleTransition) {
+        guard !lifecycleCleanupPerformed else { return }
+        lifecycleCleanupPerformed = true
+        lifecycleCleanupTask = lifecycleHook?(transition)
+    }
+
+    func awaitLifecycleCleanup() async {
+        await lifecycleCleanupTask?.value
+    }
+
+    /// Extends the current resource cleanup so callers awaiting the lifecycle
+    /// boundary also wait for the detached SSH transport to close. This is used
+    /// by synchronous error callbacks that cannot themselves `await`.
+    private func appendTransportDisconnectToLifecycleCleanup(_ connection: SSHConnection?) {
+        let resourceCleanup = lifecycleCleanupTask
+        lifecycleCleanupTask = Task {
+            await resourceCleanup?.value
+            await connection?.disconnect()
+        }
+    }
+
+    /// The sole boundary for detaching an SSH connection. Session-owned
+    /// resources are stopped before callers can disconnect or replace it.
+    func detachSSHConnection(for transition: TerminalSessionLifecycleTransition) -> SSHConnection? {
+        performLifecycleCleanup(for: transition)
+        let detachedConnection = sshConnection
+        sshConnection = nil
+        return detachedConnection
+    }
 
     // Hashable conformance
     static func == (lhs: TerminalSession, rhs: TerminalSession) -> Bool {
@@ -345,7 +449,7 @@ class TerminalSession: Identifiable, Hashable {
         hasher.combine(id)
     }
     
-    func connect(password: String? = nil) async {
+    func connect() async {
         userInitiatedDisconnect = false
         if state == .connecting {
             appendLine(TerminalLine(text: "Connection already in progress. Please wait…", style: .system))
@@ -357,27 +461,37 @@ class TerminalSession: Identifiable, Hashable {
             return
         }
 
+        if sshConnection == nil {
+            sshConnection = makeConfiguredSSHConnection()
+        }
+
         state = .connecting
         connectionProgress = .resolvingDNS
         lastConnectionDiagnostics = nil
         appendLine(TerminalLine(text: "Connecting to \(server.name)...", style: .system))
         
         do {
-            try await sshConnection?.connect(password: password, jumpHostChain: jumpHostChain)
+            guard let connectionPreparation else {
+                throw SSHError.invalidCredentialPreparation
+            }
+            self.connectionPreparation = nil
+            try await sshConnection?.connect(
+                preparation: connectionPreparation,
+                jumpHostChain: jumpHostChain
+            )
             pendingHostKeyChallenge = nil
             connectionProgress = nil
             lastConnectionDiagnostics = nil
             state = .connected
+            lifecycleCleanupPerformed = false
             appendLine(TerminalLine(text: "✓ Connected to \(server.username)@\(server.host)", style: .system))
         } catch {
             if let challengeError = error as? HostKeyTrustRequiredError {
                 pendingHostKeyChallenge = challengeError.challenge
-            } else if let cachedChallenge = PromptingHostKeyValidator.takeLatestChallenge(
-                host: server.host,
-                port: server.port
-            ) {
+            } else if let cachedChallenge = sshConnection?.takePendingHostKeyChallenge() {
                 pendingHostKeyChallenge = cachedChallenge
             }
+            let failedConnection = detachSSHConnection(for: .terminalError)
             let mode = HostKeyVerificationMode(
                 rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.hostKeyVerificationMode) ?? ""
             ) ?? .ask
@@ -388,32 +502,56 @@ class TerminalSession: Identifiable, Hashable {
                     message = "Host key verification required for \(challenge.host):\(challenge.port)."
                 case .strict:
                     message = "Strict host-key verification blocked the connection to \(challenge.host):\(challenge.port)."
-                case .insecureAcceptAny:
-                    message = SSHConnection.userFacingMessage(for: error, server: server)
                 }
             } else {
                 message = SSHConnection.userFacingMessage(for: error, server: server)
             }
-            Logger.ssh.error("SSH connect error (\(self.server.host):\(self.server.port)): \(error)")
+            Logger.ssh.error(
+                "SSH connect error (\(self.server.host):\(self.server.port)); category=\(String(reflecting: type(of: error)), privacy: .public)"
+            )
             lastConnectionDiagnostics =
-                "Attempted: \(server.host):\(server.port)\nAuth method: \(server.authMethod.displayName)\nHost key mode: \(mode.rawValue)\nRaw error: \(String(describing: error))"
+                "Attempted: \(server.host):\(server.port)\nAuth method: \(server.authMethod.displayName)\nHost key mode: \(mode.rawValue)\nFailure category: \(String(reflecting: type(of: error)))"
             connectionProgress = nil
             state = .error(message)
+            recorder?.finalize()
             appendLine(TerminalLine(text: "✗ \(message)", style: .error))
+            await awaitLifecycleCleanup()
+            await failedConnection?.disconnect()
         }
     }
     
     func disconnect() {
         userInitiatedDisconnect = true
+        flushPendingTerminalOutputNow()
+        cancelPendingTerminalWrites()
+        cancelPendingTerminalResizes()
+        recorder?.finalize()
         reconnectTask?.cancel()
         reconnectTask = nil
-        Task {
-            await sshConnection?.disconnect()
-        }
-        connectionTask?.cancel()
-        outputTask?.cancel()
+        let connectionToDisconnect = detachSSHConnection(for: .explicitDisconnect)
         connectionProgress = nil
         state = .disconnected
+        Task {
+            await self.awaitLifecycleCleanup()
+            await connectionToDisconnect?.disconnect()
+        }
+    }
+
+    func reconnect() async {
+        state = .reconnecting
+        flushPendingTerminalOutputNow()
+        cancelPendingTerminalWrites()
+        cancelPendingTerminalResizes()
+        recorder?.finalize()
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        let connectionToDisconnect = detachSSHConnection(for: .manualReconnect)
+        await awaitLifecycleCleanup()
+        await connectionToDisconnect?.disconnect()
+        sshConnection = makeConfiguredSSHConnection()
+        connectionProgress = nil
+        state = .disconnected
+        await connect()
     }
 
     func attemptAutoReconnect(autoReconnectEnabled: Bool) {
@@ -422,15 +560,24 @@ class TerminalSession: Identifiable, Hashable {
         else { return }
 
         reconnectTask?.cancel()
+        flushPendingTerminalOutputNow()
+        cancelPendingTerminalWrites()
+        cancelPendingTerminalResizes()
         reconnectAttemptCount = 0
         state = .reconnecting
         appendLine(TerminalLine(text: "Connection lost. Auto-reconnecting...", style: .system))
+        let initialConnection = detachSSHConnection(for: .automaticReconnect)
 
         reconnectTask = Task { [weak self] in
             let maxAttempts = 5
+            var connectionToDisconnect = initialConnection
 
             for attempt in 1...maxAttempts {
                 guard !Task.isCancelled, let self else { return }
+
+                await self.awaitLifecycleCleanup()
+                await connectionToDisconnect?.disconnect()
+                connectionToDisconnect = nil
 
                 self.reconnectAttemptCount = attempt
                 let delay = min(UInt64(pow(2.0, Double(attempt - 1))), 30)
@@ -445,22 +592,44 @@ class TerminalSession: Identifiable, Hashable {
 
                 guard !Task.isCancelled else { return }
 
-                await self.sshConnection?.disconnect()
-                self.sshConnection = SSHConnection(session: self)
+                let preparation: SessionConnectionPreparation
+                do {
+                    guard let reconnectPreparation = self.reconnectPreparation else {
+                        throw SSHError.invalidCredentialPreparation
+                    }
+                    preparation = try await reconnectPreparation(self.server)
+                } catch {
+                    self.state = .error(error.localizedDescription)
+                    self.appendLine(TerminalLine(text: "Auto-reconnect blocked: \(error.localizedDescription)", style: .error))
+                    self.reconnectTask = nil
+                    return
+                }
+
+                guard !Task.isCancelled else { return }
+                self.connectionPreparation = preparation
+                self.sshConnection = self.makeConfiguredSSHConnection()
                 await self.connect()
 
                 if self.state == .connected {
                     self.appendLine(TerminalLine(text: "Reconnected successfully.", style: .system))
                     self.reconnectTask = nil
+                    self.automaticReconnectSucceeded?()
                     return
                 }
 
                 if attempt < maxAttempts {
+                    connectionToDisconnect = self.sshConnection
+                    self.sshConnection = nil
+                    self.cancelPendingTerminalWrites()
+                    self.cancelPendingTerminalResizes()
                     self.state = .reconnecting
                 }
             }
 
             guard let self, !Task.isCancelled else { return }
+            let failedConnection = self.sshConnection
+            self.sshConnection = nil
+            await failedConnection?.disconnect()
             self.state = .error("Reconnect failed after 5 attempts")
             self.appendLine(TerminalLine(text: "Auto-reconnect failed after 5 attempts.", style: .error))
             self.reconnectTask = nil
@@ -478,30 +647,39 @@ class TerminalSession: Identifiable, Hashable {
     }
     
     func sendCommand(_ command: String) {
-        Task {
-            do {
-                try await sshConnection?.sendCommand(command)
-            } catch {
-                appendLine(TerminalLine(text: "Error: \(error.localizedDescription)", style: .error))
-            }
+        guard state == .connected else {
+            appendLine(TerminalLine(text: "Error: terminal is not connected.", style: .error))
+            return
         }
+        let data = Data((command + "\n").utf8)
+        // Generated commands, suggested fixes, and snippets share the exact
+        // same consented input-recording path as keyboard bytes.
+        recorder?.recordInput(data)
+        enqueueTerminalWrite(data, presentsFailure: true)
     }
     
     func sendTerminalData(_ data: Data) {
-        recorder?.recordInput(data)
-        Task {
-            do {
-                try await sshConnection?.sendBytes(data)
-            } catch {
-                Logger.ssh.error("Error sending terminal data: \(error)")
-            }
+        guard state == .connected else {
+            Logger.ssh.debug("Ignoring terminal input while session is not connected")
+            return
         }
+        recorder?.recordInput(data)
+        enqueueTerminalWrite(data, presentsFailure: false)
     }
 
     func handleCleanRemoteExit() {
+        let connectionToDisconnect = detachSSHConnection(for: .cleanRemoteExit)
+        flushPendingTerminalOutputNow()
+        cancelPendingTerminalWrites()
+        cancelPendingTerminalResizes()
+        recorder?.finalize()
         connectionProgress = nil
         state = .disconnected
         closeWindowNonce &+= 1
+        Task {
+            await self.awaitLifecycleCleanup()
+            await connectionToDisconnect?.disconnect()
+        }
     }
     
     func appendLine(_ line: TerminalLine) {
@@ -510,16 +688,16 @@ class TerminalSession: Identifiable, Hashable {
         // Manage scrollback
         if output.count > maxScrollback {
             let excess = output.count - maxScrollback
-            scrollbackBuffer.append(contentsOf: output.prefix(excess))
             output.removeFirst(excess)
         }
     }
     
     func clearScreen() {
         let clearSequence = "\u{1b}[2J\u{1b}[H"
-        terminalFlushTask?.cancel()
-        terminalFlushTask = nil
-        pendingTerminalOutput.removeAll(keepingCapacity: true)
+        // Preserve bytes that arrived immediately before the user's clear
+        // action. SwiftTerm must observe them before the clear sequence so the
+        // transport boundary never silently discards remote output.
+        flushPendingTerminalOutputNow()
         if let clearData = clearSequence.data(using: .utf8) {
             emitTerminalChunk(clearData)
         }
@@ -533,6 +711,12 @@ class TerminalSession: Identifiable, Hashable {
     }
 
     func reportError(_ message: String) {
+        let failedConnection = detachSSHConnection(for: .terminalError)
+        appendTransportDisconnectToLifecycleCleanup(failedConnection)
+        flushPendingTerminalOutputNow()
+        cancelPendingTerminalWrites()
+        cancelPendingTerminalResizes()
+        recorder?.finalize()
         connectionProgress = nil
         state = .error(message)
         appendLine(TerminalLine(text: "✗ \(message)", style: .error))
@@ -545,27 +729,21 @@ class TerminalSession: Identifiable, Hashable {
     func feedTerminalData(_ data: Data) {
         pendingTerminalOutput.append(data)
         recorder?.recordOutput(data)
-        if let sharePlay = sharePlayManager, sharePlay.isActive {
-            Task { await sharePlay.broadcastOutput(data) }
-        }
         scheduleTerminalFlush()
     }
     
     func updateTerminalGeometry(rows: Int, columns: Int) {
         let clampedRows = max(8, rows)
         let clampedColumns = max(20, columns)
+        latestTerminalRows = clampedRows
+        latestTerminalColumns = clampedColumns
+        recorder?.recordResize(width: clampedColumns, height: clampedRows)
 
         sshConnection?.setPreferredTerminalSize(rows: clampedRows, columns: clampedColumns)
 
         guard state == .connected else { return }
-
-        Task {
-            do {
-                try await sshConnection?.resizeTerminal(rows: clampedRows, columns: clampedColumns)
-            } catch {
-                Logger.ssh.error("Failed to resize remote PTY: \(error)")
-            }
-        }
+        pendingTerminalResize = (rows: clampedRows, columns: clampedColumns)
+        scheduleTerminalResizeDrainIfNeeded()
     }
 
     func drainTerminalInputChunks() -> [Data] {
@@ -582,9 +760,15 @@ class TerminalSession: Identifiable, Hashable {
 
     private func scheduleTerminalFlush() {
         guard terminalFlushTask == nil else { return }
+        let generation = terminalFlushGeneration
         terminalFlushTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            try? await Task.sleep(for: self.terminalFlushInterval)
+            do {
+                try await Task.sleep(for: self.terminalFlushInterval)
+            } catch {
+                return
+            }
+            guard generation == self.terminalFlushGeneration else { return }
             self.flushPendingTerminalOutput()
             self.terminalFlushTask = nil
             if !self.pendingTerminalOutput.isEmpty {
@@ -598,6 +782,143 @@ class TerminalSession: Identifiable, Hashable {
         let chunk = pendingTerminalOutput
         pendingTerminalOutput.removeAll(keepingCapacity: true)
         emitTerminalChunk(chunk)
+    }
+
+    private func flushPendingTerminalOutputNow() {
+        terminalFlushGeneration &+= 1
+        terminalFlushTask?.cancel()
+        terminalFlushTask = nil
+        flushPendingTerminalOutput()
+    }
+
+    private func enqueueTerminalWrite(_ data: Data, presentsFailure: Bool) {
+        guard !data.isEmpty else { return }
+        pendingTerminalWrites.append(PendingTerminalWrite(
+            data: data,
+            presentsFailure: presentsFailure
+        ))
+        scheduleTerminalWriteDrainIfNeeded()
+    }
+
+    private func scheduleTerminalWriteDrainIfNeeded() {
+        guard terminalWriteTask == nil, !pendingTerminalWrites.isEmpty else { return }
+        let generation = terminalWriteGeneration
+        terminalWriteTask = Task { @MainActor [weak self] in
+            await self?.drainTerminalWrites(generation: generation)
+        }
+    }
+
+    private func drainTerminalWrites(generation: UInt64) async {
+        while generation == terminalWriteGeneration,
+              !Task.isCancelled,
+              !pendingTerminalWrites.isEmpty {
+            let write = pendingTerminalWrites.removeFirst()
+            do {
+                if let terminalWriteSink {
+                    try await terminalWriteSink(write.data)
+                } else if let sshConnection {
+                    // Capture the current connection for this write. A
+                    // reconnect cancels this generation before replacing it,
+                    // so queued bytes can never leak into the next session.
+                    try await sshConnection.sendBytes(write.data)
+                } else {
+                    throw SSHError.notConnected
+                }
+            } catch {
+                guard generation == terminalWriteGeneration, !Task.isCancelled else { return }
+                let presentsFailure = write.presentsFailure
+                    || pendingTerminalWrites.contains(where: \.presentsFailure)
+                pendingTerminalWrites.removeAll(keepingCapacity: true)
+                if presentsFailure {
+                    appendLine(TerminalLine(
+                        text: "Error: \(error.localizedDescription)",
+                        style: .error
+                    ))
+                } else {
+                    Logger.ssh.error("Error sending terminal data: \(error)")
+                }
+                break
+            }
+        }
+
+        guard generation == terminalWriteGeneration else { return }
+        terminalWriteTask = nil
+        scheduleTerminalWriteDrainIfNeeded()
+    }
+
+    private func cancelPendingTerminalWrites() {
+        terminalWriteGeneration &+= 1
+        terminalWriteTask?.cancel()
+        terminalWriteTask = nil
+        pendingTerminalWrites.removeAll(keepingCapacity: true)
+    }
+
+    /// Deterministic test/automation seam for ordering-sensitive input paths.
+    func waitUntilTerminalWritesComplete() async {
+        while let task = terminalWriteTask {
+            await task.value
+        }
+    }
+
+    private func scheduleTerminalResizeDrainIfNeeded() {
+        guard terminalResizeTask == nil, pendingTerminalResize != nil else { return }
+        let generation = terminalResizeGeneration
+        terminalResizeTask = Task { @MainActor [weak self] in
+            await self?.drainTerminalResizes(generation: generation)
+        }
+    }
+
+    private func drainTerminalResizes(generation: UInt64) async {
+        while generation == terminalResizeGeneration,
+              !Task.isCancelled,
+              let resize = pendingTerminalResize {
+            // Clear before awaiting. Geometry changes that arrive while this
+            // resize is in flight replace this value, so the next iteration
+            // sends only the newest dimensions.
+            pendingTerminalResize = nil
+            do {
+                if let terminalResizeSink {
+                    try await terminalResizeSink(resize.rows, resize.columns)
+                } else if let sshConnection {
+                    try await sshConnection.resizeTerminal(
+                        rows: resize.rows,
+                        columns: resize.columns
+                    )
+                } else {
+                    throw SSHError.notConnected
+                }
+            } catch {
+                guard generation == terminalResizeGeneration, !Task.isCancelled else { return }
+                Logger.ssh.error("Failed to resize remote PTY: \(error)")
+            }
+        }
+
+        guard generation == terminalResizeGeneration else { return }
+        terminalResizeTask = nil
+        scheduleTerminalResizeDrainIfNeeded()
+    }
+
+    private func cancelPendingTerminalResizes() {
+        terminalResizeGeneration &+= 1
+        terminalResizeTask?.cancel()
+        terminalResizeTask = nil
+        pendingTerminalResize = nil
+    }
+
+    /// Deterministic test/automation seam for resize coalescing.
+    func waitUntilTerminalResizesComplete() async {
+        while let task = terminalResizeTask {
+            await task.value
+        }
+    }
+
+    private func makeConfiguredSSHConnection() -> SSHConnection {
+        let connection = SSHConnection(session: self)
+        connection.setPreferredTerminalSize(
+            rows: latestTerminalRows,
+            columns: latestTerminalColumns
+        )
+        return connection
     }
 }
 
@@ -772,6 +1093,7 @@ struct PortForward: Identifiable, Codable {
 
 // MARK: - HTML Preview
 
+#if DEBUG
 struct HTMLPreviewContext: Identifiable, Hashable, Codable {
     let id: UUID
     let sessionID: UUID
@@ -793,6 +1115,7 @@ struct HTMLPreviewContext: Identifiable, Hashable, Codable {
         self.reloadInterval = reloadInterval
     }
 }
+#endif
 
 // MARK: - SFTP Browser
 
@@ -862,8 +1185,6 @@ struct TerminalTheme: Identifiable, Codable {
     
     var fontName: String
     var fontSize: CGFloat
-    var lineSpacing: CGFloat
-    var opacity: Double
     
     static let `default` = TerminalTheme(
         id: UUID(),
@@ -889,9 +1210,7 @@ struct TerminalTheme: Identifiable, Codable {
         brightCyan: CodableColor(color: .cyan),
         brightWhite: CodableColor(color: .white),
         fontName: "SF Mono",
-        fontSize: 14,
-        lineSpacing: 1.2,
-        opacity: 0.95
+        fontSize: 14
     )
 }
 
@@ -907,8 +1226,10 @@ struct CodableColor: Codable {
     }
     
     init(color: Color) {
-        // Note: This is a simplified version. In production, you'd need proper color space conversion
-        let components = color.cgColor?.components ?? [0, 0, 0, 1]
+        let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+        let components = color.cgColor?
+            .converted(to: sRGB, intent: .defaultIntent, options: nil)?
+            .components ?? [0, 0, 0, 1]
         self.red = components[0]
         self.green = components.count > 1 ? components[1] : components[0]
         self.blue = components.count > 2 ? components[2] : components[0]
@@ -921,12 +1242,14 @@ struct CodableColor: Codable {
 @MainActor
 class SSHConnection {
     private var client: SSHClient?
+    private var jumpClients: [SSHClient] = []
     private var ttyWriter: TTYStdinWriter?
     private var ttyTask: Task<Void, Never>?
     private var keepAliveTask: Task<Void, Never>?
     private var missedKeepAlives: Int = 0
     private var terminalRows: Int = 40
     private var terminalColumns: Int = 140
+    private let hostKeyChallengeBox = HostKeyChallengeBox()
 
     weak var session: TerminalSession?
     
@@ -945,27 +1268,39 @@ class SSHConnection {
         terminalRows = max(8, rows)
         terminalColumns = max(20, columns)
     }
+
+    nonisolated func takePendingHostKeyChallenge() -> HostKeyTrustChallenge? {
+        hostKeyChallengeBox.take()
+    }
     
     /// Resolve SSH authentication method for a given server configuration.
     /// Reused for both direct connections and jump host connections.
-    private static func resolveAuthMethod(
+    static func resolveAuthMethod(
         for server: ServerConfiguration,
-        password: String?
+        authentication: PreparedServerAuthentication
     ) throws -> SSHAuthenticationMethod {
+        guard authentication.serverID == server.id else {
+            throw SSHError.invalidCredentialPreparation
+        }
         switch server.authMethod {
         case .password:
-            guard let pwd = password else {
-                throw SSHError.passwordRequired
+            guard case .password(let password) = authentication.material else {
+                throw SSHError.invalidCredentialPreparation
             }
-            return .passwordBased(username: server.username, password: pwd)
+            guard let decodedPassword = password.toUTF8String() else {
+                throw SSHError.invalidCredentialEncoding
+            }
+            return .passwordBased(username: server.username, password: decodedPassword)
 
         case .sshKey:
-            guard let keyID = server.sshKeyID else {
-                throw SSHError.sshKeyNotFound
+            guard server.sshKeyID != nil,
+                  case .sshKey(let keyMaterial) = authentication.material else {
+                throw SSHError.invalidCredentialPreparation
             }
             do {
-                let keyMaterial = try KeychainManager.retrieveSSHKey(for: keyID)
-                let privateKeyString = keyMaterial.privateKey.toUTF8String() ?? ""
+                guard let privateKeyString = keyMaterial.privateKey.toUTF8String() else {
+                    throw SSHError.invalidCredentialEncoding
+                }
                 let passphraseData = keyMaterial.passphrase?.toData()
 
                 if privateKeyString.hasPrefix("TRUE_SE_P256:") {
@@ -1000,37 +1335,31 @@ class SSHConnection {
             } catch let error as SSHError {
                 throw error
             } catch {
-                throw SSHError.invalidSSHKey(error.localizedDescription)
+                throw SSHError.invalidSSHKey("The stored key material could not be decoded.")
             }
 
         case .agent:
-            // TODO: Implement SSH agent authentication
-            guard let pwd = password else {
-                throw SSHError.passwordRequired
-            }
-            return .passwordBased(username: server.username, password: pwd)
+            throw SSHError.unsupportedAuthMethod("SSH Agent authentication is unavailable in this release.")
         }
     }
 
     /// Build an SSHHostKeyValidator for a given server configuration.
     private static func resolveHostKeyValidator(
         for server: ServerConfiguration,
-        normalizedHost: String
-    ) -> SSHHostKeyValidator {
+        normalizedHost: String,
+        challengeBox: HostKeyChallengeBox
+    ) throws -> SSHHostKeyValidator {
         let mode = hostKeyVerificationMode()
-        let trustedSet = trustedHostKeyBase64Set(server: server, host: normalizedHost, port: server.port)
-        if mode == .insecureAcceptAny {
-            return .acceptAnything()
-        } else {
-            return .custom(
-                PromptingHostKeyValidator(
-                    host: normalizedHost,
-                    port: server.port,
-                    trustedKeyBase64Set: trustedSet,
-                    verificationMode: mode
-                )
+        let trustedSet = try trustedHostKeyBase64Set(server: server, host: normalizedHost, port: server.port)
+        return .custom(
+            PromptingHostKeyValidator(
+                host: normalizedHost,
+                port: server.port,
+                trustedKeyBase64Set: trustedSet,
+                verificationMode: mode,
+                challengeBox: challengeBox
             )
-        }
+        )
     }
 
     /// Connect to an SSH server with retry for legacy kex algorithms.
@@ -1039,6 +1368,7 @@ class SSHConnection {
         port: Int,
         authenticationMethod: SSHAuthenticationMethod,
         hostKeyValidator: SSHHostKeyValidator,
+        allowLegacyAlgorithms: Bool,
         session: TerminalSession?
     ) async throws -> SSHClient {
         do {
@@ -1050,7 +1380,7 @@ class SSHConnection {
                 algorithms: SSHAlgorithms()
             )
         } catch {
-            if isKeyExchangeNegotiationFailure(error) {
+            if shouldRetryWithLegacyAlgorithms(error, enabled: allowLegacyAlgorithms) {
                 session?.setConnectionProgress(.negotiatingCompatibility)
                 return try await connectClient(
                     host: host,
@@ -1066,18 +1396,35 @@ class SSHConnection {
     }
 
     /// Connect to SSH server, optionally through a chain of jump hosts (ProxyJump)
-    func connect(password: String?, jumpHostChain: [ServerConfiguration] = []) async throws {
+    func connect(
+        preparation: SessionConnectionPreparation,
+        jumpHostChain: [ServerConfiguration] = []
+    ) async throws {
         guard let session = session else { throw SSHError.sessionNotFound }
         let server = session.server
         let normalizedHost = Self.normalizedHost(server.host)
         guard !normalizedHost.isEmpty else {
             throw SSHError.invalidHost(server.host)
         }
+        guard (1...65_535).contains(server.port) else {
+            throw SSHError.invalidPort(server.port)
+        }
         session.setConnectionProgress(.resolvingDNS)
 
         // Resolve target authentication method
-        let authMethod = try Self.resolveAuthMethod(for: server, password: password)
-        let hostKeyValidator = Self.resolveHostKeyValidator(for: server, normalizedHost: normalizedHost)
+        guard preparation.jumpHosts.count == jumpHostChain.count else {
+            throw SSHError.invalidCredentialPreparation
+        }
+        let authMethod = try Self.resolveAuthMethod(
+            for: server,
+            authentication: preparation.target
+        )
+        hostKeyChallengeBox.clear()
+        let hostKeyValidator = try Self.resolveHostKeyValidator(
+            for: server,
+            normalizedHost: normalizedHost,
+            challengeBox: hostKeyChallengeBox
+        )
 
         // Connect to SSH server using Citadel.
         // Try modern defaults first, then retry once with compatibility algorithms
@@ -1092,84 +1439,106 @@ class SSHConnection {
             guard !firstHopHost.isEmpty else {
                 throw SSHError.invalidHost(firstHop.host)
             }
-
-            // Resolve first hop credentials
-            let firstHopPassword: String?
-            if firstHop.authMethod == .password {
-                firstHopPassword = try KeychainManager.retrievePassword(for: firstHop)
-            } else {
-                firstHopPassword = nil
+            guard (1...65_535).contains(firstHop.port) else {
+                throw SSHError.invalidPort(firstHop.port)
             }
-            let firstHopAuth = try Self.resolveAuthMethod(for: firstHop, password: firstHopPassword)
-            let firstHopValidator = Self.resolveHostKeyValidator(for: firstHop, normalizedHost: firstHopHost)
+
+            let firstHopAuth = try Self.resolveAuthMethod(
+                for: firstHop,
+                authentication: preparation.jumpHosts[0]
+            )
+            let firstHopValidator = try Self.resolveHostKeyValidator(
+                for: firstHop,
+                normalizedHost: firstHopHost,
+                challengeBox: hostKeyChallengeBox
+            )
 
             session.appendLine(TerminalLine(
                 text: "Connecting via jump host \(firstHop.name) (\(firstHop.host):\(firstHop.port))...",
                 style: .system
             ))
 
-            // 1. Connect to the first jump host
-            var currentClient = try await Self.connectWithFallback(
-                host: firstHopHost,
-                port: firstHop.port,
-                authenticationMethod: firstHopAuth,
-                hostKeyValidator: firstHopValidator,
-                session: session
-            )
-
-            session.appendLine(TerminalLine(
-                text: "Hop 1/\(jumpHostChain.count) connected: \(firstHop.name)",
-                style: .system
-            ))
-
-            // 2. Jump through each subsequent hop in the chain
-            for (index, hopConfig) in jumpHostChain.dropFirst().enumerated() {
-                let hopHost = Self.normalizedHost(hopConfig.host)
-                guard !hopHost.isEmpty else {
-                    throw SSHError.invalidHost(hopConfig.host)
-                }
-
-                let hopPassword: String?
-                if hopConfig.authMethod == .password {
-                    hopPassword = try KeychainManager.retrievePassword(for: hopConfig)
-                } else {
-                    hopPassword = nil
-                }
-                let hopAuth = try Self.resolveAuthMethod(for: hopConfig, password: hopPassword)
-                let hopValidator = Self.resolveHostKeyValidator(for: hopConfig, normalizedHost: hopHost)
-
-                session.appendLine(TerminalLine(
-                    text: "Jumping to hop \(index + 2)/\(jumpHostChain.count): \(hopConfig.name) (\(hopConfig.host):\(hopConfig.port))...",
-                    style: .system
-                ))
-
-                let hopSettings = SSHClientSettings(
-                    host: hopHost,
-                    port: hopConfig.port,
-                    authenticationMethod: { hopAuth },
-                    hostKeyValidator: hopValidator
+            var establishedJumpClients: [SSHClient] = []
+            do {
+                // 1. Connect to the first jump host.
+                var currentClient = try await Self.connectWithFallback(
+                    host: firstHopHost,
+                    port: firstHop.port,
+                    authenticationMethod: firstHopAuth,
+                    hostKeyValidator: firstHopValidator,
+                    allowLegacyAlgorithms: firstHop.legacyAlgorithmsEnabled,
+                    session: session
                 )
-                currentClient = try await currentClient.jump(to: hopSettings)
+                establishedJumpClients.append(currentClient)
 
                 session.appendLine(TerminalLine(
-                    text: "Hop \(index + 2)/\(jumpHostChain.count) connected: \(hopConfig.name)",
+                    text: "Hop 1/\(jumpHostChain.count) connected: \(firstHop.name)",
                     style: .system
                 ))
+
+                // 2. Jump through each subsequent hop in the chain. Retain
+                // every parent client because closing only the final child
+                // channel does not close the outer SSH transports.
+                for (index, hopConfig) in jumpHostChain.dropFirst().enumerated() {
+                    let hopHost = Self.normalizedHost(hopConfig.host)
+                    guard !hopHost.isEmpty else {
+                        throw SSHError.invalidHost(hopConfig.host)
+                    }
+                    guard (1...65_535).contains(hopConfig.port) else {
+                        throw SSHError.invalidPort(hopConfig.port)
+                    }
+
+                    let hopAuth = try Self.resolveAuthMethod(
+                        for: hopConfig,
+                        authentication: preparation.jumpHosts[index + 1]
+                    )
+                    let hopValidator = try Self.resolveHostKeyValidator(
+                        for: hopConfig,
+                        normalizedHost: hopHost,
+                        challengeBox: hostKeyChallengeBox
+                    )
+
+                    session.appendLine(TerminalLine(
+                        text: "Jumping to hop \(index + 2)/\(jumpHostChain.count): \(hopConfig.name) (\(hopConfig.host):\(hopConfig.port))...",
+                        style: .system
+                    ))
+
+                    let hopSettings = SSHClientSettings(
+                        host: hopHost,
+                        port: hopConfig.port,
+                        authenticationMethod: { hopAuth },
+                        hostKeyValidator: hopValidator
+                    )
+                    let nextClient = try await currentClient.jump(to: hopSettings)
+                    establishedJumpClients.append(nextClient)
+                    currentClient = nextClient
+
+                    session.appendLine(TerminalLine(
+                        text: "Hop \(index + 2)/\(jumpHostChain.count) connected: \(hopConfig.name)",
+                        style: .system
+                    ))
+                }
+
+                session.appendLine(TerminalLine(
+                    text: "Tunneling to target \(server.host):\(server.port)...",
+                    style: .system
+                ))
+
+                // 3. Jump through to the final target server, then transfer
+                // ownership of the complete chain to this connection.
+                let targetSettings = SSHClientSettings(
+                    host: normalizedHost,
+                    port: server.port,
+                    authenticationMethod: { authMethod },
+                    hostKeyValidator: hostKeyValidator
+                )
+                let targetClient = try await currentClient.jump(to: targetSettings)
+                jumpClients = establishedJumpClients
+                self.client = targetClient
+            } catch {
+                await closeClients(establishedJumpClients, context: "failed jump-host connection")
+                throw error
             }
-
-            session.appendLine(TerminalLine(
-                text: "Tunneling to target \(server.host):\(server.port)...",
-                style: .system
-            ))
-
-            // 3. Jump through to the final target server
-            let targetSettings = SSHClientSettings(
-                host: normalizedHost,
-                port: server.port,
-                authenticationMethod: { authMethod },
-                hostKeyValidator: hostKeyValidator
-            )
-            self.client = try await currentClient.jump(to: targetSettings)
         } else {
             // --- Direct connection path ---
             self.client = try await Self.connectWithFallback(
@@ -1177,6 +1546,7 @@ class SSHConnection {
                 port: server.port,
                 authenticationMethod: authMethod,
                 hostKeyValidator: hostKeyValidator,
+                allowLegacyAlgorithms: server.legacyAlgorithmsEnabled,
                 session: session
             )
         }
@@ -1305,7 +1675,12 @@ class SSHConnection {
     /// Open an SFTP subchannel over the existing SSH connection.
     func openSFTPClient() async throws -> SFTPClient {
         guard let client else { throw SSHError.notConnected }
-        return try await client.openSFTP()
+        var sftpLogger = Logging.Logger(label: "sh.glas.sftp.private")
+        // Citadel's info/debug messages include full remote paths and handles.
+        // The app presents sanitized failures in its UI instead of persisting
+        // potentially sensitive filesystem metadata to system logs.
+        sftpLogger.logLevel = .error
+        return try await client.openSFTP(logger: sftpLogger)
     }
 
     func executeRemoteCommand(_ command: String) async throws -> String {
@@ -1329,13 +1704,19 @@ class SSHConnection {
     /// The remote server listens on `remoteHost:remotePort` and forwards incoming
     /// connections back through the SSH tunnel to `localHost:localPort`.
     /// This method blocks until cancelled or the forward is torn down.
-    func runRemotePortForward(remoteHost: String, remotePort: Int,
-                              localHost: String, localPort: Int) async throws {
+    func runRemotePortForward(
+        remoteHost: String,
+        remotePort: Int,
+        localHost: String,
+        localPort: Int,
+        onOpen: @escaping @MainActor @Sendable (_ boundPort: Int) -> Void
+    ) async throws {
         guard let client else { throw SSHError.notConnected }
         try await client.runRemotePortForward(
             host: remoteHost, port: remotePort,
             forwardingTo: localHost, port: localPort
         ) { remoteForward in
+            await onOpen(remoteForward.boundPort)
             Logger.ssh.info("Remote port forward established: \(remoteHost):\(remoteForward.boundPort) -> \(localHost):\(localPort)")
         }
     }
@@ -1348,13 +1729,28 @@ class SSHConnection {
         ttyTask = nil
         ttyWriter = nil
 
-        do {
-            try await client?.close()
-        } catch {
-            Logger.ssh.error("Error during disconnect: \(error)")
+        var clientsToClose: [SSHClient] = []
+        if let client {
+            clientsToClose.append(client)
         }
-
+        clientsToClose.append(contentsOf: jumpClients.reversed())
         client = nil
+        jumpClients.removeAll(keepingCapacity: false)
+        await closeClientsInOrder(clientsToClose, context: "disconnect")
+    }
+
+    private func closeClients(_ clients: [SSHClient], context: String) async {
+        await closeClientsInOrder(Array(clients.reversed()), context: context)
+    }
+
+    private func closeClientsInOrder(_ clients: [SSHClient], context: String) async {
+        for client in clients {
+            do {
+                try await client.close()
+            } catch {
+                Logger.ssh.error("SSH client close failed during \(context); category=\(String(describing: type(of: error)), privacy: .public)")
+            }
+        }
     }
 
     /// Reset the missed-keepalive counter when we receive data from the server.
@@ -1427,10 +1823,16 @@ class SSHConnection {
                 return "A password is required for \(server.username)@\(server.host):\(server.port)."
             case .sshKeyNotFound:
                 return "SSH key was not found. Check the key path in server settings."
+            case .invalidCredentialPreparation:
+                return "SSH credentials were not prepared for this connection. Start the connection again."
+            case .invalidCredentialEncoding:
+                return "The stored SSH credential is invalid or corrupt. Save or import it again."
             case .authenticationFailed:
                 return "Authentication failed for \(server.username)@\(server.host):\(server.port)."
             case .invalidHost(let rawHost):
                 return "The host \"\(rawHost)\" is not valid. Use a plain host name or IP (no protocol)."
+            case .invalidPort(let port):
+                return "The SSH port \(port) is not valid. Use a port from 1 through 65535."
             case .connectionFailed:
                 return "Could not establish an SSH connection to \(server.host):\(server.port)."
             case .notConnected:
@@ -1439,6 +1841,8 @@ class SSHConnection {
                 return "The terminal session is no longer available."
             case .unsupportedSSHKeyType(let keyType):
                 return "\(keyType). Supported key types are RSA, ED25519, and ECDSA P-256."
+            case .unsupportedAuthMethod(let message):
+                return message
             case .invalidSSHKey:
                 return "The selected SSH key could not be parsed. Verify key contents and passphrase."
             }
@@ -1499,23 +1903,15 @@ class SSHConnection {
         return mode
     }
 
-    private static func trustedHostKeyBase64Set(server: ServerConfiguration, host: String, port: Int) -> Set<String> {
-        let serverEntries = Set(
-            (server.trustedHostKeys ?? [])
-                .filter { $0.host == host && $0.port == port }
-                .map { $0.keyDataBase64 }
-        )
-        if !serverEntries.isEmpty {
-            return serverEntries
+    private static func trustedHostKeyBase64Set(server _: ServerConfiguration, host: String, port: Int) throws -> Set<String> {
+        do {
+            return try KeychainManager.trustedHostKeyBase64Set(host: host, port: port)
+        } catch {
+            Logger.ssh.error(
+                "Failed to read authoritative trusted host keys for \(host):\(port); category=\(String(reflecting: type(of: error)), privacy: .public)"
+            )
+            throw error
         }
-
-        // Backward-compatible fallback for previously stored global trust entries.
-        guard let data = SharedDefaults.defaults.data(forKey: UserDefaultsKeys.trustedHostKeys),
-              let entries = try? JSONDecoder().decode([TrustedHostKeyEntry].self, from: data)
-        else {
-            return []
-        }
-        return Set(entries.filter { $0.host == host && $0.port == port }.map { $0.keyDataBase64 })
     }
 
     private static func normalizedHost(_ host: String) -> String {
@@ -1551,6 +1947,10 @@ class SSHConnection {
             || raw.localizedCaseInsensitiveContains("key exchange negotiation failure")
     }
 
+    static func shouldRetryWithLegacyAlgorithms(_ error: Error, enabled: Bool) -> Bool {
+        enabled && isKeyExchangeNegotiationFailure(error)
+    }
+
     static func isChannelClosedError(_ error: Error) -> Bool {
         if let channelError = error as? ChannelError {
             return channelError == .eof || channelError == .alreadyClosed
@@ -1566,11 +1966,15 @@ enum SSHError: LocalizedError {
     case sessionNotFound
     case passwordRequired
     case sshKeyNotFound
+    case invalidCredentialPreparation
+    case invalidCredentialEncoding
     case connectionFailed
     case notConnected
     case authenticationFailed
     case invalidHost(String)
+    case invalidPort(Int)
     case unsupportedSSHKeyType(String)
+    case unsupportedAuthMethod(String)
     case invalidSSHKey(String)
     
     var errorDescription: String? {
@@ -1581,6 +1985,10 @@ enum SSHError: LocalizedError {
             return "Password is required for authentication"
         case .sshKeyNotFound:
             return "SSH key file not found"
+        case .invalidCredentialPreparation:
+            return "SSH credentials were not prepared for this connection"
+        case .invalidCredentialEncoding:
+            return "The stored SSH credential is invalid or corrupt"
         case .connectionFailed:
             return "Failed to establish SSH connection"
         case .notConnected:
@@ -1589,8 +1997,12 @@ enum SSHError: LocalizedError {
             return "Authentication failed"
         case .invalidHost(let host):
             return "Invalid host: \(host)"
+        case .invalidPort(let port):
+            return "Invalid SSH port: \(port)"
         case .unsupportedSSHKeyType(let keyType):
             return "SSH key type '\(keyType)' is not supported yet. Use RSA or ED25519."
+        case .unsupportedAuthMethod(let message):
+            return message
         case .invalidSSHKey(let message):
             return "Invalid SSH key: \(message)"
         }
@@ -1600,17 +2012,140 @@ enum SSHError: LocalizedError {
 // MARK: - Layout Presets
 
 struct LayoutPreset: Identifiable, Codable, Hashable {
+    static let currentSchemaVersion = 2
+
+    struct SessionIntent: Codable, Hashable {
+        static let currentSchemaVersion = 1
+
+        enum Restoration: Hashable, Codable {
+            case freshAuthorizedSession
+            case unsupported(String)
+
+            private var rawValue: String {
+                switch self {
+                case .freshAuthorizedSession:
+                    return "freshAuthorizedSession"
+                case .unsupported(let value):
+                    return value
+                }
+            }
+
+            init(from decoder: Decoder) throws {
+                let value = try decoder.singleValueContainer().decode(String.self)
+                self = value == "freshAuthorizedSession"
+                    ? .freshAuthorizedSession
+                    : .unsupported(value)
+            }
+
+            func encode(to encoder: Encoder) throws {
+                var container = encoder.singleValueContainer()
+                try container.encode(rawValue)
+            }
+        }
+
+        var schemaVersion: Int
+        var serverID: UUID
+        var restoration: Restoration
+
+        init(
+            schemaVersion: Int = SessionIntent.currentSchemaVersion,
+            serverID: UUID,
+            restoration: Restoration = .freshAuthorizedSession
+        ) {
+            self.schemaVersion = schemaVersion
+            self.serverID = serverID
+            self.restoration = restoration
+        }
+
+        var isSupported: Bool {
+            schemaVersion == Self.currentSchemaVersion
+                && restoration == .freshAuthorizedSession
+        }
+    }
+
     let id: UUID
     var name: String
-    var serverIDs: [UUID]
+    private(set) var schemaVersion: Int
+    var sessionIntents: [SessionIntent]
     let createdAt: Date
     var lastUsed: Date?
 
     init(id: UUID = UUID(), name: String, serverIDs: [UUID], createdAt: Date = Date(), lastUsed: Date? = nil) {
         self.id = id
         self.name = name
-        self.serverIDs = serverIDs
+        self.schemaVersion = Self.currentSchemaVersion
+        self.sessionIntents = serverIDs.map { SessionIntent(serverID: $0) }
         self.createdAt = createdAt
         self.lastUsed = lastUsed
+    }
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        sessionIntents: [SessionIntent],
+        createdAt: Date = Date(),
+        lastUsed: Date? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.schemaVersion = Self.currentSchemaVersion
+        self.sessionIntents = sessionIntents
+        self.createdAt = createdAt
+        self.lastUsed = lastUsed
+    }
+
+    /// Compatibility view used by callers that only need endpoint identities.
+    /// Repeated IDs are intentional: each entry represents a separate session.
+    var serverIDs: [UUID] {
+        sessionIntents.map(\.serverID)
+    }
+
+    var needsMigration: Bool {
+        schemaVersion < Self.currentSchemaVersion
+    }
+
+    func migratedToCurrentSchema() -> LayoutPreset {
+        guard needsMigration else { return self }
+        var migrated = self
+        migrated.schemaVersion = Self.currentSchemaVersion
+        return migrated
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case schemaVersion
+        case sessionIntents
+        case serverIDs
+        case createdAt
+        case lastUsed
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        lastUsed = try container.decodeIfPresent(Date.self, forKey: .lastUsed)
+
+        if let decodedIntents = try container.decodeIfPresent([SessionIntent].self, forKey: .sessionIntents) {
+            sessionIntents = decodedIntents
+            schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
+                ?? Self.currentSchemaVersion
+        } else {
+            let legacyServerIDs = try container.decodeIfPresent([UUID].self, forKey: .serverIDs) ?? []
+            sessionIntents = legacyServerIDs.map { SessionIntent(serverID: $0) }
+            schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(sessionIntents, forKey: .sessionIntents)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encodeIfPresent(lastUsed, forKey: .lastUsed)
     }
 }

@@ -56,12 +56,15 @@ extension SSHAlgorithms.Modification<(NIOSSHPublicKeyProtocol.Type, NIOSSHSignat
     }
 }
 
-public struct SSHAlgorithms: Sendable {
+// NIOSSH exposes algorithm metatypes without Sendable annotations. Metatypes are
+// immutable process-wide identities, so this container is safe to transfer even
+// though the upstream protocol declarations have not adopted Sendable yet.
+public struct SSHAlgorithms: @unchecked Sendable {
     /// Represents a modification to a list of items.
     ///
     /// - replace: Replaces the existing list of items with the given list of items.
     /// - add: Adds the given list of items to the list of items.
-    public enum Modification<T: Sendable>: Sendable {
+    public enum Modification<T>: @unchecked Sendable {
         case replace(with: [T])
         case add([T])
     }

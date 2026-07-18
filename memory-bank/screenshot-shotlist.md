@@ -59,17 +59,17 @@ Pre-seed the simulator with:
 - **Caption text overlay**: "Real Secure Enclave protection. Real key management."
 - **Why**: Demonstrates security depth; appeals to the developer/sysadmin audience
 
-### Shot 7 — Session recording + AI summary
+### Shot 7 — Privacy-preserving session recording
 - **Source**: Simulator
-- **Frame**: Recording playback view with a session timeline scrubber, terminal content showing mid-debug session, AI-generated summary panel showing 3–5 bullet points
-- **Caption text overlay**: "Record what you did. Get an AI summary of why."
-- **Why**: Unique workflow; targets DevOps/SRE audience
+- **Frame**: Terminal with the recording controls visible; show the explicit output-only/input-capture choice and the persistent red input-recording disclosure state
+- **Caption text overlay**: "Record the session. Choose exactly what is captured."
+- **Why**: Demonstrates a useful workflow without hiding the credential-capture risk
 
-### Shot 8 — SharePlay viewer (HERO #2)
+### Shot 8 — Independent transparency and blur (HERO #2)
 - **Source**: Vision Pro on-device
-- **Frame**: FaceTime call avatar visible in upper corner, two participants. Terminal window shared via SharePlay with a "Sharing" indicator. Viewer's read-only state implied (cursor visible, no input).
-- **Caption text overlay**: "Pair on a real shell, in a real call"
-- **Why**: Pair-programming / mentorship narrative; SharePlay integration is a strong differentiator
+- **Frame**: Two terminal windows in passthrough: one completely transparent and one softly blurred, with the independent Opacity and Blur sliders visible
+- **Caption text overlay**: "Your terminal. Your space. Your glass."
+- **Why**: This is the literal product purpose and the clearest Vision Pro differentiator
 
 ## Caption typography
 
@@ -91,7 +91,7 @@ Do NOT use:
 - [ ] Run a long-running ssh session to a real or local server to get realistic terminal content
 - [ ] For each shot: navigate → adjust window scale to fill canvas → `xcrun simctl io booted screenshot ~/Desktop/glas-sh-shot-N.png`
 - [ ] On Vision Pro: AirPlay to Mac → use native screen recorder → extract frames OR use device spatial screenshot
-- [ ] Open each PNG in any image editor → overlay caption text (Sora 700) → export at 3840×2160 PNG → name `01_hero.png` through `08_shareplay.png`
+- [ ] Open each PNG in any image editor → overlay caption text (Sora 700) → export at 3840×2160 PNG → name `01_hero.png` through `08_transparency.png`
 - [ ] Verify dimensions: `sips -g pixelWidth -g pixelHeight ~/Desktop/01_hero.png`
 - [ ] Verify color space is RGB (not CMYK or P3-only): `sips -g space ~/Desktop/01_hero.png`
 

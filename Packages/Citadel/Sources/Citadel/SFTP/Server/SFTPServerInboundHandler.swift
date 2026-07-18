@@ -582,6 +582,16 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
             readlink(command: command, context: context)
         case .rename(let command):
             rename(command: command, context: context)
+        case .extended(let command):
+            context.writeAndFlush(
+                NIOAny(SFTPMessage.status(.init(
+                    requestId: command.requestId,
+                    errorCode: .unsupportedOperation,
+                    message: "Unsupported SFTP extension",
+                    languageTag: "EN"
+                ))),
+                promise: nil
+            )
         case .version, .handle, .status, .data, .attributes, .name:
             // Client cannot send these messages
             context.channel.triggerUserOutboundEvent(ChannelFailureEvent()).whenComplete { _ in

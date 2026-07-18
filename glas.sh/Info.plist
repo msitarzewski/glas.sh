@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>GlasKeychainAccessGroup</key>
+	<string>$(AppIdentifierPrefix)sh.glas.shared</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Authenticate to use a hardware-protected SSH key.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationPreferredDefaultSceneSessionRole</key>

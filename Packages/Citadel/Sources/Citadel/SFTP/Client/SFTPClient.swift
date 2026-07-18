@@ -13,6 +13,7 @@ public final class SFTPClient: Sendable {
     
     /// A monotonically increasing counter for gneerating request IDs.
     private let _nextRequestId = NIOLockedValueBox<UInt32>(0)
+    private let _serverExtensions = NIOLockedValueBox<[String: String]>([:])
 
     private func incrementAndGetNextRequestId() -> UInt32 {
         _nextRequestId.withLockedValue { value in
@@ -22,12 +23,12 @@ public final class SFTPClient: Sendable {
     }
     
     /// In-flight request ID tracker.
-    fileprivate let responses: SFTPResponses
+    internal let responses: SFTPResponses
     
     /// What it says on the tin.
     public let logger: Logger
     
-    fileprivate init(channel: Channel, responses: SFTPResponses, logger: Logger) {
+    internal init(channel: Channel, responses: SFTPResponses, logger: Logger) {
         self.channel = channel
         self.responses = responses
         self.logger = logger
@@ -71,6 +72,30 @@ public final class SFTPClient: Sendable {
     /// The SFTP client's event loop.
     public var eventLoop: EventLoop {
         self.channel.eventLoop
+    }
+
+    /// Extensions advertised by the server during SFTP version negotiation.
+    public var serverExtensions: [String: String] {
+        _serverExtensions.withLockedValue { $0 }
+    }
+
+    /// Returns the exact value advertised for an extension during version negotiation.
+    public func serverExtensionVersion(for name: String) -> String? {
+        _serverExtensions.withLockedValue { $0[name] }
+    }
+
+    /// Tests whether an extension was advertised, optionally requiring an exact version.
+    public func supportsExtension(_ name: String, version: String? = nil) -> Bool {
+        _serverExtensions.withLockedValue { extensions in
+            guard let advertisedVersion = extensions[name] else { return false }
+            return version.map { $0 == advertisedVersion } ?? true
+        }
+    }
+
+    internal func setServerExtensions(_ entries: [(String, String)]) {
+        _serverExtensions.withLockedValue { extensions in
+            extensions = Dictionary(entries, uniquingKeysWith: { _, latest in latest })
+        }
     }
     
     /// Returns a unique request ID for use in an SFTP message. Does _not_ register the ID for
@@ -169,19 +194,10 @@ public final class SFTPClient: Sendable {
             throw SFTPError.invalidResponse
         }
         
-        var names = [SFTPMessage.Name]()
-        var response = try await sendRequest(
-            .readdir(
-                .init(
-                    requestId: self.allocateRequestId(),
-                    handle: handle.handle
-                )
-            )
-        )
-        
-        while case .name(let name) = response {
-            names.append(name)
-            response = try await sendRequest(
+        var closeAttempted = false
+        do {
+            var names = [SFTPMessage.Name]()
+            var response = try await sendRequest(
                 .readdir(
                     .init(
                         requestId: self.allocateRequestId(),
@@ -189,9 +205,48 @@ public final class SFTPClient: Sendable {
                     )
                 )
             )
+
+            while case .name(let name) = response {
+                names.append(name)
+                response = try await sendRequest(
+                    .readdir(
+                        .init(
+                            requestId: self.allocateRequestId(),
+                            handle: handle.handle
+                        )
+                    )
+                )
+            }
+
+            guard case .status(let terminalStatus) = response else {
+                throw SFTPError.invalidResponse
+            }
+            guard terminalStatus.errorCode == .eof else {
+                throw SFTPError.errorStatus(terminalStatus)
+            }
+
+            closeAttempted = true
+            try await closeDirectoryHandle(handle.handle)
+            return names
+        } catch {
+            if !closeAttempted {
+                try? await closeDirectoryHandle(handle.handle)
+            }
+            throw error
         }
-        
-        return names
+    }
+
+    private func closeDirectoryHandle(_ handle: ByteBuffer) async throws {
+        let response = try await sendRequest(.closeFile(.init(
+            requestId: allocateRequestId(),
+            handle: handle
+        )))
+        guard case .status(let status) = response else {
+            throw SFTPError.invalidResponse
+        }
+        guard status.errorCode == .ok else {
+            throw SFTPError.errorStatus(status)
+        }
     }
     
     /// Get the attributes of a file on the SFTP server.
@@ -223,6 +278,28 @@ public final class SFTPClient: Sendable {
         }
         
         return attributes.attributes
+    }
+
+    /// Get attributes for the directory entry itself without following a symbolic link.
+    /// This is the SFTP v3 `SSH_FXP_LSTAT` operation.
+    public func getLinkAttributes(at filePath: String) async throws -> SFTPFileAttributes {
+        self.logger.info("SFTP requesting link attributes at '\(filePath)'")
+
+        let response = try await sendRequest(makeLStatRequest(at: filePath))
+
+        guard case .attributes(let attributes) = response else {
+            self.logger.warning("SFTP server returned bad response to lstat request, this is a protocol error")
+            throw SFTPError.invalidResponse
+        }
+
+        return attributes.attributes
+    }
+
+    internal func makeLStatRequest(at filePath: String) -> SFTPRequest {
+        .lstat(.init(
+            requestId: allocateRequestId(),
+            path: filePath
+        ))
     }
     
     /// Open a file at the specified path on the SFTP server.
@@ -426,6 +503,32 @@ public final class SFTPClient: Sendable {
         self.logger.debug("SFTP renamed file at \(oldPath) to \(newPath)")
     }
 
+    /// Atomically creates `newPath` as a hard link to `oldPath` without
+    /// replacing an existing destination. Requires OpenSSH's advertised
+    /// `hardlink@openssh.com` extension.
+    public func hardLink(at oldPath: String, to newPath: String) async throws {
+        let response = try await sendRequest(try makeHardLinkRequest(at: oldPath, to: newPath))
+        guard case .status(let status) = response, status.errorCode == .ok else {
+            throw SFTPError.invalidResponse
+        }
+    }
+
+    internal func makeHardLinkRequest(at oldPath: String, to newPath: String) throws -> SFTPRequest {
+        let extensionName = "hardlink@openssh.com"
+        guard supportsExtension(extensionName, version: "1") else {
+            throw SFTPError.unsupportedExtension(extensionName)
+        }
+
+        var payload = ByteBuffer()
+        payload.writeSSHString(oldPath)
+        payload.writeSSHString(newPath)
+        return .extended(.init(
+            requestId: allocateRequestId(),
+            requestName: extensionName,
+            payload: payload
+        ))
+    }
+
     /// Get the canonical absolute path.
     ///
     /// - Parameter path: Path to resolve
@@ -570,6 +673,7 @@ extension SSHClient {
                         logger.warning("SFTP ERROR: Server version is unrecognized: \(serverVersion.version.rawValue)")
                         throw SFTPError.unsupportedVersion(serverVersion.version)
                     }
+                    client.setServerExtensions(serverVersion.extensionData)
                     
                     logger.info("SFTP connection opened and ready")
                     return client

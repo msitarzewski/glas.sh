@@ -9,6 +9,8 @@
 import Foundation
 import Observation
 import os
+import CryptoKit
+import GlasSecretStore
 
 // MARK: - API Response (matches official Go client exactly)
 
@@ -65,6 +67,79 @@ enum TailscaleAuthMethod: String, Codable {
     case oauthClient
 }
 
+struct TailscaleOAuthTokenCache {
+    private var token: SecureBytes?
+    private var credentialIdentity: Data?
+    private var expiresAt: Date?
+
+    static let expirySkew: TimeInterval = 30
+
+    mutating func token(
+        for credentials: (clientID: String, clientSecret: String),
+        now: Date = Date()
+    ) -> String? {
+        let currentIdentity = Self.identity(for: credentials)
+        guard credentialIdentity == currentIdentity,
+              let expiresAt,
+              expiresAt.timeIntervalSince(now) > Self.expirySkew,
+              let token = token?.toUTF8String(),
+              !token.isEmpty else {
+            clear()
+            return nil
+        }
+        return token
+    }
+
+    @discardableResult
+    mutating func store(
+        _ token: String,
+        expiresIn: TimeInterval,
+        for credentials: (clientID: String, clientSecret: String),
+        now: Date = Date()
+    ) -> Bool {
+        guard !token.isEmpty, expiresIn > Self.expirySkew else {
+            clear()
+            return false
+        }
+        self.token = SecureBytes(Data(token.utf8))
+        credentialIdentity = Self.identity(for: credentials)
+        expiresAt = now.addingTimeInterval(expiresIn)
+        return true
+    }
+
+    mutating func clear() {
+        token = nil
+        credentialIdentity = nil
+        expiresAt = nil
+    }
+
+    static func identity(
+        for credentials: (clientID: String, clientSecret: String)
+    ) -> Data {
+        var input = Data(credentials.clientID.utf8)
+        input.append(0)
+        input.append(contentsOf: credentials.clientSecret.utf8)
+        let identity = Data(SHA256.hash(data: input))
+        input.resetBytes(in: input.startIndex..<input.endIndex)
+        return identity
+    }
+}
+
+private struct TailscaleOAuthExchangeResult: Sendable {
+    let accessToken: String
+    let expiresIn: TimeInterval
+}
+
+private struct TailscaleOAuthInFlightExchange {
+    let credentialIdentity: Data
+    let task: Task<TailscaleOAuthExchangeResult, Error>
+}
+
+private struct TailscaleOAuthTokenResponse: Decodable {
+    let access_token: String
+    let expires_in: TimeInterval
+}
+
 // MARK: - Client
 
 @MainActor
@@ -74,7 +149,8 @@ class TailscaleClient {
     var isLoading = false
     var errorMessage: String?
 
-    private var cachedOAuthToken: String?
+    private var oauthTokenCache = TailscaleOAuthTokenCache()
+    private var oauthInFlightExchange: TailscaleOAuthInFlightExchange?
     private let session = URLSession.shared
 
     // MARK: - Token Resolution
@@ -82,50 +158,141 @@ class TailscaleClient {
     private func resolveToken() async throws -> String {
         let authMethodRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.tailscaleAuthMethod) ?? "apiKey"
         let authMethod = TailscaleAuthMethod(rawValue: authMethodRaw) ?? .apiKey
-        Logger.tailscale.info("Resolving token, auth method: \(authMethodRaw)")
+        Logger.tailscale.info("Resolving Tailscale credential using configured method")
 
         switch authMethod {
         case .apiKey:
+            // A method transition invalidates any token issued under the
+            // previous OAuth credential identity.
+            clearCachedToken()
             do {
                 let key = try KeychainManager.retrieveTailscaleAPIKey()
-                Logger.tailscale.info("API key found (\(key.prefix(8))...)")
                 return key
             } catch {
-                Logger.tailscale.error("No API key in Keychain: \(error)")
+                Logger.tailscale.error("Tailscale API credential is unavailable")
                 throw TailscaleError.notAuthenticated
             }
 
         case .oauthClient:
-            if let cached = cachedOAuthToken { return cached }
-
             let creds: (clientID: String, clientSecret: String)
             do {
                 creds = try KeychainManager.retrieveTailscaleOAuthCredentials()
             } catch {
-                Logger.tailscale.error("No OAuth credentials in Keychain: \(error)")
+                Logger.tailscale.error("Tailscale OAuth credential is unavailable")
                 throw TailscaleError.notAuthenticated
             }
 
-            let url = URL(string: "https://api.tailscale.com/api/v2/oauth/token")!
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-            let body = "grant_type=client_credentials&client_id=\(creds.clientID)&client_secret=\(creds.clientSecret)"
-            request.httpBody = body.data(using: .utf8)
-
-            let (data, response) = try await session.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-                let body = String(data: data, encoding: .utf8) ?? ""
-                Logger.tailscale.error("OAuth token exchange failed: \(body)")
-                throw TailscaleError.authenticationFailed
+            if let cached = oauthTokenCache.token(for: creds) {
+                return cached
             }
 
-            struct TokenResponse: Decodable { let access_token: String }
-            let token = try JSONDecoder().decode(TokenResponse.self, from: data).access_token
-            cachedOAuthToken = token
+            let credentialIdentity = TailscaleOAuthTokenCache.identity(for: creds)
+            let exchange: Task<TailscaleOAuthExchangeResult, Error>
+            if let inFlight = oauthInFlightExchange,
+               inFlight.credentialIdentity == credentialIdentity {
+                exchange = inFlight.task
+            } else {
+                oauthInFlightExchange?.task.cancel()
+                let session = session
+                exchange = Task {
+                    try await Self.exchangeOAuthToken(credentials: creds, session: session)
+                }
+                oauthInFlightExchange = TailscaleOAuthInFlightExchange(
+                    credentialIdentity: credentialIdentity,
+                    task: exchange
+                )
+            }
+
+            let result: TailscaleOAuthExchangeResult
+            do {
+                result = try await exchange.value
+            } catch {
+                if oauthInFlightExchange?.credentialIdentity == credentialIdentity {
+                    oauthInFlightExchange = nil
+                }
+                throw error
+            }
+            if oauthInFlightExchange?.credentialIdentity == credentialIdentity {
+                oauthInFlightExchange = nil
+            }
+
+            // Actor reentrancy permits credentials to change while the HTTP
+            // request is in flight. Never cache or return a token issued for
+            // an identity that is no longer current.
+            let currentCreds: (clientID: String, clientSecret: String)
+            do {
+                currentCreds = try KeychainManager.retrieveTailscaleOAuthCredentials()
+            } catch {
+                throw TailscaleError.notAuthenticated
+            }
+            guard TailscaleOAuthTokenCache.identity(for: currentCreds) == credentialIdentity else {
+                return try await resolveToken()
+            }
+            guard oauthTokenCache.store(
+                result.accessToken,
+                expiresIn: result.expiresIn,
+                for: currentCreds
+            ) else {
+                throw TailscaleError.authenticationFailed
+            }
             Logger.tailscale.info("OAuth token exchanged successfully")
-            return token
+            return result.accessToken
         }
+    }
+
+    private static func exchangeOAuthToken(
+        credentials: (clientID: String, clientSecret: String),
+        session: URLSession
+    ) async throws -> TailscaleOAuthExchangeResult {
+        let url = URL(string: "https://api.tailscale.com/api/v2/oauth/token")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = formEncodedBody([
+            ("grant_type", "client_credentials"),
+            ("client_id", credentials.clientID),
+            ("client_secret", credentials.clientSecret),
+        ])
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            Logger.tailscale.error("OAuth token exchange failed: status=\(statusCode), bytes=\(data.count)")
+            throw TailscaleError.authenticationFailed
+        }
+
+        let responseBody = try JSONDecoder().decode(TailscaleOAuthTokenResponse.self, from: data)
+        guard !responseBody.access_token.isEmpty else {
+            throw TailscaleError.authenticationFailed
+        }
+        return TailscaleOAuthExchangeResult(
+            accessToken: responseBody.access_token,
+            expiresIn: responseBody.expires_in
+        )
+    }
+
+    private func authorizedData(for url: URL) async throws -> (Data, HTTPURLResponse) {
+        for attempt in 0..<2 {
+            let token = try await resolveToken()
+            var request = URLRequest(url: url)
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw TailscaleError.invalidResponse
+            }
+            if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+                clearCachedToken()
+                if attempt == 0 {
+                    continue
+                }
+                Logger.tailscale.error("Tailscale request authentication failed after credential refresh: status=\(httpResponse.statusCode), bytes=\(data.count)")
+                throw TailscaleError.authenticationFailed
+            }
+            return (data, httpResponse)
+        }
+        throw TailscaleError.authenticationFailed
     }
 
     // MARK: - Fetch Devices
@@ -135,32 +302,19 @@ class TailscaleClient {
         errorMessage = nil
         defer { isLoading = false }
 
-        let token = try await resolveToken()
         let effectiveTailnet = tailnet.isEmpty ? "-" : tailnet
-        let escapedTailnet = effectiveTailnet.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? effectiveTailnet
+        let pathComponentCharacters = CharacterSet.alphanumerics
+            .union(CharacterSet(charactersIn: "-._~"))
+        let escapedTailnet = effectiveTailnet.addingPercentEncoding(withAllowedCharacters: pathComponentCharacters) ?? "-"
         let url = URL(string: "https://api.tailscale.com/api/v2/tailnet/\(escapedTailnet)/devices")!
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
-        Logger.tailscale.info("GET \(url.absoluteString)")
-        let (data, response) = try await session.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw TailscaleError.invalidResponse
-        }
+        Logger.tailscale.info("Fetching Tailscale device inventory")
+        let (data, httpResponse) = try await authorizedData(for: url)
 
         Logger.tailscale.info("Response: HTTP \(httpResponse.statusCode), \(data.count) bytes")
 
-        if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
-            cachedOAuthToken = nil
-            let body = String(data: data, encoding: .utf8) ?? ""
-            Logger.tailscale.error("Auth failed: \(body)")
-            throw TailscaleError.authenticationFailed
-        }
-
         guard httpResponse.statusCode == 200 else {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            Logger.tailscale.error("API error \(httpResponse.statusCode): \(body)")
+            Logger.tailscale.error("Tailscale device request failed: status=\(httpResponse.statusCode), bytes=\(data.count)")
             throw TailscaleError.fetchFailed(statusCode: httpResponse.statusCode)
         }
 
@@ -169,9 +323,7 @@ class TailscaleClient {
         do {
             apiResponse = try decoder.decode(TailscaleAPIResponse.self, from: data)
         } catch {
-            // Log first 500 chars of response to help debug
-            let preview = String(data: data.prefix(500), encoding: .utf8) ?? "(binary)"
-            Logger.tailscale.error("Decode failed: \(error)\nResponse preview: \(preview)")
+            Logger.tailscale.error("Tailscale response decode failed: bytes=\(data.count), error=\(String(describing: error), privacy: .public)")
             throw error
         }
 
@@ -185,11 +337,11 @@ class TailscaleClient {
 
         devices = apiResponse.devices.compactMap { d in
             guard !nonMobileOS.contains(d.os) else {
-                Logger.tailscale.debug("Skipping \(d.hostname): mobile OS (\(d.os))")
+                Logger.tailscale.debug("Skipping mobile Tailscale device")
                 return nil
             }
             guard let ip = d.ipv4Address else {
-                Logger.tailscale.debug("Skipping \(d.hostname): no IPv4 address")
+                Logger.tailscale.debug("Skipping Tailscale device without IPv4")
                 return nil
             }
 
@@ -217,15 +369,8 @@ class TailscaleClient {
     // MARK: - Test Connection
 
     func testConnection() async throws -> Bool {
-        let token = try await resolveToken()
         let url = URL(string: "https://api.tailscale.com/api/v2/tailnet/-/devices?fields=default")!
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-
-        let (_, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw TailscaleError.invalidResponse
-        }
+        let (_, httpResponse) = try await authorizedData(for: url)
 
         let success = httpResponse.statusCode == 200
         Logger.tailscale.info("Connection test: HTTP \(httpResponse.statusCode)")
@@ -240,9 +385,9 @@ class TailscaleClient {
 
         do {
             try await fetchDevices(tailnet: tailnet)
-        } catch let decodingError as DecodingError {
+        } catch is DecodingError {
             errorMessage = "Failed to decode API response."
-            Logger.tailscale.error("Decoding error: \(decodingError)")
+            Logger.tailscale.error("Tailscale response decoding failed")
         } catch let error as TailscaleError {
             errorMessage = error.localizedDescription
         } catch {
@@ -255,14 +400,28 @@ class TailscaleClient {
             case .oauthClient:
                 errorMessage = "No OAuth credentials found. Add them in Settings → Tailscale."
             }
-            Logger.tailscale.error("Load failed: \(error)")
+            Logger.tailscale.error("Tailscale device load failed")
         }
 
         isLoading = false
     }
 
     func clearCachedToken() {
-        cachedOAuthToken = nil
+        oauthTokenCache.clear()
+        oauthInFlightExchange?.task.cancel()
+        oauthInFlightExchange = nil
+    }
+
+    static func formEncodedBody(_ fields: [(String, String)]) -> Data {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._*"))
+        let body = fields.map { key, value in
+            let encodedKey = key.addingPercentEncoding(withAllowedCharacters: allowed)?
+                .replacingOccurrences(of: "%20", with: "+") ?? ""
+            let encodedValue = value.addingPercentEncoding(withAllowedCharacters: allowed)?
+                .replacingOccurrences(of: "%20", with: "+") ?? ""
+            return "\(encodedKey)=\(encodedValue)"
+        }.joined(separator: "&")
+        return Data(body.utf8)
     }
 }
 

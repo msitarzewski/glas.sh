@@ -130,7 +130,9 @@ public struct SFTPFileAttributes: CustomDebugStringConvertible, Sendable, Hashab
     public var size: UInt64?
     public var uidgid: UserGroupId?
     
-    // TODO: Permissions as OptionSet
+    /// Raw POSIX mode bits from the SFTP v3 wire format, including file-type
+    /// bits when the server supplies them. Kept as `UInt32` so unknown server
+    /// extensions and platform-specific bits round-trip without truncation.
     public var permissions: UInt32?
     public var accessModificationTime: AccessModificationTime?
     private var _extended = [ExtendedMetadata]()
@@ -147,6 +149,25 @@ public struct SFTPFileAttributes: CustomDebugStringConvertible, Sendable, Hashab
     }
     
     public static let none = SFTPFileAttributes()
+
+    /// POSIX file type encoded in the high bits of the SFTP v3 permissions field.
+    /// A missing permissions field produces `nil`; missing/unknown type bits are
+    /// deliberately not treated as a regular file.
+    public var fileType: SFTPFileType? {
+        guard let permissions else { return nil }
+        switch permissions & 0o170000 {
+        case 0o100000: return .regular
+        case 0o040000: return .directory
+        case 0o120000: return .symbolicLink
+        case 0o020000: return .characterDevice
+        case 0o060000: return .blockDevice
+        case 0o010000: return .fifo
+        case 0o140000: return .socket
+        case let value: return .unknown(value)
+        }
+    }
+
+    public var isRegularFile: Bool { fileType == .regular }
     public static let all: SFTPFileAttributes = {
         var attr = SFTPFileAttributes()
 //        attr.permissions = 777
@@ -156,3 +177,13 @@ public struct SFTPFileAttributes: CustomDebugStringConvertible, Sendable, Hashab
     public var debugDescription: String { "{perm: \(String(describing: permissions)), size: \(String(describing: size)), uidgid: \(String(describing: uidgid))}" }
 }
 
+public enum SFTPFileType: Sendable, Hashable {
+    case regular
+    case directory
+    case symbolicLink
+    case characterDevice
+    case blockDevice
+    case fifo
+    case socket
+    case unknown(UInt32)
+}

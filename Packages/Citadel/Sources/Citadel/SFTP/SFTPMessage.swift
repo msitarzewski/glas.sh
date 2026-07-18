@@ -28,6 +28,7 @@ enum SFTPRequest: CustomDebugStringConvertible, Sendable {
     case write(SFTPMessage.WriteFile)
     case mkdir(SFTPMessage.MkDir)
     case stat(SFTPMessage.Stat)
+    case lstat(SFTPMessage.LStat)
     case fstat(SFTPMessage.FileStat)
     case readdir(SFTPMessage.ReadDir)
     case opendir(SFTPMessage.OpenDir)
@@ -37,6 +38,7 @@ enum SFTPRequest: CustomDebugStringConvertible, Sendable {
     case rename(SFTPMessage.Rename)
     case fsetstat(SFTPMessage.FileSetStat)
     case setstat(SFTPMessage.SetStat)
+    case extended(SFTPMessage.ExtendedRequest)
 
     var requestId: UInt32 {
         get {
@@ -55,6 +57,8 @@ enum SFTPRequest: CustomDebugStringConvertible, Sendable {
                 return message.requestId
             case .stat(let message):
                 return message.requestId
+            case .lstat(let message):
+                return message.requestId
             case .fstat(let message):
                 return message.requestId
             case .readdir(let message):
@@ -70,6 +74,8 @@ enum SFTPRequest: CustomDebugStringConvertible, Sendable {
             case .fsetstat(let message):
                 return message.requestId
             case .setstat(let message):
+                return message.requestId
+            case .extended(let message):
                 return message.requestId
             }
         }
@@ -91,6 +97,8 @@ enum SFTPRequest: CustomDebugStringConvertible, Sendable {
             return .mkdir(message)
         case .stat(let message):
             return .stat(message)
+        case .lstat(let message):
+            return .lstat(message)
         case .fstat(let message):
             return .fstat(message)
         case .readdir(let message):
@@ -107,6 +115,8 @@ enum SFTPRequest: CustomDebugStringConvertible, Sendable {
             return .fsetstat(message)
         case .setstat(let message):
             return .setstat(message)
+        case .extended(let message):
+            return .extended(message)
         }
     }
     
@@ -118,6 +128,7 @@ enum SFTPRequest: CustomDebugStringConvertible, Sendable {
         case .write(let message): return message.debugDescription
         case .mkdir(let message): return message.debugDescription
         case .stat(let message): return message.debugDescription
+        case .lstat(let message): return message.debugDescription
         case .fstat(let message): return message.debugDescription
         case .readdir(let message): return message.debugDescription
         case .opendir(let message): return message.debugDescription
@@ -127,6 +138,7 @@ enum SFTPRequest: CustomDebugStringConvertible, Sendable {
         case .rename(let message): return message.debugDescription
         case .fsetstat(let message): return message.debugDescription
         case .setstat(let message): return message.debugDescription
+        case .extended(let message): return message.debugDescription
         }
     }
 }
@@ -203,7 +215,9 @@ enum SFTPResponse: Sendable {
             self = .fsetstat(message)
         case .setstat(let message):
             self = .setstat(message)
-        case .realpath, .openFile, .fstat, .closeFile, .read, .write, .initialize, .version, .stat, .lstat, .rmdir, .opendir, .readdir, .remove, .symlink, .readlink, .rename:
+        case .realpath, .openFile, .fstat, .closeFile, .read, .write, .initialize,
+                .version, .stat, .lstat, .rmdir, .opendir, .readdir, .remove,
+                .symlink, .readlink, .rename, .extended:
             return nil
         }
     }
@@ -249,6 +263,22 @@ public enum SFTPMessage: Sendable {
         
         public var debugDescription: String { "(\(self.version), extensions: [\(extensionData.map(\.0).joined(separator: ", "))])" }
         fileprivate var debugVariantWithoutLargeData: Self { self }
+    }
+
+    public struct ExtendedRequest: SFTPMessageContent, Sendable {
+        public static let id = SFTPMessageType.extended
+
+        public let requestId: UInt32
+        public let requestName: String
+        public var payload: ByteBuffer
+
+        public var debugDescription: String {
+            "{\(requestId)}('\(requestName)', \(payload.readableBytes) payload bytes)"
+        }
+
+        fileprivate var debugVariantWithoutLargeData: Self {
+            Self(requestId: requestId, requestName: requestName, payload: ByteBuffer())
+        }
     }
     
     public struct OpenFile: SFTPMessageContent, Sendable {
@@ -583,6 +613,7 @@ public enum SFTPMessage: Sendable {
     case attributes(Attributes)
     case readdir(ReadDir)
     case rename(Rename)
+    case extended(ExtendedRequest)
     
     public var messageType: SFTPMessageType {
         switch self {
@@ -611,7 +642,8 @@ public enum SFTPMessage: Sendable {
                 .setstat(let message as SFTPMessageContent),
                 .symlink(let message as SFTPMessageContent),
                 .readlink(let message as SFTPMessageContent),
-                .rename(let message as SFTPMessageContent):
+                .rename(let message as SFTPMessageContent),
+                .extended(let message as SFTPMessageContent):
             return message.id
         }
     }
@@ -643,7 +675,8 @@ public enum SFTPMessage: Sendable {
                 .setstat(let message as SFTPMessageContent),
                 .symlink(let message as SFTPMessageContent),
                 .readlink(let message as SFTPMessageContent),
-                .rename(let message as SFTPMessageContent):
+                .rename(let message as SFTPMessageContent),
+                .extended(let message as SFTPMessageContent):
             return "\(message.id)\(message.debugDescription)"
         }
     }
@@ -675,6 +708,7 @@ public enum SFTPMessage: Sendable {
         case .symlink(let message): return Self.symlink(message.debugVariantWithoutLargeData)
         case .readlink(let message): return Self.readlink(message.debugVariantWithoutLargeData)
         case .rename(let message): return Self.rename(message.debugVariantWithoutLargeData)
+        case .extended(let message): return Self.extended(message.debugVariantWithoutLargeData)
         }
     }
     

@@ -1,6 +1,30 @@
 # Progress
 
 ## Latest Milestones
+- `codex-completions` implementation and automated-QA checkpoint approved (2026-07-17):
+  - Centralized session authorization, external-request confirmation, credential preparation, reconnect/layout cleanup, and one authoritative server store.
+  - Hardened credential and host-trust migrations; forward-only atomic destination creation; transactional, artifact-aware SSH-key deletion; fail-closed recovery for incomplete legacy representations.
+  - Protected output-first recording, redacted/bounded diagnostics, safe resumable SFTP, bounded forwarding/SOCKS lifecycles, and deterministic AI command review.
+  - Hardened SwiftTerm boundary, live-buffer search, focus ownership, paste/OSC/link policies, hardware key mappings, runtime cursor/scrollback settings, ANSI palette installation, and post-focus caret-theme replay.
+  - Preserved the defining Vision Pro experience: true full transparency plus independent continuous opacity and blur controls; repaired fixed tools-menu ordering without clamping appearance.
+  - Removed or hid incomplete release surfaces including SharePlay, SSH Agent, unused summaries/settings, and Release HTML Preview; retained shared real forwarding.
+  - App tests: 164/164 on both visionOS 26.4 and visionOS 27.0 arm64 simulators. GlasSecretStore: 75/75 across 13 suites. Final unsigned Release: arm64, minimum visionOS 26.0, SDK 27.0.
+  - Independent security/static audits, `git diff --check`, production stub scan, simulator install/launch smoke, and isolated Gitleaks adjudication pass with zero actionable production credentials.
+  - This is an approved code/automated-QA checkpoint, not the App Store go decision; open gates remain tracked in `memory-bank/releases/codex-completions/README.md`.
+
+- Version Zero codebase audit completed (2026-06-12):
+  - Reframed the March feature expansion as an experimental rapid-acceleration phase: the product surface is valuable, but "shipped" in historical notes does not imply release-ready or end-to-end functional.
+  - Identified 13 definite feature dead ends and 5 password-auth follow-up paths that fail after the initial connection.
+  - Highest-priority security work:
+    - raw terminal input/output recording and at-rest protection
+    - external deep-link authorization and Secure Enclave preflight consistency
+    - silent fallback to legacy SHA-1 SSH compatibility algorithms
+    - sensitive Tailscale logging
+    - SFTP destination sanitization/overwrite handling
+    - deterministic confirmation for AI-generated destructive commands
+  - Highest-leverage functional fix: centralize every connection entry path behind one credential-resolution and authorization policy.
+  - App Store submission is paused pending Functional release gates; dependency, privacy-manifest, and build-readiness work remains valid.
+
 - Dependency refresh + App Store readiness pass shipped (2026-05-16):
   - **swift-crypto 3.15.1 → 4.5.0** (major bump). Unblocked by widening constraint ranges in vendored `Packages/Citadel/Package.swift` and `Packages/swift-nio-ssh/Package.swift` to `..<"5.0.0"`. No source changes required.
   - **swift-nio 2.94 → 2.99**, **swift-log 1.9 → 1.12**, **swift-collections 1.3 → 1.5.1**, **swift-asn1 1.5 → 1.7**, **swift-argument-parser 1.7.0 → 1.7.1**, **SwiftTerm 1.10.1 → 1.13.0** (last required installing Xcode 26 Metal toolchain component).
@@ -110,7 +134,7 @@
     - Widget ColorTag encoding: raw values matched to lowercase app encoding
     - Window restoration disabled on all windows (sessions are ephemeral)
     - Main Window restoration disabled (prevented duplicate Connections window)
-    - Keyboard focus maintenance: 2-second periodic `becomeFirstResponder` timer to combat visionOS RTI idle dropout
+    - Historical keyboard focus maintenance used a two-second periodic `becomeFirstResponder` timer; this was superseded on 2026-07-17 by explicit focus ownership and bounded retry/resign behavior.
 
 - Sprint 3 "Command Center" shipped (2026-03-17):
   - Tailscale discovery, session recording + AI summary, immersive focus, notifications, SharePlay
@@ -119,17 +143,16 @@
   - Follow-up: Tailscale API struct rewrite (matched official Go client), dual auth (API key + OAuth), mobile device filtering, SSH port field, keyboard focus isKeyWindow guard, stable bell audio
 
 ## What's Next
-- Distribution provisioning + signing in Xcode
-- App Store Connect listing: name, screenshots (visionOS spec), description, privacy policy URL, age rating, category
-- Archive + upload to App Store Connect
-- TestFlight smoke test on device
-- SSH Agent forwarding (only remaining `TODO` in source — `Models.swift:1007`)
-- SFTP drag-and-drop, terminal themes (import/export) — post-launch
-- glassdb follow-up: read servers/keys from shared App Group suite — separate repo
+- Run the current tree with matching Xcode 26.x and visionOS 26.x.
+- Execute the physical Vision Pro transparency/blur, Secure Enclave/Optic ID, focus, keyboard, IME/dictation, accessibility, performance, and live SSH/SFTP/forwarding matrix.
+- Complete the terminal conformance corpus and recording export/device policy.
+- Obtain current glassdb suite/cross-repository acceptance.
+- Complete Phases 06–09 or obtain explicit user-approved dispositions; no silent deferral.
+- Complete signing, archive, screenshots, App Store metadata, TestFlight, fresh-main build, merge/tag, and final go/no-go gates.
 
 ## Known Platform Limitations
 - Bell audio not spatialized per-window (visionOS has no API for per-window short audio effects — tried AudioServices, AVAudioPlayer, RealityKit)
 - No custom passthrough blur (only system Materials — user wants true gaussian blur, no API exists)
-- SharePlay viewer is read-only (no remote input yet)
+- SharePlay is excluded from this release; its source, entitlement, UI, and public claims are removed.
 - Secure Enclave keys are device-bound (cannot transfer to new device)
 - SecureEnclave.isAvailable returns false in visionOS Simulator

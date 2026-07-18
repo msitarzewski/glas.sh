@@ -20,7 +20,7 @@ All character counts are App Store Connect limits. Trim before paste if a brand 
 ## Promotional text (170 chars max — updateable without resubmission)
 
 **Primary**:
-> Float terminals in your space. On‑device AI. Tailscale auto‑discovery. Session recording. SharePlay. SFTP. Multi‑hop jump hosts. No cloud. No subscriptions.
+> Float terminals in your space. On‑device AI. Tailscale discovery. Session recording. SFTP. Multi‑hop jump hosts. No cloud. No subscriptions.
 
 (159 chars)
 
@@ -31,13 +31,13 @@ Use this slot for time-sensitive callouts after launch (release notes hooks, sal
 ```
 glas.sh is the SSH terminal Apple Vision Pro deserves — built from scratch for spatial computing, not ported from iPad.
 
-Float terminal windows anywhere in your space. Talk to your servers with an AI assistant that runs entirely on your device. Browse files spatially. Watch your session play back. Share a terminal in FaceTime. Connect to your whole Tailscale network with one tap.
+Float genuinely transparent terminal windows anywhere in your space, then adjust opacity and blur independently. Talk to your servers with an AI assistant that runs entirely on your device. Browse files spatially. Record terminal output with explicit input-capture consent. Connect to your Tailscale network with one tap.
 
 — BUILT FOR VISIONOS —
 
 • Multi-window terminals with glass-first chrome and Liquid Glass materials
-• Eye-and-hand interaction, 60pt minimum hit targets, full VoiceOver support
-• Spatial widgets — pin server status to your home view, tap to connect
+• Native eye-and-hand interaction with accessibility-aware controls
+• Spatial widgets — open recently connected servers from your home view
 • Custom URL scheme (glassh://) for deep links from widgets and shortcuts
 • Immersive focus mode for distraction-free work
 
@@ -59,20 +59,19 @@ Float terminal windows anywhere in your space. Talk to your servers with an AI a
 — PRIVACY THAT'S TECHNICAL, NOT MARKETING —
 
 • Credentials stored in Keychain with kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-• Optional Secure Enclave–wrapped SSH keys for biometric-gated authentication
+• Optional hardware-bound Secure Enclave SSH signing keys with user-presence authorization
 • Zero analytics, zero telemetry, zero third-party SDKs
 • Open source under the MIT license — audit the claims yourself
 
 — POWER FEATURES —
 
 • Tailscale device discovery — your tailnet shows up as a connection source
-• Session recording with on-device AI summary
-• SharePlay terminal viewer — let a teammate watch your session read-only
+• Privacy-preserving terminal session recording
 • Layout presets — save and restore multi-window arrangements
 • Quick connect — type user@host:port in the search bar, hit enter
 • Favorites, tags, and full-text server search
 • Auto-reconnect with exponential backoff for flaky links
-• True per-window keyboard focus, even after visionOS idle
+• Per-window terminal focus with bounded activation retry
 
 — DESIGNED IN PUBLIC —
 
@@ -103,7 +102,7 @@ Initial release.
 
 The terminal that Apple Vision Pro deserves — native, spatial, private.
 
-Float terminals in your space, get on-device AI assistance, connect to your full Tailscale network, browse files spatially, record sessions, and share read-only views over SharePlay. All free, all open source, all yours.
+Float terminals in your space, get on-device AI assistance, connect to your full Tailscale network, browse files spatially, and record sessions. All free, all open source, all yours.
 ```
 
 (~270 chars)
@@ -132,7 +131,7 @@ Float terminals in your space, get on-device AI assistance, connect to your full
 Likely 4+. The questionnaire will ask about violence, profanity, drug references, gambling, user-generated content, web browsing, etc. — all "None" expected. The only nuance:
 
 - **Unrestricted web access**: No (we don't browse the web)
-- **User-generated content visible to others**: No (the SharePlay viewer is private to a FaceTime call, not public)
+- **User-generated content visible to others**: No
 
 ## Export Compliance
 

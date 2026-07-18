@@ -1,3 +1,4 @@
+#if DEBUG
 //
 //  HTMLPreviewWindow.swift
 //  glas.sh
@@ -180,3 +181,4 @@ struct HTMLPreviewWindow: View {
     return HTMLPreviewWindow(context: context)
         .environment(SessionManager())
 }
+#endif

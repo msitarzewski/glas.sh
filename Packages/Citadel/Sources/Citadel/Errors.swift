@@ -16,6 +16,7 @@ public enum SSHExecError: Error {
 
 public enum SFTPError: Error {
     case unknownMessage
+    case invalidPacketLength(UInt32)
     case invalidPayload(type: SFTPMessageType)
     case invalidResponse
     case noResponseTarget
@@ -24,6 +25,7 @@ public enum SFTPError: Error {
     case fileHandleInvalid
     case errorStatus(SFTPMessage.Status)
     case unsupportedVersion(SFTPProtocolVersion)
+    case unsupportedExtension(String)
 }
 
 public enum CitadelError: Error {

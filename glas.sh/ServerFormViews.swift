@@ -9,6 +9,8 @@ import SwiftUI
 import GlasSecretStore
 import os
 
+private let supportedAuthenticationMethods: [AuthenticationMethod] = [.password, .sshKey]
+
 // MARK: - Add Server View
 
 struct AddServerView: View {
@@ -37,7 +39,8 @@ struct AddServerView: View {
     @FocusState private var focusedField: Field?
 
     private var isFormValid: Bool {
-        guard !name.isEmpty, !host.isEmpty, !username.isEmpty, Int(port) != nil else {
+        guard !name.isEmpty, !host.isEmpty, !username.isEmpty,
+              let parsedPort = Int(port), (1...65_535).contains(parsedPort) else {
             return false
         }
         switch authMethod {
@@ -70,7 +73,7 @@ struct AddServerView: View {
 
                 Section("Authentication") {
                     Picker("Method", selection: $authMethod) {
-                        ForEach(AuthenticationMethod.allCases, id: \.self) { method in
+                        ForEach(supportedAuthenticationMethods, id: \.self) { method in
                             Text(method.displayName).tag(method)
                         }
                     }
@@ -237,13 +240,13 @@ struct AddServerView: View {
                     jumpHostIDs.append(selectedID)
                 }
             }
-            .alert("Keychain Error", isPresented: Binding(
+            .alert("Save Failed", isPresented: Binding(
                 get: { keychainSaveError != nil },
                 set: { if !$0 { keychainSaveError = nil } }
             )) {
-                Button("OK", role: .cancel) { dismiss() }
+                Button("OK", role: .cancel) {}
             } message: {
-                Text("Could not save password: \(keychainSaveError ?? "")")
+                Text(keychainSaveError ?? "The server could not be saved.")
             }
         }
         .onAppear {
@@ -278,19 +281,16 @@ struct AddServerView: View {
             jumpHostIDs: jumpHostIDs.isEmpty ? nil : jumpHostIDs
         )
 
-        serverManager.addServer(server)
-
-        // Save password to keychain if using password auth
-        if authMethod == .password {
-            do {
-                try KeychainManager.savePassword(password, for: server)
-            } catch {
-                Logger.keychain.error("Failed to save password: \(error.localizedDescription)")
-                keychainSaveError = error.localizedDescription
-                return
-            }
+        do {
+            try serverManager.addServerOrThrow(
+                server,
+                password: authMethod == .password ? password : nil
+            )
+        } catch {
+            Logger.servers.error("Failed to add server transactionally: \(error.localizedDescription)")
+            keychainSaveError = "The server was not added: \(error.localizedDescription)"
+            return
         }
-
         dismiss()
     }
 
@@ -339,6 +339,7 @@ struct EditServerView: View {
     @State private var newTag: String = ""
     @State private var showingAddSSHKey = false
     @State private var keychainSaveError: String?
+    @State private var requiresPasswordUpgrade: Bool
 
     private enum Field: Hashable { case name, host, port, username, password }
     @FocusState private var focusedField: Field?
@@ -351,12 +352,30 @@ struct EditServerView: View {
         _host = State(initialValue: server.host)
         _port = State(initialValue: String(server.port))
         _username = State(initialValue: server.username)
-        _authMethod = State(initialValue: server.authMethod)
+        // SSH Agent is not shipped in this release. Existing legacy profiles
+        // must choose a supported method before they can be saved again.
+        _authMethod = State(initialValue: server.authMethod == .agent ? .password : server.authMethod)
         _sshKeyID = State(initialValue: server.sshKeyID)
         _colorTag = State(initialValue: server.colorTag)
         _tags = State(initialValue: server.tags)
         _isFavorite = State(initialValue: server.isFavorite)
         _jumpHostIDs = State(initialValue: server.resolvedJumpHostIDs)
+        _requiresPasswordUpgrade = State(initialValue: false)
+    }
+
+    private var isFormValid: Bool {
+        guard !name.isEmpty, !host.isEmpty, !username.isEmpty,
+              let parsedPort = Int(port), (1...65_535).contains(parsedPort) else {
+            return false
+        }
+        switch authMethod {
+        case .password:
+            return !password.isEmpty
+        case .sshKey:
+            return sshKeyID != nil
+        case .agent:
+            return false
+        }
     }
 
     var body: some View {
@@ -375,7 +394,7 @@ struct EditServerView: View {
 
                 Section("Authentication") {
                     Picker("Method", selection: $authMethod) {
-                        ForEach(AuthenticationMethod.allCases, id: \.self) { method in
+                        ForEach(supportedAuthenticationMethods, id: \.self) { method in
                             Text(method.displayName).tag(method)
                         }
                     }
@@ -384,6 +403,15 @@ struct EditServerView: View {
                         SecureField("Password", text: $password)
                             .textContentType(.init(rawValue: ""))
                             .focused($focusedField, equals: .password)
+                        if requiresPasswordUpgrade {
+                            Label {
+                                Text("Re-enter this password once to upgrade it. Earlier releases used an address-based Keychain account shared with glassdb; glas.sh will not import that ambiguous credential.")
+                            } icon: {
+                                Image(systemName: "key.horizontal")
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
                     } else if authMethod == .sshKey {
                         if settingsManager.sshKeys.isEmpty {
                             Text("No SSH keys available. Add one to continue.")
@@ -540,23 +568,30 @@ struct EditServerView: View {
                     Button("Save") {
                         saveChanges()
                     }
+                    .disabled(!isFormValid)
                 }
             }
-            .alert("Keychain Error", isPresented: Binding(
+            .alert("Save Failed", isPresented: Binding(
                 get: { keychainSaveError != nil },
                 set: { if !$0 { keychainSaveError = nil } }
             )) {
-                Button("OK", role: .cancel) { dismiss() }
+                Button("OK", role: .cancel) {}
             } message: {
-                Text("Could not save password: \(keychainSaveError ?? "")")
+                Text(keychainSaveError ?? "The server changes could not be saved.")
             }
         }
         .onAppear {
             normalizeSelectedSSHKey()
             focusedField = .name
             if authMethod == .password {
-                if let saved = try? KeychainManager.retrievePassword(for: server) {
+                do {
+                    let saved = try serverManager.password(for: server)
                     password = saved
+                    requiresPasswordUpgrade = false
+                } catch SecretStoreError.notFound {
+                    requiresPasswordUpgrade = true
+                } catch {
+                    keychainSaveError = "The saved password could not be read: \(error.localizedDescription)"
                 }
             }
         }
@@ -571,8 +606,6 @@ struct EditServerView: View {
     private func saveChanges() {
         commitPendingTag()
 
-        let originalAuthMethod = server.authMethod
-
         var updatedServer = server
         updatedServer.name = name
         updatedServer.host = host
@@ -586,30 +619,17 @@ struct EditServerView: View {
         updatedServer.isFavorite = isFavorite
         updatedServer.jumpHostID = jumpHostIDs.first
         updatedServer.jumpHostIDs = jumpHostIDs.isEmpty ? nil : jumpHostIDs
-
-        serverManager.updateServer(updatedServer)
-
-        if authMethod == .password, !password.isEmpty {
-            do {
-                try KeychainManager.savePassword(password, for: updatedServer)
-            } catch {
-                Logger.keychain.error("Failed to save password: \(error.localizedDescription)")
-                keychainSaveError = error.localizedDescription
-                return
-            }
-
-            // Clean up orphaned keychain entry if connection details changed
-            let keyChanged = server.host != host
-                || server.port != (Int(port) ?? 22)
-                || server.username != username
-            if keyChanged {
-                try? KeychainManager.deletePassword(for: server)
-            }
-        } else if originalAuthMethod == .password && authMethod != .password {
-            // Auth method changed away from password — remove old entry
-            try? KeychainManager.deletePassword(for: server)
+        do {
+            try serverManager.updateServerOrThrow(
+                updatedServer,
+                password: authMethod == .password ? password : nil
+            )
+            requiresPasswordUpgrade = false
+        } catch {
+            Logger.servers.error("Failed to update server transactionally: \(error.localizedDescription)")
+            keychainSaveError = "The server changes were not saved: \(error.localizedDescription)"
+            return
         }
-
         dismiss()
     }
 

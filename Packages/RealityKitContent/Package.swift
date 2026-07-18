@@ -6,9 +6,9 @@ import PackageDescription
 let package = Package(
     name: "RealityKitContent",
     platforms: [
-        .visionOS(.v2),
-        .macOS(.v15),
-        .iOS(.v18)
+        .visionOS(.v26),
+        .macOS(.v26),
+        .iOS(.v26)
     ],
     products: [
         // Products define the executables and libraries a package produces, and make them visible to other packages.
@@ -17,9 +17,7 @@ let package = Package(
             targets: ["RealityKitContent"]),
     ],
     dependencies: [
-        // Local patched SSH library for compatibility with current Xcode/visionOS toolchain.
-        .package(path: "../Citadel"),
-        .package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.5.1"),
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm", exact: "1.13.0"),
     ],
     targets: [
         // Targets are the basic building blocks of a package. A target can define a module or a test suite.
@@ -27,8 +25,10 @@ let package = Package(
         .target(
             name: "RealityKitContent",
             dependencies: [
-                .product(name: "Citadel", package: "Citadel"),
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
+            ],
+            resources: [
+                .process("RealityKitContent.rkassets")
             ],
             swiftSettings: [
                 .enableUpcomingFeature("MemberImportVisibility")

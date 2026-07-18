@@ -5,6 +5,11 @@
 # Workspace user data
 **/*.xcworkspace/xcuserdata/
 **/*.xcworkspace/xcshareddata/swiftpm/
+!glas.sh.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+!glas.sh.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+
+# Library-local resolution is not the application dependency lock.
+Packages/RealityKitContent/Package.resolved
 
 
 # SwiftPM local caches/state
