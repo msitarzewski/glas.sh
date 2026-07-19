@@ -1,13 +1,14 @@
 import NIO
 import NIOSSH
 
-final class SSHChannelDataUnwrapper: ChannelInboundHandler {
+final class SSHChannelDataUnwrapper: ChannelInboundHandler, Sendable {
     typealias InboundIn = SSHChannelData
     typealias InboundOut = ByteBuffer
 
     func handlerAdded(context: ChannelHandlerContext) {
-        context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { error in
-            context.fireErrorCaught(error)
+        let channel = context.channel
+        channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { error in
+            channel.pipeline.fireErrorCaught(error)
         }
     }
 
@@ -28,7 +29,7 @@ final class SSHChannelDataUnwrapper: ChannelInboundHandler {
     }
 }
 
-final class SSHOutboundChannelDataWrapper: ChannelOutboundHandler {
+final class SSHOutboundChannelDataWrapper: ChannelOutboundHandler, Sendable {
     typealias OutboundIn = ByteBuffer
     typealias OutboundOut = SSHChannelData
     
@@ -38,7 +39,7 @@ final class SSHOutboundChannelDataWrapper: ChannelOutboundHandler {
     }
 }
 
-final class SSHInboundChannelDataWrapper: ChannelInboundHandler {
+final class SSHInboundChannelDataWrapper: ChannelInboundHandler, Sendable {
     typealias InboundIn = ByteBuffer
     typealias InboundOut = SSHChannelData
 

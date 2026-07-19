@@ -17,7 +17,7 @@ import NIOCore
 /// The various channel options specific to `SSHChildChannel`s.
 ///
 /// Please note that some of NIO's regular `ChannelOptions` are valid on `SSHChildChannel`s.
-public enum SSHChildChannelOptions {
+public enum SSHChildChannelOptions: Sendable {
     /// - seealso: `LocalChannelIdentifierOption`.
     public static let localChannelIdentifier: SSHChildChannelOptions.Types.LocalChannelIdentifierOption = .init()
 
@@ -35,40 +35,40 @@ public enum SSHChildChannelOptions {
 }
 
 public extension SSHChildChannelOptions {
-    enum Types {}
+    enum Types: Sendable {}
 }
 
 public extension SSHChildChannelOptions.Types {
     /// `LocalChannelIdentifierOption` allows users to query the channel number assigned locally for a given channel.
-    struct LocalChannelIdentifierOption: ChannelOption, NIOSSHSendable {
+    struct LocalChannelIdentifierOption: ChannelOption, Sendable {
         public typealias Value = UInt32
 
         public init() {}
     }
 
     /// `RemoteChannelIdentifierOption` allows users to query the channel number assigned by the remote peer for a given channel.
-    struct RemoteChannelIdentifierOption: ChannelOption, NIOSSHSendable {
+    struct RemoteChannelIdentifierOption: ChannelOption, Sendable {
         public typealias Value = UInt32?
 
         public init() {}
     }
 
     /// `SSHChannelTypeOption` allows users to query the type of the channel they're currently using.
-    struct SSHChannelTypeOption: ChannelOption, NIOSSHSendable {
+    struct SSHChannelTypeOption: ChannelOption, Sendable {
         public typealias Value = SSHChannelType
 
         public init() {}
     }
 
     /// `PeerMaximumMessageLengthOption` allows users to query the maximum packet size value reported by the remote peer for a given channel.
-    struct PeerMaximumMessageLengthOption: ChannelOption, NIOSSHSendable {
+    struct PeerMaximumMessageLengthOption: ChannelOption, Sendable {
         public typealias Value = UInt32
         
         public init() {}
     }
     
     /// `UsernameOption` allows users to query the authenticated username of the channel.
-    public struct UsernameOption: ChannelOption {
+    struct UsernameOption: ChannelOption, Sendable {
         public typealias Value = String?
         
         public init() {}

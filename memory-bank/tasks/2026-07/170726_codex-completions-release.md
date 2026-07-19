@@ -7,16 +7,19 @@ Implement and verify the current `codex-completions` release candidate against t
 ## Outcome
 
 - ✅ User approval: code and automated-QA checkpoint approved on 2026-07-17.
-- ✅ App tests: 164/164 passed on visionOS 26.4 arm64 Simulator; zero failures, skips, expected failures, or runtime warnings.
-- ✅ App tests: 164/164 passed on visionOS 27.0 arm64 Simulator; zero failures, skips, expected failures, or runtime warnings.
+- ✅ Final user approval: native macOS/visionOS parity candidate approved on 2026-07-19 after iterative physical and visual review.
+- ✅ App tests: 183/183 passed on visionOS 26.4 arm64 Simulator and 183/183 passed on visionOS 27.0 arm64 Simulator.
+- ✅ macOS tests: 20/20 passed on Apple Silicon macOS.
+- ✅ SSH packages: NIOSSH 331/331 passed; Citadel executed 44 tests with 39 passed and five expected live-environment skips.
 - ✅ GlasSecretStore: 75/75 passed across 13 suites.
-- ✅ Build: unsigned generic visionOS Release succeeded.
-- ✅ Binary: arm64 Mach-O, platform `VISIONOS`, minimum OS 26.0, SDK 27.0.
+- ✅ Build: generic visionOS Release and signed native macOS Release succeeded.
+- ✅ Binary: Apple Silicon only; visionOS minimum 26.0/SDK 27.0; macOS Release is arm64 with hardened runtime and runtime 27.0.
 - ✅ Smoke: installed and launched as `sh.glas.app` on both simulator runtimes.
+- ✅ Physical/visual: Vision Pro terminal rendering, ANSI color, full-transparency behavior, independent opacity/blur behavior, and macOS native chrome were reviewed during the implementation loop.
 - ✅ Quality: `git diff --check` and the production TODO/FIXME/stub scan passed.
 - ✅ Security: independent post-fix audits found no current release blocker in glas.sh or GlasSecretStore.
-- ✅ Secret review: final isolated Gitleaks adjudication found zero actionable production credentials.
-- ⏳ Distribution: physical Vision Pro, matching Xcode 26, signing, archive, TestFlight, screenshots/listing, and final go/no-go remain open.
+- ✅ Secret review: final isolated Gitleaks scans of the 9.04 MB tracked diff and every untracked source area found zero leaks.
+- ⏳ Distribution: complete physical Vision Pro security/input/accessibility/performance evidence, matching Xcode 26, archive, TestFlight, screenshots/listing, and final go/no-go remain open.
 
 ## Files Modified
 
@@ -29,6 +32,8 @@ The approved work spans the existing app, packages, tests, assets, and release d
 - `glas.sh/SettingsView.swift`, `glas.sh/WindowRecoveryManager.swift` — independent opacity/blur controls, transparent endpoint, migration and per-session resolution.
 - `glas.shTests/glas_shTests.swift`, `Packages/GlasSecretStore/Tests/` — security, migration, connection-flow, terminal, appearance, lifecycle, and partial-artifact regressions.
 - `glas.sh/Assets.xcassets/AppIcon.solidimagestack/` — glassdb-provided release icon integrated into the existing layered icon asset.
+- `glas.sh-mac/`, `glas.sh-macTests/`, `glas.sh.xcodeproj/project.pbxproj` — native macOS application target, AppKit window policy, local PTY, SSH/local tabs and splits, focused commands, theme import/sync, and macOS regression coverage.
+- `Packages/Citadel/`, `Packages/swift-nio-ssh/` — Swift 6.3 dependency modernization, Sendable/concurrency repairs, bounded protocol deferral and authentication attempts, reconnect cleanup, and SFTP error preservation.
 - `memory-bank/releases/codex-completions/` and Memory Bank core files — approved evidence/status update without inventing completion for open phases.
 
 ## Patterns Applied
@@ -47,6 +52,7 @@ The approved work spans the existing app, packages, tests, assets, and release d
 - SwiftTerm receives the configured foreground/background, selection, caret, and 16-color ANSI palette; focus replay fixes late-created caret state.
 - The terminal tools menu preserves declaration order so Search appears first and Settings remains adjacent to the gear trigger.
 - Appearance persistence and session overrides resolve opacity and blur independently through `TerminalGlassAppearance`.
+- Native macOS registers its focused workspace command set exactly once at app scope; every window contributes focused actions without duplicating application menus.
 
 ## Architectural Decisions
 
@@ -77,4 +83,4 @@ The approved work spans the existing app, packages, tests, assets, and release d
 - visionOS 27 result bundle: `/tmp/glas-final7-vision27-20260717T1737.xcresult`
 - visionOS 26.4 result bundle: `/tmp/glas-final7-vision264-20260717T1742.xcresult`
 - Release product: `/tmp/glas-final-release-20260717/Build/Products/Release-xros/glas.sh.app`
-- No commit, tag, archive upload, or external publication was created during this task.
+- Final macOS Release product: `/tmp/glas-menu-mac-release/Build/Products/Release/glas.sh.app`

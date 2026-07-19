@@ -1,5 +1,13 @@
 # Progress
 
+- Native macOS/visionOS parity candidate approved (2026-07-19):
+  - Added the native Apple Silicon/macOS 26+ shell with local PTY and SSH terminals, multiwindow workspaces, tabs/splits, focused menus, secure keyboard entry, native material chrome, and a packaged Dock icon.
+  - Preserved physical Vision Pro rendering and the defining independent tint/opacity/blur controls, including true full transparency and ANSI colors composited above the terminal glass.
+  - Added Apple Terminal theme import and iCloud theme/appearance synchronization across macOS and visionOS.
+  - Upgraded touched packages to Swift 6.3/current dependencies and closed concurrency, lifecycle, bounded-deferral, and authentication-attempt findings.
+  - Final QA: macOS 20/20; visionOS 26.4 183/183; visionOS 27.0 183/183; NIOSSH 331/331; Citadel 39 passed with five environment skips; GlasSecretStore 75/75.
+  - Signed macOS Release is thin arm64 with hardened runtime; final diff, stub, and secret scans pass.
+
 ## Latest Milestones
 - `codex-completions` implementation and automated-QA checkpoint approved (2026-07-17):
   - Centralized session authorization, external-request confirmation, credential preparation, reconnect/layout cleanup, and one authoritative server store.

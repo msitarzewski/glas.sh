@@ -11,6 +11,37 @@ final class Citadel2Tests: XCTestCase {
         case unexpectedOutbound(String)
     }
 
+    func testAuthenticationMethodConsumesEachOfferExactlyOnce() throws {
+        let eventLoop = EmbeddedEventLoop()
+        let authentication = SSHAuthenticationMethod.passwordBased(
+            username: "test-user",
+            password: "test-password"
+        )
+
+        let firstChallenge = eventLoop.makePromise(of: NIOSSHUserAuthenticationOffer?.self)
+        authentication.nextAuthenticationType(
+            availableMethods: .password,
+            nextChallengePromise: firstChallenge
+        )
+        let offer = try XCTUnwrap(firstChallenge.futureResult.wait())
+        XCTAssertEqual(offer.username, "test-user")
+        guard case .password(let password) = offer.offer else {
+            return XCTFail("Expected the configured password offer")
+        }
+        XCTAssertEqual(password.password, "test-password")
+
+        let exhaustedChallenge = eventLoop.makePromise(of: NIOSSHUserAuthenticationOffer?.self)
+        authentication.nextAuthenticationType(
+            availableMethods: .password,
+            nextChallengePromise: exhaustedChallenge
+        )
+        XCTAssertThrowsError(try exhaustedChallenge.futureResult.wait()) { error in
+            guard case SSHClientError.allAuthenticationOptionsFailed = error else {
+                return XCTFail("Unexpected exhaustion error: \(error)")
+            }
+        }
+    }
+
     private func makeEmbeddedSFTPClient() throws -> (EmbeddedChannel, SFTPClient) {
         let channel = EmbeddedChannel()
         let responses = SFTPResponses(sftpVersion: channel.eventLoop.makePromise())
@@ -532,7 +563,7 @@ final class Citadel2Tests: XCTestCase {
     }
 
     func withDisconnectTest(perform: (SSHServer, SSHClient) async throws -> ()) async throws {
-        struct AuthDelegate: NIOSSHServerUserAuthenticationDelegate {
+        struct AuthDelegate: NIOSSHServerUserAuthenticationDelegate, Sendable {
             let password: String
             
             var supportedAuthenticationMethods: NIOSSHAvailableUserAuthenticationMethods {
@@ -694,7 +725,7 @@ final class Citadel2Tests: XCTestCase {
             }
         }
         
-        struct AuthDelegate: NIOSSHServerUserAuthenticationDelegate {
+        struct AuthDelegate: NIOSSHServerUserAuthenticationDelegate, Sendable {
             let supportedKey: NIOSSHPublicKey
             
             let supportedAuthenticationMethods: NIOSSHAvailableUserAuthenticationMethods = [.publicKey]

@@ -47,6 +47,39 @@ private final class TerminalResizeProbe {
 }
 
 @MainActor
+private final class FakeICloudSettingsStore: ICloudSettingsKeyValueStore {
+    var isAvailable = true
+    var isAccountAvailable = true
+    var synchronizeResult = true
+    private(set) var values: [String: Data] = [:]
+    private(set) var setCount = 0
+    private(set) var observerCount = 0
+    private var handler: (@MainActor @Sendable (ICloudSettingsStoreChange) -> Void)?
+
+    func data(forKey key: String) -> Data? { values[key] }
+
+    func set(_ data: Data, forKey key: String) {
+        values[key] = data
+        setCount += 1
+    }
+
+    func synchronize() -> Bool { synchronizeResult }
+
+    func observeExternalChanges(
+        _ handler: @escaping @MainActor @Sendable (ICloudSettingsStoreChange) -> Void
+    ) -> NSObjectProtocol {
+        self.handler = handler
+        observerCount += 1
+        return NSObject()
+    }
+
+    func removeExternalChangeObserver(_ observer: NSObjectProtocol) {
+        handler = nil
+        observerCount = max(0, observerCount - 1)
+    }
+}
+
+@MainActor
 private final class ServerPasswordProbe {
     var values: [UUID: String] = [:]
     var retrieveError: Error?
@@ -218,6 +251,591 @@ private final class HostTrustStoreProbe {
 
 @MainActor
 struct glas_shTests {
+
+    @Test func codableColorResolvesExplicitSRGBComponents() {
+        let color = CodableColor(color: Color(
+            .sRGB,
+            red: 0.125,
+            green: 0.375,
+            blue: 0.625,
+            opacity: 0.75
+        ))
+
+        #expect(abs(color.red - 0.125) < 0.000_001)
+        #expect(abs(color.green - 0.375) < 0.000_001)
+        #expect(abs(color.blue - 0.625) < 0.000_001)
+        #expect(abs(color.alpha - 0.75) < 0.000_001)
+
+        let semanticRed = CodableColor(color: .red)
+        #expect(semanticRed.red > 0.9)
+        #expect(semanticRed.red > semanticRed.green)
+        #expect(semanticRed.red > semanticRed.blue)
+
+        let translucentBlue = CodableColor(color: Color.blue.opacity(0.3))
+        #expect(translucentBlue.blue > 0.9)
+        #expect(abs(translucentBlue.alpha - 0.3) < 0.000_001)
+    }
+
+    @Test func defaultThemeUsesMacOS27ClearDarkPaletteWithoutBackgroundCoupling() {
+        let theme = TerminalTheme.default
+        let expectedForeground = CodableColor(
+            sRGBRed: 0.901596844196,
+            green: 0.901596844196,
+            blue: 0.901596844196
+        )
+        let expectedSelection = CodableColor(
+            sRGBRed: 0.200930923223,
+            green: 0.304736882448,
+            blue: 0.370029002428
+        )
+        let expectedANSIColors = [
+            CodableColor(sRGBRed: 0.208221729000, green: 0.258872947300, blue: 0.296137570100),
+            CodableColor(sRGBRed: 0.705090082900, green: 0.335715730100, blue: 0.281149064300),
+            CodableColor(sRGBRed: 0.424156630500, green: 0.667281834600, blue: 0.441522716500),
+            CodableColor(sRGBRed: 0.768627451000, green: 0.674509803900, blue: 0.384313725500),
+            CodableColor(sRGBRed: 0.427450980400, green: 0.588235294100, blue: 0.705882352900),
+            CodableColor(sRGBRed: 0.741176470600, green: 0.482352941200, blue: 0.803921568600),
+            CodableColor(sRGBRed: 0.484715120500, green: 0.795007090900, blue: 0.805706814000),
+            CodableColor(sRGBRed: 0.868783575500, green: 0.899543531400, blue: 0.922173947700),
+            CodableColor(sRGBRed: 0.276332894900, green: 0.362595777900, blue: 0.426060269100),
+            CodableColor(sRGBRed: 0.876132015300, green: 0.424238529000, blue: 0.352688727000),
+            CodableColor(sRGBRed: 0.474204848200, green: 0.743332020300, blue: 0.492389116600),
+            CodableColor(sRGBRed: 0.898039215700, green: 0.784313725500, blue: 0.447058823500),
+            CodableColor(sRGBRed: 0.403921568600, green: 0.709803921600, blue: 0.929411764700),
+            CodableColor(sRGBRed: 0.827450980400, green: 0.537254902000, blue: 0.898039215700),
+            CodableColor(sRGBRed: 0.517774366200, green: 0.867731615800, blue: 0.879799107100),
+            CodableColor(sRGBRed: 0.899579140100, green: 0.935473975100, blue: 0.961882174700),
+        ]
+
+        #expect(theme.foreground == expectedForeground)
+        #expect(theme.cursor == expectedForeground)
+        #expect(theme.selection == expectedSelection)
+        #expect(theme.ansiColors == expectedANSIColors)
+        #expect(theme.background == CodableColor(
+            sRGBRed: 0,
+            green: 0,
+            blue: 0,
+            alpha: 0.3
+        ))
+
+        let uniqueColors = theme.ansiColors.reduce(into: [CodableColor]()) { result, color in
+            if !result.contains(color) { result.append(color) }
+        }
+        #expect(uniqueColors.count == 16)
+    }
+
+    @Test func terminalThemeRoundTripsEveryClearDarkColor() throws {
+        let encoded = try JSONEncoder().encode(TerminalTheme.default)
+        let decoded = try JSONDecoder().decode(TerminalTheme.self, from: encoded)
+
+        #expect(decoded == TerminalTheme.default)
+        #expect(decoded.ansiColors.count == 16)
+        #expect(decoded.resolvedAppearance == .dark)
+        #expect(decoded.canvasBackgroundColor.alpha == 1)
+        #expect(decoded.swiftTermTheme.background.alpha == 0)
+    }
+
+    @Test func swiftTermThemePreservesForegroundAndANSISources() {
+        var theme = TerminalTheme.default
+        theme.foreground = CodableColor(sRGBRed: 0.123, green: 0.456, blue: 0.789)
+        let sourceANSI = (0..<16).map { index in
+            let value = Double(index + 1) / 17
+            return CodableColor(
+                sRGBRed: value,
+                green: 1 - value,
+                blue: value / 2,
+                alpha: 0.25
+            )
+        }
+        theme.black = sourceANSI[0]
+        theme.red = sourceANSI[1]
+        theme.green = sourceANSI[2]
+        theme.yellow = sourceANSI[3]
+        theme.blue = sourceANSI[4]
+        theme.magenta = sourceANSI[5]
+        theme.cyan = sourceANSI[6]
+        theme.white = sourceANSI[7]
+        theme.brightBlack = sourceANSI[8]
+        theme.brightRed = sourceANSI[9]
+        theme.brightGreen = sourceANSI[10]
+        theme.brightYellow = sourceANSI[11]
+        theme.brightBlue = sourceANSI[12]
+        theme.brightMagenta = sourceANSI[13]
+        theme.brightCyan = sourceANSI[14]
+        theme.brightWhite = sourceANSI[15]
+
+        let swiftTermTheme = theme.swiftTermTheme
+
+        #expect(swiftTermTheme.foreground.red == theme.foreground.red)
+        #expect(swiftTermTheme.foreground.green == theme.foreground.green)
+        #expect(swiftTermTheme.foreground.blue == theme.foreground.blue)
+        #expect(swiftTermTheme.background.alpha == 0)
+        #expect(swiftTermTheme.ansiColors == sourceANSI.map {
+            SwiftTermThemeColor(red: $0.red, green: $0.green, blue: $0.blue)
+        })
+    }
+
+    @Test func legacyThemeWithoutAppearanceDerivesStableCanvasPolarity() throws {
+        let encoded = try JSONEncoder().encode(TerminalTheme.default)
+        var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "preferredAppearance")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(TerminalTheme.self, from: legacyData)
+
+        #expect(decoded.preferredAppearance == nil)
+        #expect(decoded.resolvedAppearance == .dark)
+
+        var light = decoded
+        light.background = CodableColor(sRGBRed: 0.9, green: 0.9, blue: 0.9, alpha: 0.1)
+        #expect(light.resolvedAppearance == .light)
+        #expect(light.canvasBackgroundColor.alpha == 1)
+
+        var automaticDark = decoded
+        automaticDark.preferredAppearance = .automatic
+        #expect(automaticDark.resolvedAppearance == .dark)
+
+        var automaticLight = light
+        automaticLight.preferredAppearance = .automatic
+        #expect(automaticLight.resolvedAppearance == .light)
+
+        var explicitLight = decoded
+        explicitLight.preferredAppearance = .light
+        #expect(explicitLight.resolvedAppearance == .light)
+
+        var explicitDark = light
+        explicitDark.preferredAppearance = .dark
+        #expect(explicitDark.resolvedAppearance == .dark)
+    }
+
+    @Test func applyingClearDarkColorsPreservesThemeIdentityBackgroundAndFont() {
+        let id = UUID()
+        let background = CodableColor(sRGBRed: 0.12, green: 0.23, blue: 0.34, alpha: 0.45)
+        var theme = makeCorruptedLegacyGlassTheme(
+            id: id,
+            background: background,
+            fontName: "Menlo",
+            fontSize: 17
+        )
+        theme.preferredAppearance = .light
+
+        theme.applyAppleClearDarkColors()
+
+        #expect(theme.id == id)
+        #expect(theme.name == "Glass Terminal")
+        #expect(theme.background == background)
+        #expect(theme.fontName == "Menlo")
+        #expect(theme.fontSize == 17)
+        #expect(theme.preferredAppearance == .dark)
+        #expect(theme.resolvedAppearance == .dark)
+        #expect(theme.foreground == TerminalTheme.appleClearDarkForeground)
+        #expect(theme.selection == TerminalTheme.appleClearDarkSelection)
+        #expect(theme.ansiColors == TerminalTheme.appleClearDarkANSIColors)
+    }
+
+    @Test func settingsManagerMigratesOnlyExactCorruptedGlassColorsAndPersistsRepair() throws {
+        let suiteName = "sh.glas.test.theme-migration.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let id = UUID()
+        let background = CodableColor(sRGBRed: 0.15, green: 0.25, blue: 0.35, alpha: 0.45)
+        let legacy = makeCorruptedLegacyGlassTheme(
+            id: id,
+            background: background,
+            fontName: "Menlo",
+            fontSize: 18
+        )
+        defaults.set(try JSONEncoder().encode(legacy), forKey: UserDefaultsKeys.theme)
+        let settings = SettingsManager(loadImmediately: false, settingsDefaults: defaults)
+
+        settings.loadTheme()
+
+        #expect(settings.currentTheme.id == TerminalTheme.defaultID)
+        #expect(settings.currentTheme.name == legacy.name)
+        #expect(settings.currentTheme.background == background)
+        #expect(settings.currentTheme.fontName == "Menlo")
+        #expect(settings.currentTheme.fontSize == 18)
+        #expect(settings.currentTheme.foreground == TerminalTheme.appleClearDarkForeground)
+        #expect(settings.currentTheme.selection == TerminalTheme.appleClearDarkSelection)
+        #expect(settings.currentTheme.ansiColors == TerminalTheme.appleClearDarkANSIColors)
+        let persistedData = try #require(defaults.data(forKey: UserDefaultsKeys.theme))
+        let persisted = try JSONDecoder().decode(TerminalTheme.self, from: persistedData)
+        #expect(persisted == settings.currentTheme)
+    }
+
+    @Test func settingsManagerPreservesCustomizedLegacyNamedTheme() throws {
+        let suiteName = "sh.glas.test.theme-custom.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var custom = makeCorruptedLegacyGlassTheme()
+        custom.red = CodableColor(sRGBRed: 0.9, green: 0.1, blue: 0.2)
+        defaults.set(try JSONEncoder().encode(custom), forKey: UserDefaultsKeys.theme)
+        let settings = SettingsManager(loadImmediately: false, settingsDefaults: defaults)
+
+        settings.loadTheme()
+
+        let expected = custom.reidentified(id: TerminalTheme.defaultID)
+        #expect(settings.currentTheme == expected)
+        let persistedData = try #require(defaults.data(forKey: UserDefaultsKeys.theme))
+        #expect(try JSONDecoder().decode(TerminalTheme.self, from: persistedData) == expected)
+    }
+
+    @Test func settingsManagerMigratesSingleThemeIntoVersionedLibrary() throws {
+        let suiteName = "sh.glas.test.theme-library-migration.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let legacy = TerminalTheme.default.reidentified(name: "Existing Theme")
+        defaults.set(try JSONEncoder().encode(legacy), forKey: UserDefaultsKeys.theme)
+        let settings = SettingsManager(loadImmediately: false, settingsDefaults: defaults)
+
+        settings.loadTheme()
+
+        #expect(settings.currentTheme.name == legacy.name)
+        #expect(settings.currentTheme.id == TerminalTheme.defaultID)
+        #expect(settings.themeLibrary.selectedThemeID == TerminalTheme.defaultID)
+        #expect(settings.themeLibrary.activeRecords.count == 1)
+        #expect(settings.themeLibrary.activeRecords.first?.origin == .builtIn)
+        let data = try #require(defaults.data(forKey: UserDefaultsKeys.themeLibrary))
+        let persisted = try JSONDecoder().decode(TerminalThemeLibrary.self, from: data)
+        #expect(persisted.selectedTheme?.name == legacy.name)
+        #expect(persisted.selectedTheme?.id == TerminalTheme.defaultID)
+    }
+
+    @Test func newerThemeLibrarySchemaIsPreservedReadOnly() throws {
+        let suiteName = "sh.glas.test.theme-library-future.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var futureLibrary = TerminalThemeLibrary.initial()
+        futureLibrary.schemaVersion = TerminalThemeLibrary.currentSchemaVersion + 1
+        let originalData = try JSONEncoder().encode(futureLibrary)
+        defaults.set(originalData, forKey: UserDefaultsKeys.themeLibrary)
+        let settings = SettingsManager(loadImmediately: false, settingsDefaults: defaults)
+
+        settings.loadTheme()
+        settings.saveTheme(TerminalTheme.default.reidentified(name: "Must Not Persist"))
+
+        #expect(settings.themeLibraryLoadError != nil)
+        #expect(defaults.data(forKey: UserDefaultsKeys.themeLibrary) == originalData)
+    }
+
+    @Test func themeLibraryCRUDProtectsBuiltInAndRetainsDeletionTombstone() throws {
+        let suiteName = "sh.glas.test.theme-library-crud.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = SettingsManager(loadImmediately: false, settingsDefaults: defaults)
+        settings.loadTheme()
+        let builtInID = settings.selectedThemeID
+
+        #expect(!settings.deleteTheme(id: builtInID))
+        let duplicateID = try #require(settings.duplicateTheme(id: builtInID))
+        #expect(settings.themeLibrary.activeRecords.count == 2)
+        #expect(settings.selectedThemeID == duplicateID)
+
+        #expect(settings.deleteTheme(id: duplicateID))
+        #expect(settings.selectedThemeID == builtInID)
+        #expect(settings.themeLibrary.activeRecords.count == 1)
+        #expect(settings.themeLibrary.records.first(where: { $0.id == duplicateID })?.deletedAt != nil)
+    }
+
+    @Test func themeLibraryMergeUsesNewestRecordAndPropagatesDeletion() {
+        let builtInID = UUID()
+        let customID = UUID()
+        let early = Date(timeIntervalSinceReferenceDate: 100)
+        let late = Date(timeIntervalSinceReferenceDate: 200)
+        let builtIn = TerminalTheme.default.reidentified(id: builtInID)
+        let custom = TerminalTheme.default.reidentified(id: customID, name: "Custom")
+        var local = TerminalThemeLibrary(
+            records: [
+                TerminalThemeRecord(theme: builtIn, origin: .builtIn, modifiedAt: early, deletedAt: nil),
+                TerminalThemeRecord(theme: custom, origin: .custom, modifiedAt: early, deletedAt: nil),
+            ],
+            selectedThemeID: customID,
+            selectionModifiedAt: early
+        )
+        let remote = TerminalThemeLibrary(
+            records: [
+                TerminalThemeRecord(theme: builtIn, origin: .builtIn, modifiedAt: early, deletedAt: nil),
+                TerminalThemeRecord(theme: custom, origin: .custom, modifiedAt: late, deletedAt: late),
+            ],
+            selectedThemeID: builtInID,
+            selectionModifiedAt: late
+        )
+
+        local.merge(remote)
+
+        #expect(local.selectedThemeID == TerminalTheme.defaultID)
+        #expect(local.activeRecords.map(\.id) == [TerminalTheme.defaultID])
+        #expect(local.records.first(where: { $0.id == customID })?.deletedAt == late)
+    }
+
+    @Test func themeLibraryMergeBreaksEqualTimestampThemeConflictsDeterministically() {
+        let timestamp = Date(timeIntervalSinceReferenceDate: 300)
+        let customID = UUID()
+        var lightTheme = TerminalTheme.default.reidentified(id: customID, name: "Shared")
+        lightTheme.background = CodableColor(sRGBRed: 0.8, green: 0.7, blue: 0.6)
+        lightTheme.preferredAppearance = .light
+        var darkTheme = lightTheme
+        darkTheme.background = CodableColor(sRGBRed: 0.1, green: 0.2, blue: 0.3)
+        darkTheme.preferredAppearance = .dark
+
+        var first = TerminalThemeLibrary(
+            records: [
+                TerminalThemeRecord(
+                    theme: TerminalTheme.default,
+                    origin: .builtIn,
+                    modifiedAt: timestamp,
+                    deletedAt: nil
+                ),
+                TerminalThemeRecord(
+                    theme: lightTheme,
+                    origin: .custom,
+                    modifiedAt: timestamp,
+                    deletedAt: nil
+                ),
+            ],
+            selectedThemeID: customID,
+            selectionModifiedAt: timestamp
+        )
+        var second = TerminalThemeLibrary(
+            records: [
+                TerminalThemeRecord(
+                    theme: TerminalTheme.default,
+                    origin: .builtIn,
+                    modifiedAt: timestamp,
+                    deletedAt: nil
+                ),
+                TerminalThemeRecord(
+                    theme: darkTheme,
+                    origin: .custom,
+                    modifiedAt: timestamp,
+                    deletedAt: nil
+                ),
+            ],
+            selectedThemeID: customID,
+            selectionModifiedAt: timestamp
+        )
+
+        first.merge(second)
+        second.merge(first)
+
+        #expect(first == second)
+        #expect(first.selectedTheme?.preferredAppearance != nil)
+    }
+
+    @Test @MainActor func iCloudSyncPreservesRemoteDeletionWhenStaleDevicePushes() throws {
+        let store = FakeICloudSettingsStore()
+        let customID = UUID()
+        let early = Date(timeIntervalSinceReferenceDate: 100)
+        let late = Date(timeIntervalSinceReferenceDate: 200)
+        let activePayload = makeICloudPayload(
+            customID: customID,
+            customDeletedAt: nil,
+            modifiedAt: early
+        )
+        let deletedPayload = makeICloudPayload(
+            customID: customID,
+            customDeletedAt: late,
+            modifiedAt: late
+        )
+
+        let firstDevice = ICloudSettingsSyncService(store: store, writerID: UUID())
+        firstDevice.start(onMerge: { _ in })
+        _ = try firstDevice.push(activePayload, writtenAt: early)
+        _ = try firstDevice.push(deletedPayload, writtenAt: late)
+
+        let staleDevice = ICloudSettingsSyncService(store: store, writerID: UUID())
+        staleDevice.start(onMerge: { _ in })
+        let converged = try staleDevice.push(activePayload, writtenAt: late.addingTimeInterval(1))
+
+        #expect(converged.payload.themeRecords.first(where: { $0.id == customID })?.deletedAt == late)
+        #expect(converged.payload.selectedThemeID == TerminalTheme.defaultID)
+    }
+
+    @Test @MainActor func iCloudPayloadRoundTripRetainsThemeMetadata() throws {
+        let deletion = Date(timeIntervalSinceReferenceDate: 500)
+        let basePayload = makeICloudPayload(
+            customID: UUID(),
+            customDeletedAt: deletion,
+            modifiedAt: deletion
+        )
+        let appearances = TerminalThemeAppearance.allCases
+        let appearanceThemes = appearances.map { appearance in
+            var theme = TerminalTheme.default.reidentified(name: appearance.displayName)
+            theme.preferredAppearance = appearance
+            return theme
+        }
+        let payload = ICloudSettingsSyncPayload(
+            themeRecords: [basePayload.themeRecords[0]] + appearanceThemes.map { theme in
+                ICloudTerminalThemeRecord(
+                    theme: makeICloudTheme(theme),
+                    origin: .appleTerminal,
+                    modifiedAt: deletion,
+                    deletedAt: theme.preferredAppearance == .dark ? deletion : nil
+                )
+            },
+            selectedThemeID: appearanceThemes[0].id,
+            selectionModifiedAt: deletion,
+            preferences: basePayload.preferences
+        )
+
+        let decoded = try JSONDecoder().decode(
+            ICloudSettingsSyncPayload.self,
+            from: JSONEncoder().encode(payload)
+        )
+
+        #expect(decoded == payload)
+        for theme in appearanceThemes {
+            let record = decoded.themeRecords.first(where: { $0.id == theme.id })
+            #expect(record?.origin == .appleTerminal)
+            #expect(record?.theme.preferredAppearance == theme.preferredAppearance)
+        }
+        let darkID = try #require(
+            appearanceThemes.first(where: { $0.preferredAppearance == .dark })?.id
+        )
+        #expect(decoded.themeRecords.first(where: { $0.id == darkID })?.deletedAt == deletion)
+    }
+
+    @Test @MainActor func macImportedThemeAndPortableAppearanceApplyAfterICloudMerge() async throws {
+        let sourceSuite = "sh.glas.test.icloud-source.\(UUID().uuidString)"
+        let destinationSuite = "sh.glas.test.icloud-destination.\(UUID().uuidString)"
+        let sourceDefaults = try #require(UserDefaults(suiteName: sourceSuite))
+        let destinationDefaults = try #require(UserDefaults(suiteName: destinationSuite))
+        defer {
+            sourceDefaults.removePersistentDomain(forName: sourceSuite)
+            destinationDefaults.removePersistentDomain(forName: destinationSuite)
+        }
+        sourceDefaults.set(true, forKey: UserDefaultsKeys.iCloudSettingsSyncEnabled)
+        destinationDefaults.set(true, forKey: UserDefaultsKeys.iCloudSettingsSyncEnabled)
+
+        let store = FakeICloudSettingsStore()
+        let sourceService = ICloudSettingsSyncService(store: store, writerID: UUID())
+        let source = SettingsManager(
+            settingsDefaults: sourceDefaults,
+            iCloudSettingsSyncService: sourceService
+        )
+
+        var imported = TerminalTheme.default.reidentified(name: "Mac Imported")
+        imported.background = CodableColor(sRGBRed: 0.11, green: 0.12, blue: 0.13, alpha: 0.2)
+        imported.foreground = CodableColor(sRGBRed: 0.91, green: 0.82, blue: 0.73)
+        imported.cursor = CodableColor(sRGBRed: 0.81, green: 0.72, blue: 0.63)
+        imported.selection = CodableColor(sRGBRed: 0.21, green: 0.32, blue: 0.43, alpha: 0.54)
+        let ansiKeyPaths: [WritableKeyPath<TerminalTheme, CodableColor>] = [
+            \.black, \.red, \.green, \.yellow, \.blue, \.magenta, \.cyan, \.white,
+            \.brightBlack, \.brightRed, \.brightGreen, \.brightYellow,
+            \.brightBlue, \.brightMagenta, \.brightCyan, \.brightWhite,
+        ]
+        for (index, keyPath) in ansiKeyPaths.enumerated() {
+            let value = Double(index + 1) / 20
+            imported[keyPath: keyPath] = CodableColor(
+                sRGBRed: value,
+                green: 1 - value,
+                blue: Double((index * 3) % 17) / 20
+            )
+        }
+        imported.fontName = "Menlo-Regular"
+        imported.fontSize = 17
+        imported.preferredAppearance = .dark
+        let importedID = try #require(source.addImportedTheme(imported))
+        let expectedTheme = imported.reidentified(id: importedID)
+
+        source.windowOpacity = 0.27
+        source.blurBackground = 0.63
+        source.glassTint = "#AF52DE"
+        source.glassFrost = "regular"
+        source.interactiveGlass = false
+        source.cursorStyle = "Bar"
+        source.blinkingCursor = false
+        source.saveSettings()
+
+        let syncDeadline = ContinuousClock.now + .seconds(5)
+        while sourceService.acceptedEnvelope?.payload.selectedThemeID != importedID,
+              ContinuousClock.now < syncDeadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(sourceService.acceptedEnvelope?.payload.selectedThemeID == importedID)
+
+        let destinationService = ICloudSettingsSyncService(store: store, writerID: UUID())
+        let destination = SettingsManager(
+            settingsDefaults: destinationDefaults,
+            iCloudSettingsSyncService: destinationService
+        )
+
+        #expect(destination.selectedThemeID == importedID)
+        #expect(destination.themeLibrary.activeRecords.first(where: { $0.id == importedID })?.origin == .appleTerminal)
+        #expect(destination.currentTheme == expectedTheme)
+        #expect(destination.currentTheme.ansiColors == expectedTheme.ansiColors)
+        #expect(destination.currentTheme.swiftTermTheme == expectedTheme.swiftTermTheme)
+        #expect(destination.windowOpacity == 0.27)
+        #expect(destination.blurBackground == 0.63)
+        #expect(destination.glassTint == "#AF52DE")
+        #expect(destination.glassFrost == "regular")
+        #expect(destination.interactiveGlass == false)
+        #expect(destination.cursorStyle == "Bar")
+        #expect(destination.blinkingCursor == false)
+    }
+
+    @Test func newTerminalFooterUsesThePlatformNativeRoute() {
+        var openedConnections = false
+        var openedMacTab = false
+        let route = TerminalNewTerminalRoute.platformDefault
+
+        route.perform(
+            openConnections: { openedConnections = true },
+            openMacTab: { openedMacTab = true }
+        )
+
+        #if os(macOS)
+        #expect(route == .macTab)
+        #expect(route.accessibilityLabel == "New Terminal Tab")
+        #expect(!openedConnections)
+        #expect(openedMacTab)
+        #else
+        #expect(route == .connections)
+        #expect(route.accessibilityLabel == "New Terminal")
+        #expect(openedConnections)
+        #expect(!openedMacTab)
+        #endif
+    }
+
+    @Test @MainActor func disabledICloudSyncDoesNotObserveOrWrite() {
+        let suiteName = "sh.glas.test.icloud-disabled.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(false, forKey: UserDefaultsKeys.iCloudSettingsSyncEnabled)
+        let store = FakeICloudSettingsStore()
+        let service = ICloudSettingsSyncService(store: store, writerID: UUID())
+
+        _ = SettingsManager(
+            settingsDefaults: defaults,
+            iCloudSettingsSyncService: service
+        )
+
+        #expect(store.observerCount == 0)
+        #expect(store.setCount == 0)
+    }
+
+    @Test @MainActor func iCloudSyncRetriesTransientStoreFailure() async throws {
+        let suiteName = "sh.glas.test.icloud-retry.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(true, forKey: UserDefaultsKeys.iCloudSettingsSyncEnabled)
+        let store = FakeICloudSettingsStore()
+        store.synchronizeResult = false
+        let service = ICloudSettingsSyncService(store: store, writerID: UUID())
+        let settings = SettingsManager(
+            settingsDefaults: defaults,
+            iCloudSettingsSyncService: service
+        )
+
+        try await Task.sleep(for: .milliseconds(650))
+        #expect(settings.iCloudSyncStatusText.contains("unavailable"))
+        let failedAttemptCount = store.setCount
+        store.synchronizeResult = true
+
+        try await Task.sleep(for: .milliseconds(2_200))
+        #expect(store.setCount > failedAttemptCount)
+        #expect(settings.iCloudSyncStatusText == "Up to date")
+    }
 
     @Test @MainActor func terminalEmulatorAppliesCarriageReturnInPlace() {
         let terminal = TerminalEmulator(cols: 40, rows: 4)
@@ -3502,15 +4120,21 @@ struct glas_shTests {
         ).optionAsMetaKey)
     }
 
-    @Test @MainActor func terminalRendererActivatesAfterWindowAttachmentWithClearBacking() async throws {
+    @Test @MainActor func terminalRendererDrawsGlyphsAfterWindowAttachmentWithClearBacking() async throws {
         let model = SwiftTermHostModel()
+        var ansiColors = Array(
+            repeating: SwiftTermThemeColor(red: 0, green: 0, blue: 0),
+            count: 16
+        )
+        ansiColors[1] = SwiftTermThemeColor(red: 0, green: 1, blue: 0)
         let hostView = SwiftTermHostView(
             model: model,
             theme: SwiftTermTheme(
                 fontSize: 14,
-                foreground: (1, 1, 1),
+                foreground: (1, 0, 1),
                 background: (0, 0, 0, 0),
-                cursor: (1, 1, 1)
+                cursor: (0, 0, 1),
+                ansiColors: ansiColors
             ),
             runtimeSettings: SwiftTermRuntimeSettings(
                 cursorStyle: "Block",
@@ -3537,7 +4161,7 @@ struct glas_shTests {
         let window = UIWindow(windowScene: windowScene)
         window.frame = controller.view.frame
         window.rootViewController = controller
-        window.makeKeyAndVisible()
+        window.isHidden = false
         defer { window.isHidden = true }
 
         for _ in 0..<20 where model.rendererDiagnostics.backend == .awaitingWindow {
@@ -3547,7 +4171,11 @@ struct glas_shTests {
 
         let attachedDiagnostics = model.rendererDiagnostics
         #expect(attachedDiagnostics.isWindowAttached)
-        #if canImport(MetalKit)
+        #if os(visionOS)
+        #expect(attachedDiagnostics.backend == .coreGraphics)
+        #expect(attachedDiagnostics.failureDescription == nil)
+        #expect(attachedDiagnostics.rendererBackingIsClear == nil)
+        #elseif canImport(MetalKit)
         #expect(attachedDiagnostics.backend == .metal)
         #expect(attachedDiagnostics.failureDescription == nil)
         #expect(attachedDiagnostics.rendererBackingIsClear == true)
@@ -3558,6 +4186,77 @@ struct glas_shTests {
         #endif
         #expect(attachedDiagnostics.hostBackingIsClear == true)
         #expect(attachedDiagnostics.preservesTransparentBacking == true)
+
+        #if os(visionOS)
+        model.ingest(data: Data("MMMMMMMM\u{1B}[31mGGGGGGGG\u{1B}[0m".utf8), nonce: 1)
+        for _ in 0..<20 where !(model.getVisibleText().last?.contains("MMMMMMMMGGGGGGGG") ?? false) {
+            controller.view.layoutIfNeeded()
+            await Task.yield()
+        }
+        #expect(model.getVisibleText().last?.contains("MMMMMMMMGGGGGGGG") == true)
+
+        let rootView = try #require(controller.view)
+        var pendingViews = [rootView]
+        var terminalView: UIView?
+        while let view = pendingViews.popLast() {
+            if view.isAccessibilityElement, view.accessibilityLabel == "Terminal" {
+                terminalView = view
+                break
+            }
+            pendingViews.append(contentsOf: view.subviews)
+        }
+
+        let renderedView = try #require(terminalView)
+        renderedView.setNeedsDisplay()
+        renderedView.layoutIfNeeded()
+        await Task.yield()
+
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = false
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(bounds: renderedView.bounds, format: format)
+        let image = renderer.image { rendererContext in
+            renderedView.layer.render(in: rendererContext.cgContext)
+        }
+
+        let cgImage = try #require(image.cgImage)
+        let pixelData = try #require(cgImage.dataProvider?.data)
+        let bytes = try #require(CFDataGetBytePtr(pixelData))
+        #expect(cgImage.bitsPerPixel == 32)
+
+        var magentaPixelCount = 0
+        var greenPixelCount = 0
+        var transparentPixelCount = 0
+        var minimumMagentaX = cgImage.width
+        var maximumMagentaX = 0
+        for y in 0..<cgImage.height {
+            for x in 0..<cgImage.width {
+                let offset = (y * cgImage.bytesPerRow) + (x * 4)
+                let firstColor = bytes[offset]
+                let green = bytes[offset + 1]
+                let thirdColor = bytes[offset + 2]
+                let alpha = bytes[offset + 3]
+                if alpha < 8 {
+                    transparentPixelCount += 1
+                }
+                // Magenta is symmetric in RGBA and BGRA, so this remains valid
+                // for either UIKit byte ordering.
+                if firstColor > 191, green < 64, thirdColor > 191, alpha > 64 {
+                    magentaPixelCount += 1
+                    minimumMagentaX = min(minimumMagentaX, x)
+                    maximumMagentaX = max(maximumMagentaX, x)
+                }
+                if firstColor < 64, green > 191, thirdColor < 64, alpha > 64 {
+                    greenPixelCount += 1
+                }
+            }
+        }
+
+        #expect(magentaPixelCount > 100)
+        #expect(greenPixelCount > 100)
+        #expect(maximumMagentaX - minimumMagentaX > 56)
+        #expect(transparentPixelCount > 100)
+        #endif
     }
 
     @Test func terminalITermFileReferenceRetainsOnlyBoundedMetadata() throws {
@@ -4978,5 +5677,113 @@ struct glas_shTests {
         let (entries, warnings) = SSHConfigParser.parse("")
         #expect(entries.isEmpty)
         #expect(warnings.isEmpty)
+    }
+
+    private func makeCorruptedLegacyGlassTheme(
+        id: UUID = UUID(),
+        background: CodableColor? = nil,
+        fontName: String = "SF Mono",
+        fontSize: CGFloat = 14
+    ) -> TerminalTheme {
+        let black = CodableColor(sRGBRed: 0, green: 0, blue: 0)
+        let white = CodableColor(sRGBRed: 1, green: 1, blue: 1)
+        let resolvedBackground = background ?? CodableColor(
+            sRGBRed: 0,
+            green: 0,
+            blue: 0,
+            alpha: 0.3
+        )
+        return TerminalTheme(
+            id: id,
+            name: "Glass Terminal",
+            background: resolvedBackground,
+            foreground: white,
+            cursor: black,
+            selection: black,
+            black: black,
+            red: black,
+            green: black,
+            yellow: black,
+            blue: black,
+            magenta: black,
+            cyan: black,
+            white: white,
+            brightBlack: black,
+            brightRed: black,
+            brightGreen: black,
+            brightYellow: black,
+            brightBlue: black,
+            brightMagenta: black,
+            brightCyan: black,
+            brightWhite: white,
+            fontName: fontName,
+            fontSize: fontSize
+        )
+    }
+
+    private func makeICloudPayload(
+        customID: UUID,
+        customDeletedAt: Date?,
+        modifiedAt: Date
+    ) -> ICloudSettingsSyncPayload {
+        let builtIn = TerminalTheme.default
+        let custom = TerminalTheme.default.reidentified(id: customID, name: "Imported")
+        return ICloudSettingsSyncPayload(
+            themeRecords: [
+                ICloudTerminalThemeRecord(
+                    theme: makeICloudTheme(builtIn),
+                    origin: .builtIn,
+                    modifiedAt: modifiedAt,
+                    deletedAt: nil
+                ),
+                ICloudTerminalThemeRecord(
+                    theme: makeICloudTheme(custom),
+                    origin: .appleTerminal,
+                    modifiedAt: modifiedAt,
+                    deletedAt: customDeletedAt
+                ),
+            ],
+            selectedThemeID: customDeletedAt == nil ? customID : TerminalTheme.defaultID,
+            selectionModifiedAt: modifiedAt,
+            preferences: ICloudPortableTerminalPreferences(
+                autoReconnect: true,
+                confirmBeforeClosing: true,
+                saveScrollback: true,
+                maximumScrollbackLines: 10_000,
+                bellEnabled: false,
+                visualBell: true,
+                cursorStyle: "Block",
+                blinkingCursor: true,
+                glassFrost: "ultraThin",
+                windowOpacity: 0,
+                blurBackground: 1,
+                interactiveGlass: true,
+                glassTint: "None"
+            )
+        )
+    }
+
+    private func makeICloudTheme(_ theme: TerminalTheme) -> ICloudTerminalTheme {
+        ICloudTerminalTheme(
+            id: theme.id,
+            name: theme.name,
+            background: makeICloudColor(theme.background),
+            foreground: makeICloudColor(theme.foreground),
+            cursor: makeICloudColor(theme.cursor),
+            selection: makeICloudColor(theme.selection),
+            ansiColors: theme.ansiColors.map(makeICloudColor),
+            fontName: theme.fontName,
+            fontSize: Double(theme.fontSize),
+            preferredAppearance: theme.preferredAppearance
+        )
+    }
+
+    private func makeICloudColor(_ color: CodableColor) -> ICloudTerminalColor {
+        ICloudTerminalColor(
+            red: color.red,
+            green: color.green,
+            blue: color.blue,
+            alpha: color.alpha
+        )
     }
 }

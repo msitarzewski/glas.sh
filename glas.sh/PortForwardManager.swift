@@ -185,7 +185,7 @@ class PortForwardManager {
     /// encoded into `PortForward`, UserDefaults, logs, or release diagnostics.
     private var socks5CredentialsByForwardID: [UUID: SOCKS5CredentialBytes] = [:]
 
-    private static let logger = Logger(subsystem: "sh.glas", category: "PortForwardManager")
+    nonisolated private static let logger = Logger(subsystem: "sh.glas", category: "PortForwardManager")
 
     nonisolated private static func initializeAcceptedClient(
         _ childChannel: any Channel,
@@ -437,7 +437,7 @@ class PortForwardManager {
 
     /// Establish a direct-tcpip SSH channel and pipe data bidirectionally with the local socket.
     /// Follows the pattern from Citadel's RemotePortForward+Client.swift (lines 273-289).
-    private static func handleLocalConnection(
+    nonisolated private static func handleLocalConnection(
         localClient: NIOAsyncChannel<ByteBuffer, ByteBuffer>,
         remoteHost: String,
         remotePort: Int,
@@ -926,7 +926,7 @@ class PortForwardManager {
 
     /// Perform SOCKS5 handshake on a local client, then tunnel to the requested
     /// target through SSH direct-tcpip.
-    private static func handleSOCKS5Connection(
+    nonisolated private static func handleSOCKS5Connection(
         localClient: NIOAsyncChannel<ByteBuffer, ByteBuffer>,
         connection: SSHConnection,
         credentials: SOCKS5CredentialBytes,
@@ -948,7 +948,7 @@ class PortForwardManager {
                 var inboundIterator = localInbound.makeAsyncIterator()
 
                 var greetingResult = parseSOCKS5Greeting(from: &bufferedClientData)
-                while greetingResult == .incomplete {
+                while case .incomplete = greetingResult {
                     guard bufferedClientData.readableBytes < maximumSOCKS5GreetingBytes,
                           var chunk = try await inboundIterator.next() else { return }
                     guard appendSOCKS5HandshakeBytes(&chunk, to: &bufferedClientData) else { return }
@@ -970,7 +970,7 @@ class PortForwardManager {
                 }
 
                 var authenticationResult = parseSOCKS5Authentication(from: &bufferedClientData)
-                while authenticationResult == .incomplete {
+                while case .incomplete = authenticationResult {
                     guard bufferedClientData.readableBytes < maximumSOCKS5AuthenticationBytes,
                           var chunk = try await inboundIterator.next() else {
                         return
@@ -995,7 +995,7 @@ class PortForwardManager {
                 guard authenticated else { return }
 
                 var requestResult = parseSOCKS5ConnectRequest(from: &bufferedClientData)
-                while requestResult == .incomplete {
+                while case .incomplete = requestResult {
                     guard bufferedClientData.readableBytes < maximumSOCKS5ConnectRequestBytes,
                           var chunk = try await inboundIterator.next() else { return }
                     guard appendSOCKS5HandshakeBytes(&chunk, to: &bufferedClientData) else { return }
@@ -1042,26 +1042,33 @@ class PortForwardManager {
                 logger.debug("SOCKS5 tunnel opened")
 
                 // Bidirectional pipe: local <-> SSH channel
+                let pendingClientData = bufferedClientData
                 try await sshAsyncChannel.executeThenClose { sshInbound, sshOutbound in
-                    try await withThrowingTaskGroup(of: Void.self) { group in
-                        // local -> remote
-                        group.addTask {
-                            if bufferedClientData.readableBytes > 0 {
-                                try await sshOutbound.write(bufferedClientData)
-                            }
-                            while let data = try await inboundIterator.next() {
-                                try await sshOutbound.write(data)
-                            }
+                    let remoteToLocalTask = Task {
+                        defer { localClient.channel.close(promise: nil) }
+                        for try await data in sshInbound {
+                            try await localOutbound.write(data)
                         }
-                        // remote -> local
-                        group.addTask {
-                            for try await data in sshInbound {
-                                try await localOutbound.write(data)
-                            }
-                        }
+                    }
 
-                        defer { group.cancelAll() }
-                        try await group.next()
+                    do {
+                        if pendingClientData.readableBytes > 0 {
+                            try await sshOutbound.write(pendingClientData)
+                        }
+                        while let data = try await inboundIterator.next() {
+                            try await sshOutbound.write(data)
+                        }
+                    } catch {
+                        remoteToLocalTask.cancel()
+                        _ = try? await remoteToLocalTask.value
+                        throw error
+                    }
+
+                    remoteToLocalTask.cancel()
+                    do {
+                        try await remoteToLocalTask.value
+                    } catch is CancellationError {
+                        // The local half closed first, so cancellation is expected.
                     }
                 }
             }

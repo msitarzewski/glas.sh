@@ -1,16 +1,37 @@
 import SwiftUI
-#if canImport(UIKit)
-import UIKit
 import Combine
 import SwiftTerm
+#if canImport(UIKit)
+import UIKit
 #if canImport(MetalKit)
 import MetalKit
+#endif
+#elseif canImport(AppKit)
+import AppKit
+import Darwin
 #endif
 
 public enum SwiftTermRendererBackend: String, Equatable, Sendable {
     case awaitingWindow
     case metal
+    case coreGraphics
     case coreGraphicsFallback
+}
+
+public enum SwiftTermRendererPreference: Equatable, Sendable {
+    case coreGraphics
+    case metal
+
+    public static var platformDefault: Self {
+        #if os(visionOS)
+        // SwiftTerm's Metal view can report itself active on Vision Pro while
+        // never presenting a drawable. Keep the proven UIKit renderer as the
+        // device default until Metal presentation is validated independently.
+        .coreGraphics
+        #else
+        .metal
+        #endif
+    }
 }
 
 public struct SwiftTermRendererDiagnostics: Equatable, Sendable {
@@ -698,6 +719,7 @@ public struct SwiftTermRuntimeSettings: Equatable {
 /// Narrow boundary between terminal transport/state and the concrete renderer.
 /// The active implementation remains SwiftTerm; an alternate renderer only needs to
 /// conform here and be selected by `SwiftTermHostView.makeEngine`.
+#if canImport(UIKit)
 @MainActor
 private protocol TerminalEngine: AnyObject {
     var identity: ObjectIdentifier { get }
@@ -721,7 +743,7 @@ private protocol TerminalEngine: AnyObject {
 }
 
 public enum SwiftTermHardwareKeyPolicy {
-    /// SwiftTerm 1.13 maps legacy F10 to F9 and drops legacy F12-F24. Keep
+    /// SwiftTerm's legacy input path maps F10 to F9 and drops F12-F24. Keep
     /// Kitty protocol handling in SwiftTerm, but provide the standard xterm
     /// sequences when the remote has not enabled Kitty keyboard reporting.
     public static func legacyFunctionKeySequence(for keyCode: UIKeyboardHIDUsage) -> [UInt8]? {
@@ -806,7 +828,7 @@ private final class ReviewingTerminalView: TerminalView {
         _ = sendLegacyFunctionKeyIfEligible(keyCode)
     }
 
-    /// Sends only legacy function keys SwiftTerm 1.13 does not encode
+    /// Sends only legacy function keys SwiftTerm does not encode
     /// correctly. Marked text belongs to UIKit's input method, while Kitty
     /// keyboard mode remains wholly owned by SwiftTerm.
     fileprivate func sendLegacyFunctionKeyIfEligible(_ keyCode: UIKeyboardHIDUsage) -> Bool {
@@ -857,6 +879,7 @@ private final class SwiftTermEngine: TerminalEngine {
     private let onRendererDiagnostics: (SwiftTermRendererDiagnostics) -> Void
     private let onOSC52Decision: (SwiftTermOSC52Decision) -> Void
     private let performanceClock = ContinuousClock()
+    private let rendererPreference = SwiftTermRendererPreference.platformDefault
     private var metalActivationAttempted = false
     private var configuredTheme: SwiftTermTheme?
     private(set) var rendererDiagnostics = SwiftTermRendererDiagnostics.awaitingWindow
@@ -894,7 +917,7 @@ private final class SwiftTermEngine: TerminalEngine {
         self.onRendererDiagnostics = onRendererDiagnostics
         self.onOSC52Decision = onOSC52Decision
         terminalView.onWindowAttachmentChanged = { [weak self] in
-            self?.activateMetalRendererIfAttached()
+            self?.activateRendererIfAttached()
         }
         terminalView.getTerminal().parser.oscHandlers[52] = { [weak self] request in
             guard let self else { return }
@@ -913,7 +936,7 @@ private final class SwiftTermEngine: TerminalEngine {
         configuredTheme = theme
         applyTheme(theme)
         applyRuntimeSettings(runtimeSettings)
-        activateMetalRendererIfAttached()
+        activateRendererIfAttached()
     }
 
     func receive(_ data: Data) {
@@ -1002,7 +1025,7 @@ private final class SwiftTermEngine: TerminalEngine {
             : visibleLines.joined(separator: "\n")
     }
 
-    private func activateMetalRendererIfAttached() {
+    private func activateRendererIfAttached() {
         enforceClearBacking()
 
         guard terminalView.window != nil else {
@@ -1021,6 +1044,23 @@ private final class SwiftTermEngine: TerminalEngine {
         }
 
         #if canImport(MetalKit)
+        if rendererPreference == .coreGraphics {
+            if terminalView.isUsingMetalRenderer {
+                do {
+                    try terminalView.setUseMetal(false)
+                } catch {
+                    publishRendererDiagnostics(
+                        backend: .coreGraphicsFallback,
+                        failureDescription: String(describing: error)
+                    )
+                    return
+                }
+            }
+            enforceClearBacking()
+            publishRendererDiagnostics(backend: .coreGraphics, failureDescription: nil)
+            return
+        }
+
         if !terminalView.isUsingMetalRenderer && !metalActivationAttempted {
             metalActivationAttempted = true
             do {
@@ -1363,6 +1403,1161 @@ public struct SwiftTermHostView: UIViewRepresentable {
                 model?.recordDisplayRange(startY: startY, endY: endY)
             }
         }
+    }
+}
+#elseif canImport(AppKit)
+@MainActor
+private protocol TerminalEngine: AnyObject {
+    var identity: ObjectIdentifier { get }
+    var hostView: NSView { get }
+    var isLikelyRunningInteractiveProgram: Bool { get }
+    var isComposingText: Bool { get }
+    var rendererDiagnostics: SwiftTermRendererDiagnostics { get }
+    var performanceDiagnostics: SwiftTermPerformanceDiagnostics { get }
+
+    func configure(theme: SwiftTermTheme, runtimeSettings: SwiftTermRuntimeSettings)
+    func receive(_ data: Data)
+    func recordInput(byteCount: Int)
+    func focusIfActive() -> Bool
+    func resignFocus()
+    func refreshAccessibilityViewport()
+    func visibleText(lastNLines: Int) -> [String]
+    func findNext(_ term: String) -> Bool
+    func findPrevious(_ term: String) -> Bool
+    func clearSearch()
+    func commitPaste(_ text: String, bracketed: Bool)
+}
+
+@MainActor
+private final class ReviewingMacTerminalView: TerminalView {
+    var onPasteRequest: ((String, Bool) -> Void)?
+    var onWindowAttachmentChanged: (() -> Void)?
+
+    override var isOpaque: Bool { false }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onWindowAttachmentChanged?()
+    }
+
+    override func paste(_ sender: Any) {
+        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return }
+        onPasteRequest?(text, getTerminal().bracketedPasteMode)
+    }
+}
+
+@MainActor
+private final class MacSwiftTermEngine: TerminalEngine {
+    let terminalView: ReviewingMacTerminalView
+    private let onPasteData: (Data) -> Void
+    private let onRendererDiagnostics: (SwiftTermRendererDiagnostics) -> Void
+    private let onOSC52Decision: (SwiftTermOSC52Decision) -> Void
+    private let performanceClock = ContinuousClock()
+    private(set) var rendererDiagnostics = SwiftTermRendererDiagnostics.awaitingWindow
+    private(set) var performanceDiagnostics = SwiftTermPerformanceDiagnostics()
+
+    init(
+        delegate: TerminalViewDelegate,
+        onPasteRequest: @escaping (String, Bool) -> Void,
+        onPasteData: @escaping (Data) -> Void,
+        onRendererDiagnostics: @escaping (SwiftTermRendererDiagnostics) -> Void,
+        onOSC52Decision: @escaping (SwiftTermOSC52Decision) -> Void
+    ) {
+        terminalView = ReviewingMacTerminalView(frame: .zero)
+        self.onPasteData = onPasteData
+        self.onRendererDiagnostics = onRendererDiagnostics
+        self.onOSC52Decision = onOSC52Decision
+        terminalView.terminalDelegate = delegate
+        terminalView.onPasteRequest = onPasteRequest
+        terminalView.notifyUpdateChanges = true
+        terminalView.wantsLayer = true
+        terminalView.layer?.backgroundColor = NSColor.clear.cgColor
+        terminalView.setAccessibilityElement(true)
+        terminalView.setAccessibilityLabel("Terminal")
+        terminalView.setAccessibilityHelp("Interactive terminal input and output")
+        terminalView.onWindowAttachmentChanged = { [weak self] in
+            self?.publishRendererDiagnostics()
+        }
+        terminalView.getTerminal().parser.oscHandlers[52] = { [weak self] request in
+            guard let self else { return }
+            self.onOSC52Decision(SwiftTermOSC52Policy.evaluate(request))
+        }
+    }
+
+    var identity: ObjectIdentifier { ObjectIdentifier(terminalView) }
+    var hostView: NSView { terminalView }
+    var isLikelyRunningInteractiveProgram: Bool {
+        terminalView.getTerminal().isCurrentBufferAlternate
+    }
+    var isComposingText: Bool { terminalView.hasMarkedText() }
+
+    func configure(theme: SwiftTermTheme, runtimeSettings: SwiftTermRuntimeSettings) {
+        applyTheme(theme)
+        applyRuntimeSettings(runtimeSettings)
+        publishRendererDiagnostics()
+    }
+
+    func receive(_ data: Data) {
+        let start = performanceClock.now
+        terminalView.feed(byteArray: ArraySlice(data))
+        performanceDiagnostics.recordFeed(
+            byteCount: data.count,
+            duration: start.duration(to: performanceClock.now)
+        )
+        refreshAccessibilityViewport()
+    }
+
+    func recordInput(byteCount: Int) {
+        performanceDiagnostics.recordInput(byteCount: byteCount)
+    }
+
+    func focusIfActive() -> Bool {
+        guard let window = terminalView.window, window.isKeyWindow else { return false }
+        if window.firstResponder === terminalView { return true }
+        guard !isComposingText else { return false }
+        return window.makeFirstResponder(terminalView)
+    }
+
+    func resignFocus() {
+        guard let window = terminalView.window, window.firstResponder === terminalView else { return }
+        window.makeFirstResponder(nil)
+    }
+
+    func refreshAccessibilityViewport() {
+        let value = visibleText(lastNLines: 40).joined(separator: "\n")
+        terminalView.setAccessibilityValue(value.isEmpty ? "No visible output" : value)
+    }
+
+    func visibleText(lastNLines: Int) -> [String] {
+        let data = terminalView.getTerminal().getBufferAsData()
+        let lines = (String(data: data, encoding: .utf8) ?? "")
+            .components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return Array(lines.suffix(max(0, lastNLines)))
+    }
+
+    func findNext(_ term: String) -> Bool { terminalView.findNext(term) }
+    func findPrevious(_ term: String) -> Bool { terminalView.findPrevious(term) }
+    func clearSearch() { terminalView.clearSearch() }
+
+    func commitPaste(_ text: String, bracketed: Bool) {
+        let data = SwiftTermPastePolicy.framedData(for: text, bracketed: bracketed)
+        recordInput(byteCount: data.count)
+        onPasteData(data)
+    }
+
+    private func applyTheme(_ theme: SwiftTermTheme) {
+        let fontSize = max(10, theme.fontSize)
+        terminalView.font = theme.fontName == "SF Mono"
+            ? NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+            : NSFont(name: theme.fontName, size: fontSize)
+                ?? NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        terminalView.nativeForegroundColor = NSColor(
+            srgbRed: theme.foreground.red,
+            green: theme.foreground.green,
+            blue: theme.foreground.blue,
+            alpha: 1
+        )
+        terminalView.nativeBackgroundColor = NSColor(
+            srgbRed: theme.background.red,
+            green: theme.background.green,
+            blue: theme.background.blue,
+            alpha: theme.background.alpha
+        )
+        terminalView.caretColor = NSColor(
+            srgbRed: theme.cursor.red,
+            green: theme.cursor.green,
+            blue: theme.cursor.blue,
+            alpha: 1
+        )
+        terminalView.selectedTextBackgroundColor = NSColor(
+            srgbRed: theme.selection.red,
+            green: theme.selection.green,
+            blue: theme.selection.blue,
+            alpha: theme.selection.alpha
+        )
+        terminalView.layer?.backgroundColor = NSColor.clear.cgColor
+        if theme.ansiColors.count == 16 {
+            terminalView.installColors(theme.ansiColors.map { color in
+                SwiftTerm.Color(
+                    red: Self.terminalColorComponent(color.red),
+                    green: Self.terminalColorComponent(color.green),
+                    blue: Self.terminalColorComponent(color.blue)
+                )
+            })
+        }
+    }
+
+    private func applyRuntimeSettings(_ settings: SwiftTermRuntimeSettings) {
+        let normalizedStyle = settings.cursorStyle.lowercased()
+        let cursorStyle: CursorStyle
+        switch (normalizedStyle, settings.blinkingCursor) {
+        case ("underline", true): cursorStyle = .blinkUnderline
+        case ("underline", false): cursorStyle = .steadyUnderline
+        case ("bar", true): cursorStyle = .blinkBar
+        case ("bar", false): cursorStyle = .steadyBar
+        case (_, true): cursorStyle = .blinkBlock
+        case (_, false): cursorStyle = .steadyBlock
+        }
+        terminalView.getTerminal().setCursorStyle(cursorStyle)
+        terminalView.changeScrollback(settings.scrollbackLines)
+        terminalView.optionAsMetaKey = settings.optionAsMetaKey
+    }
+
+    private func publishRendererDiagnostics() {
+        let diagnostics = SwiftTermRendererDiagnostics(
+            backend: .coreGraphicsFallback,
+            isWindowAttached: terminalView.window != nil,
+            hostBackingIsClear: terminalView.layer?.backgroundColor?.alpha == 0,
+            rendererBackingIsClear: true,
+            failureDescription: nil
+        )
+        rendererDiagnostics = diagnostics
+        onRendererDiagnostics(diagnostics)
+    }
+
+    private static func terminalColorComponent(_ component: Double) -> UInt16 {
+        UInt16((min(1, max(0, component)) * Double(UInt16.max)).rounded())
+    }
+}
+
+public struct SwiftTermHostView: NSViewRepresentable {
+    @ObservedObject var model: SwiftTermHostModel
+    let theme: SwiftTermTheme
+    let runtimeSettings: SwiftTermRuntimeSettings
+    let onSendData: (Data) -> Void
+    let onResize: (Int, Int) -> Void
+    let onTitleChanged: (String) -> Void
+    let onBell: () -> Void
+
+    public init(
+        model: SwiftTermHostModel,
+        theme: SwiftTermTheme,
+        runtimeSettings: SwiftTermRuntimeSettings,
+        onSendData: @escaping (Data) -> Void,
+        onResize: @escaping (Int, Int) -> Void,
+        onTitleChanged: @escaping (String) -> Void = { _ in },
+        onBell: @escaping () -> Void = {}
+    ) {
+        self.model = model
+        self.theme = theme
+        self.runtimeSettings = runtimeSettings
+        self.onSendData = onSendData
+        self.onResize = onResize
+        self.onTitleChanged = onTitleChanged
+        self.onBell = onBell
+    }
+
+    public func makeCoordinator() -> Coordinator {
+        Coordinator(
+            model: model,
+            onSendData: onSendData,
+            onResize: onResize,
+            onTitleChanged: onTitleChanged,
+            onBell: onBell
+        )
+    }
+
+    public func makeNSView(context: Context) -> NSView {
+        let engine = MacSwiftTermEngine(
+            delegate: context.coordinator,
+            onPasteRequest: { [weak model] text, bracketed in
+                model?.requestPaste(text, bracketed: bracketed)
+            },
+            onPasteData: onSendData,
+            onRendererDiagnostics: { [weak model] diagnostics in
+                model?.updateRendererDiagnostics(diagnostics)
+            },
+            onOSC52Decision: { [weak model] decision in
+                model?.recordOSC52Decision(decision)
+            }
+        )
+        engine.configure(theme: theme, runtimeSettings: runtimeSettings)
+        context.coordinator.engine = engine
+        context.coordinator.lastTheme = theme
+        context.coordinator.lastRuntimeSettings = runtimeSettings
+        model.attach(engine)
+        return engine.hostView
+    }
+
+    public func updateNSView(_ nsView: NSView, context: Context) {
+        guard let engine = context.coordinator.engine, engine.hostView === nsView else { return }
+        if context.coordinator.lastTheme != theme
+            || context.coordinator.lastRuntimeSettings != runtimeSettings {
+            context.coordinator.lastTheme = theme
+            context.coordinator.lastRuntimeSettings = runtimeSettings
+            engine.configure(theme: theme, runtimeSettings: runtimeSettings)
+        }
+        model.attach(engine)
+    }
+
+    @MainActor
+    public final class Coordinator: NSObject, @preconcurrency TerminalViewDelegate {
+        private weak var model: SwiftTermHostModel?
+        private let onSendData: (Data) -> Void
+        private let onResize: (Int, Int) -> Void
+        private let onTitleChanged: (String) -> Void
+        private let onBell: () -> Void
+        fileprivate var engine: (any TerminalEngine)?
+        fileprivate var lastTheme: SwiftTermTheme?
+        fileprivate var lastRuntimeSettings: SwiftTermRuntimeSettings?
+
+        init(
+            model: SwiftTermHostModel,
+            onSendData: @escaping (Data) -> Void,
+            onResize: @escaping (Int, Int) -> Void,
+            onTitleChanged: @escaping (String) -> Void,
+            onBell: @escaping () -> Void
+        ) {
+            self.model = model
+            self.onSendData = onSendData
+            self.onResize = onResize
+            self.onTitleChanged = onTitleChanged
+            self.onBell = onBell
+        }
+
+        public func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
+            onResize(newCols, newRows)
+        }
+
+        public func setTerminalTitle(source: TerminalView, title: String) {
+            onTitleChanged(title)
+        }
+
+        public func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
+            model?.updateCurrentDirectory(directory)
+        }
+
+        public func send(source: TerminalView, data: ArraySlice<UInt8>) {
+            engine?.recordInput(byteCount: data.count)
+            onSendData(Data(data))
+        }
+
+        public func scrolled(source: TerminalView, position: Double) {
+            engine?.refreshAccessibilityViewport()
+            model?.updateScrollPosition(position)
+        }
+
+        public func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
+            model?.requestExternalLink(link)
+        }
+
+        public func bell(source: TerminalView) { onBell() }
+        public func clipboardCopy(source: TerminalView, content: Data) {
+            // Backstop only: the engine's OSC 52 override denies requests
+            // before SwiftTerm decodes content or reaches this delegate.
+        }
+
+        public func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {
+            model?.recordITermEvent(SwiftTermITermContentPolicy.semanticEventKind(for: content))
+        }
+
+        public func rangeChanged(source: TerminalView, startY: Int, endY: Int) {
+            model?.recordDisplayRange(startY: startY, endY: endY)
+        }
+    }
+}
+
+/// A local-process launch description that always passes the executable and
+/// arguments to `exec` separately. No shell command string is constructed.
+public struct SwiftTermLocalProcessConfiguration: Equatable, Sendable {
+    public var executable: String
+    public var arguments: [String]
+    public var environment: [String]?
+    public var executableName: String?
+    public var currentDirectory: String?
+
+    public init(
+        executable: String = "/bin/zsh",
+        arguments: [String] = ["-l"],
+        environment: [String]? = nil,
+        executableName: String? = nil,
+        currentDirectory: String? = nil
+    ) {
+        self.executable = executable
+        self.arguments = arguments
+        self.environment = environment
+        self.executableName = executableName
+        self.currentDirectory = currentDirectory
+    }
+
+    fileprivate var validationFailure: String? {
+        guard !executable.isEmpty, executable.hasPrefix("/") else {
+            return "The local terminal executable must be an absolute path."
+        }
+        guard !Self.containsNullByte(executable),
+              !arguments.contains(where: Self.containsNullByte),
+              executableName.map({ !$0.isEmpty && !Self.containsNullByte($0) }) ?? true,
+              currentDirectory.map({ $0.hasPrefix("/") && !Self.containsNullByte($0) }) ?? true else {
+            return "The local terminal launch configuration contains an invalid path or argument."
+        }
+        if let environmentFailure = Self.environmentValidationFailure(environment) {
+            return environmentFailure
+        }
+        guard FileManager.default.isExecutableFile(atPath: executable) else {
+            return "The local terminal executable does not exist or is not executable."
+        }
+        if let currentDirectory {
+            var isDirectory = ObjCBool(false)
+            guard FileManager.default.fileExists(atPath: currentDirectory, isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                return "The local terminal working directory does not exist or is not a directory."
+            }
+        }
+        return nil
+    }
+
+    private static func containsNullByte(_ value: String) -> Bool {
+        value.utf8.contains(0)
+    }
+
+    private static func environmentValidationFailure(_ environment: [String]?) -> String? {
+        guard let environment else { return nil }
+        var names = Set<Substring>()
+        for entry in environment {
+            guard !containsNullByte(entry),
+                  let separator = entry.firstIndex(of: "="),
+                  separator != entry.startIndex else {
+                return "Each local terminal environment entry must use a non-empty NAME=value form."
+            }
+            let name = entry[..<separator]
+            guard names.insert(name).inserted else {
+                return "The local terminal environment contains a duplicate variable named \(name)."
+            }
+        }
+        return nil
+    }
+}
+
+@MainActor
+private protocol SwiftTermLocalProcessControlling: AnyObject {
+    func focusLocalProcess()
+    func terminateLocalProcess()
+    @discardableResult
+    func restartLocalProcess(_ configuration: SwiftTermLocalProcessConfiguration) -> Bool
+    @discardableResult
+    func sendLocalCommand(_ command: String) -> Bool
+    func clearLocalDisplay()
+    func toggleLocalProcessFullScreen()
+}
+
+/// Observable lifecycle state for a local SwiftTerm process. The controller is
+/// weak so retaining this model never keeps a window or shell process alive.
+@MainActor
+public final class SwiftTermLocalProcessState: ObservableObject {
+    @Published public private(set) var isRunning = false
+    @Published public private(set) var terminalTitle: String?
+    @Published public private(set) var currentDirectory: String?
+    @Published public private(set) var exitCode: Int32?
+    @Published public private(set) var launchError: String?
+
+    private weak var controller: (any SwiftTermLocalProcessControlling)?
+
+    public init() {}
+
+    public func focus() {
+        controller?.focusLocalProcess()
+    }
+
+    public func terminate() {
+        controller?.terminateLocalProcess()
+    }
+
+    /// Relaunches the configured local process in the existing terminal after
+    /// the prior child has exited. A running process is never replaced.
+    @discardableResult
+    public func restart(_ configuration: SwiftTermLocalProcessConfiguration) -> Bool {
+        controller?.restartLocalProcess(configuration) ?? false
+    }
+
+    /// Sends the exact command bytes followed by a carriage return to the
+    /// existing PTY. This never invokes a second shell or constructs a
+    /// `shell -c` command line; the running interactive process receives the
+    /// same input it would receive from the keyboard.
+    @discardableResult
+    public func sendCommand(_ command: String) -> Bool {
+        controller?.sendLocalCommand(command) ?? false
+    }
+
+    /// Clears only the local terminal emulator's display and scrollback. The
+    /// shell process, working directory, environment, and PTY remain intact.
+    public func clearDisplay() {
+        controller?.clearLocalDisplay()
+    }
+
+    /// Toggles full screen on the NSWindow that owns this PTY, avoiding global
+    /// key-window routing when several terminal windows are open.
+    public func toggleFullScreen() {
+        controller?.toggleLocalProcessFullScreen()
+    }
+
+    fileprivate func attach(_ controller: any SwiftTermLocalProcessControlling) {
+        self.controller = controller
+    }
+
+    fileprivate func beganRunning(currentDirectory: String?) {
+        isRunning = true
+        exitCode = nil
+        launchError = nil
+        terminalTitle = nil
+        self.currentDirectory = currentDirectory
+    }
+
+    fileprivate func failedToLaunch(_ message: String) {
+        isRunning = false
+        exitCode = nil
+        launchError = message
+    }
+
+    fileprivate func processTerminated(exitCode: Int32?) {
+        isRunning = false
+        self.exitCode = exitCode
+    }
+
+    fileprivate func updateTitle(_ title: String) {
+        terminalTitle = title
+    }
+
+    fileprivate func updateCurrentDirectory(_ directory: String?) {
+        currentDirectory = directory
+    }
+}
+
+@MainActor
+private final class ReviewingMacLocalProcessTerminalView: LocalProcessTerminalView {
+    var onPasteRequest: ((String, Bool) -> Void)?
+    var onWindowAttachmentChanged: (() -> Void)?
+    var onProcessOutput: ((ArraySlice<UInt8>, Duration) -> Void)?
+
+    override var isOpaque: Bool { false }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onWindowAttachmentChanged?()
+    }
+
+    override func paste(_ sender: Any) {
+        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return }
+        onPasteRequest?(text, getTerminal().bracketedPasteMode)
+    }
+
+    override func dataReceived(slice: ArraySlice<UInt8>) {
+        let clock = ContinuousClock()
+        let start = clock.now
+        super.dataReceived(slice: slice)
+        onProcessOutput?(slice, start.duration(to: clock.now))
+    }
+}
+
+@MainActor
+private final class MacLocalProcessDelegateProxy:
+    NSObject,
+    @preconcurrency TerminalViewDelegate,
+    @preconcurrency LocalProcessTerminalViewDelegate
+{
+    weak var terminalView: ReviewingMacLocalProcessTerminalView?
+    weak var engine: MacLocalProcessEngine?
+    weak var hostModel: SwiftTermHostModel?
+    weak var processState: SwiftTermLocalProcessState?
+
+    let onResize: (Int, Int) -> Void
+    let onTitleChanged: (String) -> Void
+    let onCurrentDirectoryChanged: (String?) -> Void
+    let onBell: () -> Void
+    let onProcessTerminated: (Int32?) -> Void
+
+    init(
+        hostModel: SwiftTermHostModel,
+        processState: SwiftTermLocalProcessState,
+        onResize: @escaping (Int, Int) -> Void,
+        onTitleChanged: @escaping (String) -> Void,
+        onCurrentDirectoryChanged: @escaping (String?) -> Void,
+        onBell: @escaping () -> Void,
+        onProcessTerminated: @escaping (Int32?) -> Void
+    ) {
+        self.hostModel = hostModel
+        self.processState = processState
+        self.onResize = onResize
+        self.onTitleChanged = onTitleChanged
+        self.onCurrentDirectoryChanged = onCurrentDirectoryChanged
+        self.onBell = onBell
+        self.onProcessTerminated = onProcessTerminated
+    }
+
+    func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
+        // Preserve LocalProcessTerminalView's ioctl-backed resize behavior after
+        // replacing its delegate with this policy proxy.
+        terminalView?.sizeChanged(source: source, newCols: newCols, newRows: newRows)
+    }
+
+    func setTerminalTitle(source: TerminalView, title: String) {
+        processState?.updateTitle(title)
+        onTitleChanged(title)
+    }
+
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
+        hostModel?.updateCurrentDirectory(directory)
+        processState?.updateCurrentDirectory(directory)
+        onCurrentDirectoryChanged(directory)
+    }
+
+    func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        engine?.sendUserInput(data)
+    }
+
+    func scrolled(source: TerminalView, position: Double) {
+        engine?.refreshAccessibilityViewport()
+        hostModel?.updateScrollPosition(position)
+    }
+
+    func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
+        // Never inherit SwiftTerm's macOS default, which opens NSWorkspace
+        // immediately. The shared host model requires explicit user review.
+        hostModel?.requestExternalLink(link)
+    }
+
+    func bell(source: TerminalView) {
+        onBell()
+    }
+
+    func clipboardCopy(source: TerminalView, content: Data) {
+        // Backstop only. OSC 52 is replaced at the parser before SwiftTerm can
+        // decode or deliver clipboard content here.
+    }
+
+    func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {
+        hostModel?.recordITermEvent(SwiftTermITermContentPolicy.semanticEventKind(for: content))
+    }
+
+    func rangeChanged(source: TerminalView, startY: Int, endY: Int) {
+        hostModel?.recordDisplayRange(startY: startY, endY: endY)
+    }
+
+    func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {
+        onResize(newCols, newRows)
+    }
+
+    func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
+        processState?.updateTitle(title)
+        onTitleChanged(title)
+    }
+
+    func processTerminated(source: TerminalView, exitCode: Int32?) {
+        if let engine {
+            engine.processDidTerminate(waitStatus: exitCode)
+        } else {
+            let normalizedExitCode = Self.normalizedForkPTYExitCode(exitCode)
+            processState?.processTerminated(exitCode: normalizedExitCode)
+            onProcessTerminated(normalizedExitCode)
+        }
+    }
+
+    fileprivate static func normalizedForkPTYExitCode(_ waitStatus: Int32?) -> Int32? {
+        guard let waitStatus else { return nil }
+        let terminatingSignal = waitStatus & 0x7f
+        if terminatingSignal == 0 {
+            return (waitStatus >> 8) & 0xff
+        }
+        if terminatingSignal == 0x7f {
+            return nil
+        }
+        return 128 + terminatingSignal
+    }
+}
+
+@MainActor
+private final class MacLocalProcessEngine: TerminalEngine, SwiftTermLocalProcessControlling {
+    static let maximumRecordingCallbackBytes = 64 * 1024
+
+    let terminalView: ReviewingMacLocalProcessTerminalView
+    private let delegateProxy: MacLocalProcessDelegateProxy
+    private weak var processState: SwiftTermLocalProcessState?
+    private let onOutputData: (Data) -> Void
+    private let onInputData: (Data) -> Void
+    private let onProcessTerminated: (Int32?) -> Void
+    private let onRendererDiagnostics: (SwiftTermRendererDiagnostics) -> Void
+    private let onOSC52Decision: (SwiftTermOSC52Decision) -> Void
+    private var didReportTermination = false
+    private(set) var rendererDiagnostics = SwiftTermRendererDiagnostics.awaitingWindow
+    private(set) var performanceDiagnostics = SwiftTermPerformanceDiagnostics()
+
+    init(
+        hostModel: SwiftTermHostModel,
+        processState: SwiftTermLocalProcessState,
+        onPasteRequest: @escaping (String, Bool) -> Void,
+        onOutputData: @escaping (Data) -> Void,
+        onInputData: @escaping (Data) -> Void,
+        onResize: @escaping (Int, Int) -> Void,
+        onTitleChanged: @escaping (String) -> Void,
+        onCurrentDirectoryChanged: @escaping (String?) -> Void,
+        onBell: @escaping () -> Void,
+        onProcessTerminated: @escaping (Int32?) -> Void,
+        onRendererDiagnostics: @escaping (SwiftTermRendererDiagnostics) -> Void,
+        onOSC52Decision: @escaping (SwiftTermOSC52Decision) -> Void
+    ) {
+        let terminalView = ReviewingMacLocalProcessTerminalView(frame: .zero)
+        let delegateProxy = MacLocalProcessDelegateProxy(
+            hostModel: hostModel,
+            processState: processState,
+            onResize: onResize,
+            onTitleChanged: onTitleChanged,
+            onCurrentDirectoryChanged: onCurrentDirectoryChanged,
+            onBell: onBell,
+            onProcessTerminated: onProcessTerminated
+        )
+        self.terminalView = terminalView
+        self.delegateProxy = delegateProxy
+        self.processState = processState
+        self.onOutputData = onOutputData
+        self.onInputData = onInputData
+        self.onProcessTerminated = onProcessTerminated
+        self.onRendererDiagnostics = onRendererDiagnostics
+        self.onOSC52Decision = onOSC52Decision
+
+        delegateProxy.terminalView = terminalView
+        delegateProxy.engine = self
+        terminalView.terminalDelegate = delegateProxy
+        terminalView.processDelegate = delegateProxy
+        terminalView.onPasteRequest = onPasteRequest
+        terminalView.onProcessOutput = { [weak self] bytes, duration in
+            self?.recordProcessOutput(bytes, duration: duration)
+        }
+        terminalView.onWindowAttachmentChanged = { [weak self] in
+            self?.publishRendererDiagnostics()
+        }
+        terminalView.notifyUpdateChanges = true
+        terminalView.wantsLayer = true
+        terminalView.layer?.backgroundColor = NSColor.clear.cgColor
+        terminalView.setAccessibilityElement(true)
+        terminalView.setAccessibilityLabel("Local terminal")
+        terminalView.setAccessibilityHelp("Interactive local process terminal input and output")
+
+        terminalView.getTerminal().parser.oscHandlers[52] = { [weak self] request in
+            guard let self else { return }
+            self.onOSC52Decision(SwiftTermOSC52Policy.evaluate(request))
+        }
+    }
+
+    var identity: ObjectIdentifier { ObjectIdentifier(terminalView) }
+    var hostView: NSView { terminalView }
+    var isLikelyRunningInteractiveProgram: Bool {
+        terminalView.getTerminal().isCurrentBufferAlternate
+    }
+    var isComposingText: Bool { terminalView.hasMarkedText() }
+
+    func configure(theme: SwiftTermTheme, runtimeSettings: SwiftTermRuntimeSettings) {
+        applyTheme(theme)
+        applyRuntimeSettings(runtimeSettings)
+        publishRendererDiagnostics()
+        updatePTYSize()
+    }
+
+    func start(_ configuration: SwiftTermLocalProcessConfiguration) {
+        guard let processState else { return }
+        if let failure = configuration.validationFailure {
+            processState.failedToLaunch(failure)
+            return
+        }
+        guard !terminalView.process.running else { return }
+
+        didReportTermination = false
+        terminalView.startProcess(
+            executable: configuration.executable,
+            args: configuration.arguments,
+            environment: configuration.environment,
+            execName: configuration.executableName,
+            currentDirectory: configuration.currentDirectory
+        )
+        guard terminalView.process.running else {
+            processState.failedToLaunch("The local terminal process could not be started.")
+            return
+        }
+        processState.beganRunning(currentDirectory: configuration.currentDirectory)
+        if let currentDirectory = configuration.currentDirectory {
+            delegateProxy.hostCurrentDirectoryUpdate(
+                source: terminalView,
+                directory: currentDirectory
+            )
+        }
+        updatePTYSize()
+    }
+
+    func receive(_ data: Data) {
+        let clock = ContinuousClock()
+        let start = clock.now
+        terminalView.feed(byteArray: ArraySlice(data))
+        performanceDiagnostics.recordFeed(
+            byteCount: data.count,
+            duration: start.duration(to: clock.now)
+        )
+        refreshAccessibilityViewport()
+    }
+
+    func recordInput(byteCount: Int) {
+        performanceDiagnostics.recordInput(byteCount: byteCount)
+    }
+
+    func sendUserInput(_ bytes: ArraySlice<UInt8>) {
+        guard terminalView.process.running, !bytes.isEmpty else { return }
+        recordInput(byteCount: bytes.count)
+        emitBounded(Data(bytes), to: onInputData)
+        terminalView.send(source: terminalView, data: bytes)
+    }
+
+    func focusIfActive() -> Bool {
+        guard let window = terminalView.window, window.isKeyWindow else { return false }
+        if window.firstResponder === terminalView { return true }
+        guard !isComposingText else { return false }
+        return window.makeFirstResponder(terminalView)
+    }
+
+    func focusLocalProcess() {
+        _ = focusIfActive()
+    }
+
+    @discardableResult
+    func sendLocalCommand(_ command: String) -> Bool {
+        guard terminalView.process.running,
+              !command.isEmpty,
+              !command.utf8.contains(0),
+              command.utf8.count <= SwiftTermPastePolicy.maximumPayloadBytes else {
+            return false
+        }
+        var input = Data(command.utf8)
+        input.append(0x0d)
+        sendUserInput(ArraySlice(input))
+        return true
+    }
+
+    func clearLocalDisplay() {
+        terminalView.getTerminal().resetToInitialState()
+        terminalView.needsDisplay = true
+        refreshAccessibilityViewport()
+    }
+
+    func toggleLocalProcessFullScreen() {
+        terminalView.window?.toggleFullScreen(nil)
+    }
+
+    func resignFocus() {
+        guard let window = terminalView.window, window.firstResponder === terminalView else { return }
+        window.makeFirstResponder(nil)
+    }
+
+    func terminateLocalProcess() {
+        let processID = terminalView.process.shellPid
+        guard processID > 0 else {
+            reportProcessTermination(exitCode: nil)
+            return
+        }
+
+        var waitStatus: Int32 = 0
+        let waitResult = Self.nonblockingWait(processID, status: &waitStatus)
+        if waitResult == processID {
+            // PTY EOF can arrive before SwiftTerm's process source. Reap here
+            // before the view disappears, without signalling a now-reusable PID.
+            reportProcessTermination(
+                exitCode: MacLocalProcessDelegateProxy.normalizedForkPTYExitCode(waitStatus)
+            )
+            return
+        }
+        if waitResult == -1, errno == ECHILD {
+            // SwiftTerm's process source already won the waitpid race.
+            reportProcessTermination(exitCode: nil)
+            return
+        }
+
+        // SwiftTerm closes the PTY and sends SIGTERM, but also cancels its only
+        // waitpid source. A dedicated reaper therefore owns this child from this
+        // point forward and escalates only if the direct shell ignores SIGTERM.
+        terminalView.terminate()
+        reportProcessTermination(exitCode: nil)
+        Self.reapTerminatedProcess(processID)
+    }
+
+    @discardableResult
+    func restartLocalProcess(_ configuration: SwiftTermLocalProcessConfiguration) -> Bool {
+        guard !terminalView.process.running else { return false }
+        terminalView.getTerminal().resetToInitialState()
+        terminalView.needsDisplay = true
+        start(configuration)
+        return terminalView.process.running
+    }
+
+    fileprivate func processDidTerminate(waitStatus: Int32?) {
+        reportProcessTermination(
+            exitCode: MacLocalProcessDelegateProxy.normalizedForkPTYExitCode(waitStatus)
+        )
+    }
+
+    private func reportProcessTermination(exitCode: Int32?) {
+        guard !didReportTermination else { return }
+        didReportTermination = true
+        processState?.processTerminated(exitCode: exitCode)
+        onProcessTerminated(exitCode)
+    }
+
+    nonisolated private static func nonblockingWait(
+        _ processID: pid_t,
+        status: inout Int32
+    ) -> pid_t {
+        while true {
+            let result = waitpid(processID, &status, WNOHANG)
+            if result == -1, errno == EINTR { continue }
+            return result
+        }
+    }
+
+    nonisolated private static func reapTerminatedProcess(_ processID: pid_t) {
+        DispatchQueue.global(qos: .utility).async {
+            let deadline = DispatchTime.now() + .seconds(2)
+            var status: Int32 = 0
+            while DispatchTime.now() < deadline {
+                let result = nonblockingWait(processID, status: &status)
+                if result == processID || (result == -1 && errno == ECHILD) {
+                    return
+                }
+                if result == -1 { return }
+                usleep(20_000)
+            }
+
+            if kill(processID, SIGKILL) == -1, errno == ESRCH { return }
+            while waitpid(processID, &status, 0) == -1 {
+                if errno == EINTR { continue }
+                return
+            }
+        }
+    }
+
+    func refreshAccessibilityViewport() {
+        let value = visibleText(lastNLines: 40).joined(separator: "\n")
+        terminalView.setAccessibilityValue(value.isEmpty ? "No visible output" : value)
+    }
+
+    func visibleText(lastNLines: Int) -> [String] {
+        let data = terminalView.getTerminal().getBufferAsData()
+        let lines = (String(data: data, encoding: .utf8) ?? "")
+            .components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return Array(lines.suffix(max(0, lastNLines)))
+    }
+
+    func findNext(_ term: String) -> Bool { terminalView.findNext(term) }
+    func findPrevious(_ term: String) -> Bool { terminalView.findPrevious(term) }
+    func clearSearch() { terminalView.clearSearch() }
+
+    func commitPaste(_ text: String, bracketed: Bool) {
+        let data = SwiftTermPastePolicy.framedData(for: text, bracketed: bracketed)
+        sendUserInput(ArraySlice(data))
+    }
+
+    private func recordProcessOutput(_ bytes: ArraySlice<UInt8>, duration: Duration) {
+        performanceDiagnostics.recordFeed(byteCount: bytes.count, duration: duration)
+        emitBounded(Data(bytes), to: onOutputData)
+        refreshAccessibilityViewport()
+    }
+
+    private func updatePTYSize() {
+        guard terminalView.process.running else { return }
+        let terminal = terminalView.getTerminal()
+        terminalView.sizeChanged(
+            source: terminalView,
+            newCols: terminal.cols,
+            newRows: terminal.rows
+        )
+    }
+
+    private func applyTheme(_ theme: SwiftTermTheme) {
+        let fontSize = max(10, theme.fontSize)
+        terminalView.font = theme.fontName == "SF Mono"
+            ? NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+            : NSFont(name: theme.fontName, size: fontSize)
+                ?? NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        terminalView.nativeForegroundColor = NSColor(
+            srgbRed: theme.foreground.red,
+            green: theme.foreground.green,
+            blue: theme.foreground.blue,
+            alpha: 1
+        )
+        terminalView.nativeBackgroundColor = NSColor(
+            srgbRed: theme.background.red,
+            green: theme.background.green,
+            blue: theme.background.blue,
+            alpha: theme.background.alpha
+        )
+        terminalView.caretColor = NSColor(
+            srgbRed: theme.cursor.red,
+            green: theme.cursor.green,
+            blue: theme.cursor.blue,
+            alpha: 1
+        )
+        terminalView.selectedTextBackgroundColor = NSColor(
+            srgbRed: theme.selection.red,
+            green: theme.selection.green,
+            blue: theme.selection.blue,
+            alpha: theme.selection.alpha
+        )
+        terminalView.layer?.backgroundColor = NSColor.clear.cgColor
+        if theme.ansiColors.count == 16 {
+            terminalView.installColors(theme.ansiColors.map { color in
+                SwiftTerm.Color(
+                    red: Self.terminalColorComponent(color.red),
+                    green: Self.terminalColorComponent(color.green),
+                    blue: Self.terminalColorComponent(color.blue)
+                )
+            })
+        }
+    }
+
+    private func applyRuntimeSettings(_ settings: SwiftTermRuntimeSettings) {
+        let normalizedStyle = settings.cursorStyle.lowercased()
+        let cursorStyle: CursorStyle
+        switch (normalizedStyle, settings.blinkingCursor) {
+        case ("underline", true): cursorStyle = .blinkUnderline
+        case ("underline", false): cursorStyle = .steadyUnderline
+        case ("bar", true): cursorStyle = .blinkBar
+        case ("bar", false): cursorStyle = .steadyBar
+        case (_, true): cursorStyle = .blinkBlock
+        case (_, false): cursorStyle = .steadyBlock
+        }
+        terminalView.getTerminal().setCursorStyle(cursorStyle)
+        terminalView.changeScrollback(settings.scrollbackLines)
+        terminalView.optionAsMetaKey = settings.optionAsMetaKey
+    }
+
+    private func publishRendererDiagnostics() {
+        let diagnostics = SwiftTermRendererDiagnostics(
+            backend: .coreGraphicsFallback,
+            isWindowAttached: terminalView.window != nil,
+            hostBackingIsClear: terminalView.layer?.backgroundColor?.alpha == 0,
+            rendererBackingIsClear: true,
+            failureDescription: nil
+        )
+        rendererDiagnostics = diagnostics
+        onRendererDiagnostics(diagnostics)
+    }
+
+    private func emitBounded(_ data: Data, to callback: (Data) -> Void) {
+        guard !data.isEmpty else { return }
+        var offset = data.startIndex
+        while offset < data.endIndex {
+            let end = data.index(
+                offset,
+                offsetBy: min(Self.maximumRecordingCallbackBytes, data.distance(from: offset, to: data.endIndex))
+            )
+            callback(Data(data[offset..<end]))
+            offset = end
+        }
+    }
+
+    private static func terminalColorComponent(_ component: Double) -> UInt16 {
+        UInt16((min(1, max(0, component)) * Double(UInt16.max)).rounded())
+    }
+}
+
+/// An AppKit SwiftTerm host backed by a real local pseudo-terminal. The local
+/// process is started once when the representable is created and is terminated
+/// when the view is dismantled. Output and input callbacks are delivered in
+/// chunks no larger than 64 KiB so recording clients cannot receive unbounded
+/// transient payloads.
+public struct SwiftTermLocalProcessHostView: NSViewRepresentable {
+    @ObservedObject var model: SwiftTermHostModel
+    @ObservedObject var processState: SwiftTermLocalProcessState
+    let configuration: SwiftTermLocalProcessConfiguration
+    let theme: SwiftTermTheme
+    let runtimeSettings: SwiftTermRuntimeSettings
+    let onOutputData: (Data) -> Void
+    let onInputData: (Data) -> Void
+    let onResize: (Int, Int) -> Void
+    let onTitleChanged: (String) -> Void
+    let onCurrentDirectoryChanged: (String?) -> Void
+    let onBell: () -> Void
+    let onProcessTerminated: (Int32?) -> Void
+
+    public init(
+        model: SwiftTermHostModel,
+        processState: SwiftTermLocalProcessState,
+        configuration: SwiftTermLocalProcessConfiguration = .init(),
+        theme: SwiftTermTheme,
+        runtimeSettings: SwiftTermRuntimeSettings,
+        onOutputData: @escaping (Data) -> Void = { _ in },
+        onInputData: @escaping (Data) -> Void = { _ in },
+        onResize: @escaping (Int, Int) -> Void = { _, _ in },
+        onTitleChanged: @escaping (String) -> Void = { _ in },
+        onCurrentDirectoryChanged: @escaping (String?) -> Void = { _ in },
+        onBell: @escaping () -> Void = {},
+        onProcessTerminated: @escaping (Int32?) -> Void = { _ in }
+    ) {
+        self.model = model
+        self.processState = processState
+        self.configuration = configuration
+        self.theme = theme
+        self.runtimeSettings = runtimeSettings
+        self.onOutputData = onOutputData
+        self.onInputData = onInputData
+        self.onResize = onResize
+        self.onTitleChanged = onTitleChanged
+        self.onCurrentDirectoryChanged = onCurrentDirectoryChanged
+        self.onBell = onBell
+        self.onProcessTerminated = onProcessTerminated
+    }
+
+    public func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    public func makeNSView(context: Context) -> NSView {
+        let engine = MacLocalProcessEngine(
+            hostModel: model,
+            processState: processState,
+            onPasteRequest: { [weak model] text, bracketed in
+                model?.requestPaste(text, bracketed: bracketed)
+            },
+            onOutputData: onOutputData,
+            onInputData: onInputData,
+            onResize: onResize,
+            onTitleChanged: onTitleChanged,
+            onCurrentDirectoryChanged: onCurrentDirectoryChanged,
+            onBell: onBell,
+            onProcessTerminated: onProcessTerminated,
+            onRendererDiagnostics: { [weak model] diagnostics in
+                model?.updateRendererDiagnostics(diagnostics)
+            },
+            onOSC52Decision: { [weak model] decision in
+                model?.recordOSC52Decision(decision)
+            }
+        )
+        engine.configure(theme: theme, runtimeSettings: runtimeSettings)
+        context.coordinator.engine = engine
+        context.coordinator.lastTheme = theme
+        context.coordinator.lastRuntimeSettings = runtimeSettings
+        model.attach(engine)
+        processState.attach(engine)
+        engine.start(configuration)
+        return engine.hostView
+    }
+
+    public func updateNSView(_ nsView: NSView, context: Context) {
+        guard let engine = context.coordinator.engine, engine.hostView === nsView else { return }
+        if context.coordinator.lastTheme != theme
+            || context.coordinator.lastRuntimeSettings != runtimeSettings {
+            context.coordinator.lastTheme = theme
+            context.coordinator.lastRuntimeSettings = runtimeSettings
+            engine.configure(theme: theme, runtimeSettings: runtimeSettings)
+        }
+        model.attach(engine)
+        processState.attach(engine)
+    }
+
+    public static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.engine?.terminateLocalProcess()
+    }
+
+    @MainActor
+    public final class Coordinator {
+        fileprivate var engine: MacLocalProcessEngine?
+        fileprivate var lastTheme: SwiftTermTheme?
+        fileprivate var lastRuntimeSettings: SwiftTermRuntimeSettings?
     }
 }
 #endif

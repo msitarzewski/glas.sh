@@ -8,6 +8,7 @@
 import SwiftUI
 import RealityKit
 
+#if os(visionOS)
 struct FocusEnvironmentView: View {
     var body: some View {
         RealityView { content in
@@ -16,3 +17,4 @@ struct FocusEnvironmentView: View {
         .preferredSurroundingsEffect(.systemDark)
     }
 }
+#endif

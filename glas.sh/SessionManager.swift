@@ -478,7 +478,7 @@ enum SessionCredentialLocation: Equatable {
     case target
     case jumpHost(Int)
 
-    var description: String {
+    nonisolated var description: String {
         switch self {
         case .target:
             return "target server"

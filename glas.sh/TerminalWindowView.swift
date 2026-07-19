@@ -8,13 +8,57 @@
 import SwiftUI
 #if canImport(UIKit)
 import UIKit
+#elseif canImport(AppKit)
+import AppKit
+import Combine
 #endif
 import RealityKitContent
 
+enum TerminalNewTerminalRoute: Equatable {
+    case connections
+    case macTab
+
+    static var platformDefault: Self {
+        #if os(macOS)
+        .macTab
+        #else
+        .connections
+        #endif
+    }
+
+    var accessibilityLabel: String {
+        switch self {
+        case .connections: "New Terminal"
+        case .macTab: "New Terminal Tab"
+        }
+    }
+
+    func perform(openConnections: () -> Void, openMacTab: () -> Void) {
+        switch self {
+        case .connections: openConnections()
+        case .macTab: openMacTab()
+        }
+    }
+}
+
 struct TerminalWindowView: View {
     @Bindable var session: TerminalSession
+    /// Standalone terminal windows own their session. A macOS split workspace
+    /// retains ownership so view identity and tab moves cannot disconnect SSH.
+    var ownsSessionLifecycle = true
+    /// Workspace command routing increments this value to present the existing
+    /// terminal search UI without duplicating search state outside this view.
+    var externalSearchRequestNonce: UInt64 = 0
+    /// Embedded Mac workspaces provide their own tab launcher. Standalone SSH
+    /// windows attach a fresh launcher tab to their exact hosting window.
+    var onNewTerminalTab: (() -> Void)? = nil
+    /// Embedded workspaces retain their own window and pane topology when an
+    /// SSH session ends. The owner removes the live session and presents retry
+    /// state instead of allowing this view to dismiss the workspace window.
+    var onSessionRequestedClose: (() -> Void)? = nil
     @Environment(SessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
+    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
     
     @State private var searchQuery: String = ""
     @State private var terminalSearchFound: Bool?
@@ -41,14 +85,20 @@ struct TerminalWindowView: View {
     @State private var terminalColumns = 120
     @State private var terminalRows = 40
     @State private var previousSessionState: SessionState?
+    #if os(macOS)
+    @State private var macTerminalWindow: NSWindow?
+    @State private var isMacFullScreen = false
+    #endif
     @Environment(\.openWindow) private var openWindow
+    #if os(visionOS)
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+    #endif
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     
     var body: some View {
-        terminalFocusTracking
+        terminalWindowIdentity
             .sheet(isPresented: $showingRecordings) {
                 recordingsListSheet
             }
@@ -67,6 +117,55 @@ struct TerminalWindowView: View {
             } message: {
                 Text("Output-only is the safest default. Keyboard input may include passwords, tokens, and other secrets because remote password prompts cannot be detected reliably. This choice applies only to this recording.")
             }
+    }
+
+    @ViewBuilder
+    private var terminalWindowIdentity: some View {
+        #if os(macOS)
+        if ownsSessionLifecycle {
+            terminalFocusTracking
+                .navigationTitle(session.server.name)
+                .navigationSubtitle("\(session.server.username)@\(session.server.host):\(session.server.port)")
+                .toolbar {
+                    ToolbarItem(placement: .navigation) {
+                        Image(systemName: "apple.terminal")
+                            .imageScale(.small)
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("SSH terminal session")
+                    }
+                    .sharedBackgroundVisibility(.hidden)
+                }
+                .windowToolbarFullScreenVisibility(.onHover)
+                .background {
+                    MacTerminalWindowAccessor { window in
+                        if macTerminalWindow !== window {
+                            macTerminalWindow = window
+                            isMacFullScreen = window.styleMask.contains(.fullScreen)
+                        }
+                    }
+                }
+                .focusedSceneValue(
+                    \.macNewWorkspaceTabAction,
+                    MacNewWorkspaceTabAction(openMacNewTerminalTab)
+                )
+                .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) {
+                    updateMacFullScreenState(from: $0, isFullScreen: true)
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) {
+                    updateMacFullScreenState(from: $0, isFullScreen: false)
+                }
+        } else {
+            terminalFocusTracking
+                .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) {
+                    updateMacFullScreenState(from: $0, isFullScreen: true)
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) {
+                    updateMacFullScreenState(from: $0, isFullScreen: false)
+                }
+        }
+        #else
+        terminalFocusTracking
+        #endif
     }
 
     private var terminalLifecycle: some View {
@@ -89,8 +188,7 @@ struct TerminalWindowView: View {
                 }
             }
             .onChange(of: session.closeWindowNonce) { _, _ in
-                sessionManager.closeSession(session)
-                dismiss()
+                closeTerminalSession()
             }
             .onDisappear {
                 handleTerminalDisappear()
@@ -102,6 +200,10 @@ struct TerminalWindowView: View {
 
     private var terminalFocusTracking: some View {
         terminalLifecycle
+            .onChange(of: externalSearchRequestNonce) { _, nonce in
+                guard nonce > 0 else { return }
+                showingSearchOverlay = true
+            }
             .onChange(of: showingTerminalSettings) { _, showing in
                 updateTerminalFocusOwnership(competingControlPresented: showing)
             }
@@ -135,6 +237,7 @@ struct TerminalWindowView: View {
     }
 
     private var terminalSurface: some View {
+        #if os(visionOS)
         VStack(spacing: 0) {
             terminalContent
                 .padding(10)
@@ -142,7 +245,8 @@ struct TerminalWindowView: View {
         .modifier(GlassWindowBackground(
             interactive: effectiveInteractiveGlass,
             material: resolvedMaterial,
-            blurAmount: effectiveBlurBackground
+            blurAmount: effectiveBlurBackground,
+            appearance: settingsManager.currentTheme.resolvedAppearance
         ))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, 22)
@@ -156,6 +260,50 @@ struct TerminalWindowView: View {
             bottomStatusBar
                 .glassBackgroundEffect(in: .capsule)
         }
+        #else
+        VStack(spacing: 0) {
+            if !ownsSessionLifecycle {
+                connectionLabel
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background {
+                        MacTerminalVisualEffect(
+                            amount: 1,
+                            material: .titlebar,
+                            state: .followsWindowActiveState
+                        )
+                    }
+                Divider()
+            }
+            terminalContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            #if os(macOS)
+            bottomStatusBar
+                .controlSize(.small)
+                .glassEffect(.regular, in: .capsule)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity)
+                .background {
+                    MacTerminalVisualEffect(
+                        amount: 1,
+                        material: .titlebar,
+                        state: .followsWindowActiveState
+                    )
+                }
+            #else
+            bottomStatusBar
+                .controlSize(.small)
+                .glassEffect(.regular, in: .capsule)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+            #endif
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        #endif
     }
 
     private var terminalPresentation: some View {
@@ -223,6 +371,10 @@ struct TerminalWindowView: View {
                 if let url = terminalHostModel.resolvePendingExternalLink(approved: true) {
                     UIApplication.shared.open(url)
                 }
+                #elseif canImport(AppKit)
+                if let url = terminalHostModel.resolvePendingExternalLink(approved: true) {
+                    NSWorkspace.shared.open(url)
+                }
                 #else
                 _ = terminalHostModel.resolvePendingExternalLink(approved: false)
                 #endif
@@ -246,11 +398,15 @@ struct TerminalWindowView: View {
 
     private func handleTerminalDisappear() {
         terminalHostModel.stopFocusMaintenance()
-        sessionManager.closeSession(session)
+        if ownsSessionLifecycle {
+            sessionManager.closeSession(session)
+        }
+        #if os(visionOS)
         if isImmersiveFocusActive {
             Task { await dismissImmersiveSpace() }
             isImmersiveFocusActive = false
         }
+        #endif
     }
 
     private func handleSearchPresentationChange(_ oldValue: Bool, _ showing: Bool) {
@@ -263,6 +419,40 @@ struct TerminalWindowView: View {
             updateTerminalFocusOwnership(competingControlPresented: false)
         }
     }
+
+    #if os(macOS)
+    private func openMacNewTerminalTab() {
+        if let onNewTerminalTab {
+            onNewTerminalTab()
+            return
+        }
+        let request = MacWorkspaceLaunchRequest(startsEmpty: true)
+        if let macTerminalWindow {
+            MacWorkspaceWindowRegistry.shared.prepareTab(
+                sourceWindow: macTerminalWindow,
+                destinationWorkspaceID: request.workspaceID
+            )
+        }
+        openWindow(id: "workspace", value: request)
+    }
+
+    private func toggleMacFocusMode() {
+        guard let window = macTerminalWindow ?? NSApp.keyWindow else { return }
+        macTerminalWindow = window
+        isMacFullScreen = window.styleMask.contains(.fullScreen)
+        window.toggleFullScreen(nil)
+    }
+
+    private func updateMacFullScreenState(
+        from notification: Notification,
+        isFullScreen: Bool
+    ) {
+        guard let window = notification.object as? NSWindow,
+              let macTerminalWindow,
+              window === macTerminalWindow else { return }
+        self.isMacFullScreen = isFullScreen
+    }
+    #endif
     
     // MARK: - Connection Label (top ornament)
 
@@ -308,12 +498,16 @@ struct TerminalWindowView: View {
 
     private var terminalContent: some View {
         ZStack {
+            #if os(macOS)
+            macTerminalCanvasBackground
+            #else
             terminalDisplayBackground
             if let tintColor = tintColor {
                 Rectangle()
                     .fill(tintColor.opacity(0.12 * effectiveWindowOpacity))
                     .allowsHitTesting(false)
             }
+            #endif
             SwiftTermHostView(
                 model: terminalHostModel,
                 theme: swiftTermTheme,
@@ -345,9 +539,10 @@ struct TerminalWindowView: View {
             )
             .background(Color.clear)
             .overlay(Color.white.opacity(showVisualBell ? 0.3 : 0).allowsHitTesting(false))
-            .padding(10)
+            .padding(.horizontal, terminalCanvasPadding * 2)
+            .padding(.vertical, terminalCanvasPadding)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: terminalCanvasCornerRadius, style: .continuous))
         .contentShape(.rect)
         .onTapGesture {
             if terminalCanOwnFocus {
@@ -435,34 +630,7 @@ struct TerminalWindowView: View {
     }
 
     private var swiftTermTheme: SwiftTermTheme {
-        let theme = settingsManager.currentTheme
-        let fg = rgbaComponents(theme.foreground.color)
-        let bg = rgbaComponents(theme.background.color)
-        let cursor = rgbaComponents(theme.cursor.color)
-        let selection = rgbaComponents(theme.selection.color)
-        let ansiColors = [
-            theme.black, theme.red, theme.green, theme.yellow,
-            theme.blue, theme.magenta, theme.cyan, theme.white,
-            theme.brightBlack, theme.brightRed, theme.brightGreen, theme.brightYellow,
-            theme.brightBlue, theme.brightMagenta, theme.brightCyan, theme.brightWhite,
-        ].map { color in
-            let components = rgbaComponents(color.color)
-            return SwiftTermThemeColor(
-                red: components.red,
-                green: components.green,
-                blue: components.blue
-            )
-        }
-
-        return SwiftTermTheme(
-            fontSize: max(10, theme.fontSize),
-            foreground: (fg.red, fg.green, fg.blue),
-            background: (bg.red, bg.green, bg.blue, 0),
-            cursor: (cursor.red, cursor.green, cursor.blue),
-            fontName: theme.fontName,
-            selection: (selection.red, selection.green, selection.blue, selection.alpha),
-            ansiColors: ansiColors
-        )
+        settingsManager.currentTheme.swiftTermTheme
     }
 
     private var terminalCanOwnFocus: Bool {
@@ -527,6 +695,34 @@ struct TerminalWindowView: View {
         }
     }
 
+    private var terminalCanvasPadding: CGFloat {
+        #if os(macOS)
+        4
+        #else
+        10
+        #endif
+    }
+
+    private var terminalCanvasCornerRadius: CGFloat {
+        #if os(macOS)
+        ownsSessionLifecycle ? 0 : 18
+        #else
+        18
+        #endif
+    }
+
+    #if os(macOS)
+    private var macTerminalCanvasBackground: some View {
+        TerminalCanvasBackground(
+            color: settingsManager.currentTheme.background,
+            tint: tintColor,
+            opacity: effectiveWindowOpacity,
+            blur: effectiveBlurBackground,
+            appearance: settingsManager.currentTheme.resolvedAppearance
+        )
+    }
+    #endif
+
     private func startRecording(capturesInput: Bool) {
         if session.recorder == nil {
             session.recorder = SessionRecorder()
@@ -557,43 +753,19 @@ struct TerminalWindowView: View {
         )
     }
 
-    private func rgbaComponents(_ color: Color) -> (red: Double, green: Double, blue: Double, alpha: Double) {
-        #if canImport(UIKit)
-        let uiColor = UIColor(color)
-        var red: CGFloat = 0
-        var green: CGFloat = 0
-        var blue: CGFloat = 0
-        var alpha: CGFloat = 0
-        if uiColor.getRed(&red, green: &green, blue: &blue, alpha: &alpha) {
-            return (Double(red), Double(green), Double(blue), Double(alpha))
-        }
-        #endif
-        return (1, 1, 1, 1)
-    }
-
     @ViewBuilder
     private var terminalDisplayBackground: some View {
         // Opacity is deliberately separate from the window's blur layer.
         // Zero leaves the terminal canvas completely unpainted.
-        let bg = rgbaComponents(settingsManager.currentTheme.background.color)
+        let bg = settingsManager.currentTheme.canvasBackgroundColor
 
         Rectangle()
-            .fill(Color(red: bg.red, green: bg.green, blue: bg.blue))
+            .fill(bg.color)
             .opacity(effectiveWindowOpacity)
     }
 
     private var tintColor: Color? {
-        let tint = effectiveGlassTint
-        if tint == "None" || tint.isEmpty { return nil }
-        // Legacy named colors
-        switch tint {
-        case "Blue": return .blue
-        case "Purple": return .purple
-        case "Green": return .green
-        default: break
-        }
-        // Hex color
-        return Color(hex: tint)
+        TerminalGlassTint.color(for: effectiveGlassTint)
     }
 
     private var effectiveGlassFrost: String {
@@ -735,8 +907,14 @@ struct TerminalWindowView: View {
     }
 
     private func closeTerminalSession() {
-        sessionManager.closeSession(session)
-        dismiss()
+        if ownsSessionLifecycle {
+            sessionManager.closeSession(session)
+            dismiss()
+        } else if let onSessionRequestedClose {
+            onSessionRequestedClose()
+        } else {
+            sessionManager.closeSession(session)
+        }
     }
 
     private func reconnectSession() {
@@ -760,20 +938,60 @@ struct TerminalWindowView: View {
         showingTerminalSettings = true
     }
 
+    private func openNewTerminalFromFooter() {
+        TerminalNewTerminalRoute.platformDefault.perform(
+            openConnections: { openWindow(id: "main") },
+            openMacTab: {
+                #if os(macOS)
+                openMacNewTerminalTab()
+                #endif
+            }
+        )
+    }
+
     // MARK: - Bottom Status
 
     private var bottomStatusBar: some View {
+        #if os(macOS)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                bottomStatusBarContents(compact: false)
+            }
+            HStack(spacing: 6) {
+                bottomStatusBarContents(compact: true)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        #else
         HStack(spacing: 12) {
-            HStack(spacing: 8) {
+            bottomStatusBarContents(compact: false)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        #endif
+    }
+
+    @ViewBuilder
+    private func bottomStatusBarContents(compact: Bool) -> some View {
+        HStack(spacing: 8) {
+            if compact && differentiateWithoutColor {
+                Image(systemName: session.state.icon)
+                    .foregroundStyle(session.state.color)
+                    .frame(width: 12, height: 12)
+            } else {
                 Circle()
                     .fill(session.state.color)
                     .frame(width: 8, height: 8)
+            }
+            if !compact {
                 Text(session.state.displayName)
                     .font(.caption)
                     .fontWeight(.medium)
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Connection status: \(session.state.displayName)")
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Connection status: \(session.state.displayName)")
 
             Button {
                 openWindow(id: "main")
@@ -806,6 +1024,7 @@ struct TerminalWindowView: View {
             .accessibilityLabel("SFTP Browser")
             .help("SFTP Browser")
 
+            #if os(visionOS)
             Button {
                 Task {
                     if isImmersiveFocusActive {
@@ -822,8 +1041,27 @@ struct TerminalWindowView: View {
             .buttonStyle(.borderless)
             .accessibilityLabel(isImmersiveFocusActive ? "Exit Focus Mode" : "Focus Mode")
             .help(isImmersiveFocusActive ? "Exit Focus Mode" : "Focus Mode")
+            #elseif os(macOS)
+            Button {
+                toggleMacFocusMode()
+            } label: {
+                Image(systemName: isMacFullScreen ? "moon.fill" : "moon")
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(isMacFullScreen ? "Exit Focus Mode" : "Focus Mode")
+            .help(isMacFullScreen ? "Exit Focus Mode" : "Focus Mode")
+            #endif
 
             recordingIndicator
+
+            Button {
+                openNewTerminalFromFooter()
+            } label: {
+                Image(systemName: "plus")
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(TerminalNewTerminalRoute.platformDefault.accessibilityLabel)
+            .help(TerminalNewTerminalRoute.platformDefault.accessibilityLabel)
 
             Menu {
                 Button {
@@ -941,9 +1179,6 @@ struct TerminalWindowView: View {
             .buttonStyle(.borderless)
             .help("Tools")
             .accessibilityLabel("Tools menu")
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
     }
     
     private var terminalSearchOverlay: some View {
@@ -1118,8 +1353,7 @@ private struct TerminalPasteReviewSheet: View {
                 } else {
                     TextEditor(text: $editedText)
                         .font(.system(.body, design: .monospaced))
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                        .terminalTextInputDefaults()
                         .accessibilityLabel("Editable terminal paste content")
                     Text("\(editedByteCount) of \(SwiftTermPastePolicy.maximumPayloadBytes) bytes")
                         .font(.caption.monospacedDigit())
@@ -1171,6 +1405,7 @@ struct TerminalOverridesSettingsView: View {
             }
 
             Section("Glass (this session)") {
+                #if os(visionOS)
                 Picker("Frost", selection: Binding(
                     get: { sessionOverride.glassFrost ?? settings.glassFrost },
                     set: { newValue in
@@ -1184,6 +1419,7 @@ struct TerminalOverridesSettingsView: View {
                     Text("Heavy").tag("regular")
                     Text("Max").tag("thick")
                 }
+                #endif
 
                 Slider(
                     value: Binding(
@@ -1221,6 +1457,7 @@ struct TerminalOverridesSettingsView: View {
                     Text("Maximum")
                 }
 
+                #if os(visionOS)
                 Toggle(
                     "Interactive glass",
                     isOn: Binding(
@@ -1232,10 +1469,17 @@ struct TerminalOverridesSettingsView: View {
                         }
                     )
                 )
+                #endif
 
-                Text("Opacity and blur remain independent. Set both to zero for a completely transparent terminal.")
+                #if os(visionOS)
+                Text("Opacity and blur remain independent. Set both to zero for a completely transparent terminal. These overrides apply only to this live session and do not sync.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                #else
+                Text("Tint, opacity, and blur affect only this terminal canvas; window chrome remains system glass. These overrides apply only to this live session and do not sync.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                #endif
 
                 GlassTintPicker(
                     value: Binding(
@@ -1401,24 +1645,22 @@ struct AddSessionPortForwardView: View {
 
                 Section("Configuration") {
                     TextField("Local Port", text: $localPort)
-                        .keyboardType(.numberPad)
+                        .terminalNumericInput()
                         .focused($isLocalPortFocused)
 
                     if forwardType != .dynamic {
                         TextField("Remote Host", text: $remoteHost)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
+                            .terminalTextInputDefaults()
 
                         TextField("Remote Port", text: $remotePort)
-                            .keyboardType(.numberPad)
+                            .terminalNumericInput()
                     }
                 }
 
                 if forwardType == .dynamic {
                     Section("SOCKS5 Authentication") {
                         TextField("Username", text: $socks5Username)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
+                            .terminalTextInputDefaults()
                         SecureField("Password", text: $socks5Password)
 
                         Text("Required for every local SOCKS5 client. These credentials remain only in app memory for this session and are never saved with the forward.")
@@ -1605,28 +1847,175 @@ extension TerminalWindowView {
 
 // MARK: - Glass Window Background
 
-/// Composites blur independently behind the terminal's theme-color opacity.
-/// A zero blur amount emits no backing at all, preserving true transparency.
-private struct GlassWindowBackground: ViewModifier {
+/// Composites blur independently behind the terminal canvas's theme-color
+/// opacity. Window chrome uses its own standard platform material, so a zero
+/// blur amount makes only the typing surface completely transparent.
+struct GlassWindowBackground: ViewModifier {
     let interactive: Bool
     let material: Material
     let blurAmount: Double
+    let appearance: TerminalThemeAppearance
 
     func body(content: Content) -> some View {
         content.background {
             if blurAmount > 0 {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .fill(material)
-
-                    if interactive {
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .fill(.clear)
-                            .glassBackgroundEffect(in: .rect(cornerRadius: 24))
-                    }
-                }
-                .opacity(blurAmount)
+                #if os(macOS)
+                MacTerminalVisualEffect(amount: blurAmount, appearance: appearance)
+                #else
+                appearanceMatchedMaterial
+                #endif
             }
+        }
+    }
+
+    #if !os(macOS)
+    @ViewBuilder
+    private var appearanceMatchedMaterial: some View {
+        switch appearance {
+        case .automatic:
+            materialLayers
+        case .light:
+            materialLayers.environment(\.colorScheme, .light)
+        case .dark:
+            materialLayers.environment(\.colorScheme, .dark)
+        }
+    }
+
+    private var materialLayers: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(material)
+
+            #if os(visionOS)
+            if interactive {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(.clear)
+                    .glassBackgroundEffect(in: .rect(cornerRadius: 24))
+            }
+            #endif
+        }
+        .opacity(blurAmount)
+    }
+    #endif
+}
+
+#if os(macOS)
+/// Reports the hosting window without reapplying window policy or installing a
+/// second close observer; the scene-level reader continues to own those jobs.
+struct MacTerminalWindowAccessor: NSViewRepresentable {
+    let onWindow: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async {
+            if let window = view.window { onWindow(window) }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            if let window = nsView.window { onWindow(window) }
+        }
+    }
+}
+
+/// Shared local/SSH terminal canvas composition. Chrome deliberately lives
+/// outside this view and therefore never inherits these adjustable alpha values.
+struct TerminalCanvasBackground: View {
+    let color: CodableColor
+    let tint: Color?
+    let opacity: Double
+    let blur: Double
+    let appearance: TerminalThemeAppearance
+
+    var body: some View {
+        let clampedOpacity = min(1, max(0, opacity.isFinite ? opacity : 0))
+        ZStack {
+            if blur > 0 {
+                MacTerminalVisualEffect(amount: blur, appearance: appearance)
+            }
+            Color(red: color.red, green: color.green, blue: color.blue)
+                .opacity(clampedOpacity)
+            if let tint {
+                tint.opacity(0.12 * clampedOpacity)
+            }
+        }
+    }
+}
+
+/// Uses AppKit's behind-window compositor without changing the opacity of
+/// terminal glyphs, the cursor, or any foreground chrome.
+struct MacTerminalVisualEffect: NSViewRepresentable {
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    let amount: Double
+    var material: NSVisualEffectView.Material = .underWindowBackground
+    var state: NSVisualEffectView.State = .followsWindowActiveState
+    var appearance: TerminalThemeAppearance = .automatic
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView(frame: .zero)
+        view.blendingMode = .behindWindow
+        view.material = material
+        view.state = state
+        view.alphaValue = clampedAmount
+        view.appearance = resolvedNSAppearance
+        view.wantsLayer = true
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.state = state
+        nsView.alphaValue = clampedAmount
+        nsView.appearance = resolvedNSAppearance
+    }
+
+    private var clampedAmount: Double {
+        Self.clampedAmount(amount)
+    }
+
+    static func clampedAmount(_ amount: Double) -> Double {
+        min(1, max(0, amount.isFinite ? amount : 0))
+    }
+
+    private var resolvedNSAppearance: NSAppearance? {
+        guard let name = Self.resolvedAppearanceName(
+            for: appearance,
+            increaseContrast: colorSchemeContrast == .increased
+        ) else { return nil }
+        return NSAppearance(named: name)
+    }
+
+    static func resolvedAppearanceName(
+        for appearance: TerminalThemeAppearance,
+        increaseContrast: Bool
+    ) -> NSAppearance.Name? {
+        switch (appearance, increaseContrast) {
+        case (.automatic, _):
+            nil
+        case (.light, false):
+            .aqua
+        case (.light, true):
+            .accessibilityHighContrastAqua
+        case (.dark, false):
+            .darkAqua
+        case (.dark, true):
+            .accessibilityHighContrastDarkAqua
+        }
+    }
+}
+#endif
+
+enum TerminalGlassTint {
+    static func color(for value: String) -> Color? {
+        if value == "None" || value.isEmpty { return nil }
+        switch value {
+        case "Blue": return .blue
+        case "Purple": return .purple
+        case "Green": return .green
+        default: return Color(hex: value)
         }
     }
 }
@@ -1730,6 +2119,14 @@ extension Color {
         let uiColor = UIColor(self)
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         uiColor.getRed(&r, green: &g, blue: &b, alpha: &a)
+        let ri = Int(round(r * 255))
+        let gi = Int(round(g * 255))
+        let bi = Int(round(b * 255))
+        return String(format: "#%02X%02X%02X", ri, gi, bi)
+        #elseif canImport(AppKit)
+        let nsColor = NSColor(self).usingColorSpace(.deviceRGB) ?? NSColor(self)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        nsColor.getRed(&r, green: &g, blue: &b, alpha: &a)
         let ri = Int(round(r * 255))
         let gi = Int(round(g * 255))
         let bi = Int(round(b * 255))

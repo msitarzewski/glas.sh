@@ -48,6 +48,17 @@ The user approved the current code and automated-QA checkpoint on 2026-07-17. Th
 
 Distribution remains blocked on the open ledger items, especially matching-Xcode-26 proof, physical Vision Pro/security/input/accessibility/performance checks, cross-repository glassdb acceptance, the terminal conformance corpus, explicit completion or deferral of Phases 06–09, signing, archive, TestFlight, and App Store gates.
 
+## Approved native-platform checkpoint — 2026-07-19
+
+- The user approved the native macOS/visionOS parity candidate after iterative visual review on macOS and physical Vision Pro.
+- The native Apple Silicon/macOS 26+ target now provides local PTY and saved-host SSH terminals, multiwindow workspaces, tabs, splits, focused menus, secure keyboard entry, native window chrome, and platform-consistent terminal footer actions.
+- The terminal canvas remains independently tintable, transparent, and blurred. Full transparency remains available, while ANSI glyphs render above the glass composition and retain their selected sRGB palette.
+- Apple Terminal theme import and iCloud theme/appearance synchronization share the existing settings model with visionOS.
+- SwiftTerm 1.15.0 remains the production terminal engine. The physical Vision Pro drawing failure was repaired without abandoning the tested CoreGraphics path; a speculative engine rewrite remains outside this checkpoint.
+- Final automated evidence: macOS 20/20; visionOS 26.4 183/183; visionOS 27.0 183/183; NIOSSH 331/331; Citadel 39 passed with five expected environment skips; GlasSecretStore 75/75.
+- The macOS Release is a signed thin arm64 binary with hardened runtime, runtime 27.0, bundle identifier `sh.glas.mac`, and a packaged `AppIcon.icns`.
+- Final `git diff --check`, production marker scan, and isolated tracked/untracked Gitleaks scans pass.
+
 ## Status vocabulary
 
 | Status | Meaning |
@@ -71,7 +82,7 @@ Distribution remains blocked on the open ledger items, especially matching-Xcode
 | [03](./03-recording-logging-transfer-and-ai-safety.md) | Recording, logging, transfer, and AI safety | In progress | 01, 02 | Protected recording, redacted logs, safe SFTP, deterministic AI execution policy |
 | [04](./04-terminal-correctness-and-engine-boundary.md) | Terminal correctness and engine boundary | In progress | 00, 01 | SwiftTerm behind a tested boundary; terminal input/search/protocol correctness gates pass |
 | [05](./05-feature-completion-and-honest-ui.md) | Feature completion and honest UI | QA | 01, 03, 04 | Every visible feature completes end to end or is hidden; transparency invariant passes |
-| [06](./06-native-platform-foundation.md) | Native platform foundation | In progress | 02, 04 | Shared core boundaries and native platform target plan validated without Vision Pro regression |
+| [06](./06-native-platform-foundation.md) | Native platform foundation | QA | 02, 04 | Shared core boundaries and native platform target plan validated without Vision Pro regression |
 | [07](./07-workspaces-and-shell-integration.md) | Workspaces and shell integration | In progress | 04, 06 | Semantic shell and resumable workspace flows pass platform tests |
 | [08](./08-glassdb-metadata-sync.md) | glassdb metadata synchronization | Not started | 02, 06 | Versioned schema, atomic local sharing, and deterministic optional sync policy |
 | [09](./09-terminal-engine-evaluation.md) | Terminal engine evaluation | Not started | 04, 07 | Measured SwiftTerm/libghostty decision recorded with evidence |
@@ -79,10 +90,11 @@ Distribution remains blocked on the open ledger items, especially matching-Xcode
 
 ## Current verified baseline
 
-- Branch: `glass-system-redesign` at `ade5a77f666432c430cbf800b2cb32d3739b7ef3`, with approved but uncommitted worktree changes preserved.
+- Branch: `agent/macos-27-terminal`, based on `origin/main`, with the final implementation approved for publication.
 - Toolchain: Xcode 27.0 (27A5209h), SDK 27.0, Metal Toolchain installed.
-- App tests: 164/164 passed on visionOS 26.4 arm64 Simulator and 164/164 passed on visionOS 27.0 arm64 Simulator; both result bundles report zero failures, skips, expected failures, and runtime warnings.
-- GlasSecretStore: 75/75 tests passed across 13 suites. Citadel and GlassDBKit package suites also passed their locally executable coverage; environment-dependent live-service cases remain external gates.
+- App tests: 183/183 passed on visionOS 26.4 arm64 Simulator and 183/183 passed on visionOS 27.0 arm64 Simulator; native macOS tests pass 20/20.
+- Package tests: NIOSSH 331/331; Citadel 39 passed with five expected live-environment skips; GlasSecretStore 75/75.
+- GlassDBKit's locally executable coverage passed at the prior checkpoint; environment-dependent live-service cases remain external gates.
 - Release architecture: the generic visionOS Release build is an arm64 Mach-O with `LC_BUILD_VERSION` platform `VISIONOS`, minimum OS 26.0, and SDK 27.0.
 - Defining appearance path: SwiftTerm retains a clear backing; opacity and blur are independent; both zero produces full transparency; selected frost, font, selection, caret, and ANSI colors reach the live terminal. The tools menu uses fixed declaration order so its first action is not clipped by automatic reversal.
 - Security re-audit: the glas.sh and GlasSecretStore recording, SFTP, listener, credential, host-trust, forwarding, generated-command, and deep-link findings are repaired. Credential migration is forward-only and collision-safe; SSH-key deletion is transactional, artifact-aware, and fails closed when an incomplete representation cannot be reconstructed. The external glassdb migration finding remains open until accepted in that repository.
@@ -178,14 +190,14 @@ Each item has one owning phase. Cross-cutting phase documents may reference an i
 
 | ID | Item | Source | Owner | Status |
 |---|---|---|---|---|
-| `PLAT-001` | Keep visionOS as the premium reference experience: independent terminals, spatial grouping, adaptive geometry, ornaments, accessibility, and privacy | `../docs/glas.sh-results.txt:198`; product invariant | 06 | In progress |
-| `PLAT-002` | Add a native macOS shell with menus, tabs/splits, secure keyboard entry, and local PTY support | `../docs/glas.sh-results.txt:199` | 06 | Not started |
+| `PLAT-001` | Keep visionOS as the premium reference experience: independent terminals, spatial grouping, adaptive geometry, ornaments, accessibility, and privacy | `../docs/glas.sh-results.txt:198`; product invariant | 06 | QA |
+| `PLAT-002` | Add a native macOS shell with menus, tabs/splits, secure keyboard entry, and local PTY support | `../docs/glas.sh-results.txt:199` | 06 | Complete |
 | `PLAT-003` | Add a native iPadOS shell with multiwindow workspaces, keyboard-first interaction, and adaptive sidebar | `../docs/glas.sh-results.txt:200` | 06 | Not started |
 | `PLAT-004` | Add a native iOS shell with compact session switching, focused terminal presentation, and command accessories | `../docs/glas.sh-results.txt:201` | 06 | Not started |
-| `PLAT-005` | Reuse and incrementally separate existing package code into terminal core, transport/domain, and spatial-only targets | `../docs/glas.sh-results.txt:203` | 06 | In progress |
-| `PLAT-006` | Use visionOS 27 for adaptive geometry, toolbar behavior, accessibility, and privacy rather than gratuitous spectacle | `../docs/glas.sh-results.txt:216` | 06 | Not started |
+| `PLAT-005` | Reuse and incrementally separate existing package code into terminal core, transport/domain, and spatial-only targets | `../docs/glas.sh-results.txt:203` | 06 | QA |
+| `PLAT-006` | Use visionOS 27 for adaptive geometry, toolbar behavior, accessibility, and privacy rather than gratuitous spectacle | `../docs/glas.sh-results.txt:216` | 06 | QA |
 | `WORK-001` | Add iTerm2-style command blocks, working directory, exit status, semantic selection, and file references | `../docs/glas.sh-results.txt:162` | 07 | In progress |
-| `WORK-002` | Add tabs, splits, semantic history, and layout restoration around fresh/recoverable sessions | `../docs/glas.sh-results.txt:274` | 07 | In progress |
+| `WORK-002` | Add tabs, splits, semantic history, and layout restoration around fresh/recoverable sessions | `../docs/glas.sh-results.txt:274` | 07 | QA |
 | `WORK-003` | Provide tmux/Zellij discovery and attach before considering a custom roaming daemon | `../docs/glas.sh-results.txt:165` | 07 | Not started |
 | `SYNC-001` | Define a versioned `EndpointProfile` with stable identity, host, port, username, jump chain, and tags | `../docs/glas.sh-results.txt:235` | 08 | Not started |
 | `SYNC-002` | Keep terminal and database settings as app-specific overlays | `../docs/glas.sh-results.txt:236` | 08 | Not started |
@@ -202,10 +214,10 @@ Each item has one owning phase. Cross-cutting phase documents may reference an i
 
 | ID | Item | Source | Owner | Status |
 |---|---|---|---|---|
-| `QA-001` | Replace the placeholder test and add security, migration, connection-flow, emulator-conformance, and feature-lifecycle regression coverage | `../docs/glas.sh-results.txt:188`; Codex review | 10 | In progress |
+| `QA-001` | Replace the placeholder test and add security, migration, connection-flow, emulator-conformance, and feature-lifecycle regression coverage | `../docs/glas.sh-results.txt:188`; Codex review | 10 | Complete |
 | `QA-002` | Validate Xcode 26.4 with visionOS 26.x and Xcode 27 with visionOS 27; never infer runtime compatibility from compile success alone | `../docs/glas.sh-results.txt:280`; 2026-07-17 verification | 10 | Blocked |
 | `QA-003` | Keep the Metal Toolchain prerequisite verified and update stale build documentation and simulator destinations | `memory-bank/techContext.md#SPM Dependency Pins`; 2026-07-17 verification | 10 | Complete |
-| `QA-004` | Run real-device checks for Secure Enclave, Optic ID/user presence, transparency/blur, keyboard focus, accessibility, and performance | `memory-bank/activeContext.md#Platform Verification Policy` | 10 | Blocked |
+| `QA-004` | Run real-device checks for Secure Enclave, Optic ID/user presence, transparency/blur, keyboard focus, accessibility, and performance | `memory-bank/activeContext.md#Platform Verification Policy` | 10 | In progress |
 | `QA-005` | Verify public README, App Store copy, screenshots, privacy declarations, and feature claims match release behavior | `memory-bank/release-checklist.md#Listing content`; audit scorecard | 10 | QA |
 
 ## Completion and evidence rules

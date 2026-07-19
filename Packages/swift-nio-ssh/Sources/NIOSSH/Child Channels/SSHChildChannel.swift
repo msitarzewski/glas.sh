@@ -151,8 +151,6 @@ final class SSHChildChannel {
     }
 }
 
-extension SSHChildChannel: NIOSSHSendable {}
-
 extension SSHChildChannel: Channel, ChannelCore {
     public var closeFuture: EventLoopFuture<Void> {
         self.closePromise.futureResult
@@ -211,7 +209,7 @@ extension SSHChildChannel: Channel, ChannelCore {
         case _ as ChannelOptions.Types.AllowRemoteHalfClosureOption:
             self.allowRemoteHalfClosure = value as! Bool
         default:
-            fatalError("setting option \(option) on SSHChildChannel not supported")
+            throw ChannelError.operationUnsupported
         }
     }
 
@@ -236,7 +234,7 @@ extension SSHChildChannel: Channel, ChannelCore {
         case _ as ChannelOptions.Types.AllowRemoteHalfClosureOption:
             return self.allowRemoteHalfClosure as! Option.Value
         default:
-            fatalError("option \(option) not supported on SSHChildChannel")
+            throw ChannelError.operationUnsupported
         }
     }
 
@@ -253,15 +251,15 @@ extension SSHChildChannel: Channel, ChannelCore {
     }
 
     public func register0(promise: EventLoopPromise<Void>?) {
-        fatalError("not implemented \(#function)")
+        promise?.fail(ChannelError.operationUnsupported)
     }
 
     public func bind0(to: SocketAddress, promise: EventLoopPromise<Void>?) {
-        fatalError("not implemented \(#function)")
+        promise?.fail(ChannelError.operationUnsupported)
     }
 
     public func connect0(to: SocketAddress, promise: EventLoopPromise<Void>?) {
-        fatalError("not implemented \(#function)")
+        promise?.fail(ChannelError.operationUnsupported)
     }
 
     public func write0(_ data: NIOAny, promise: EventLoopPromise<Void>?) {
@@ -276,6 +274,12 @@ extension SSHChildChannel: Channel, ChannelCore {
         }
 
         let bodyData = self.unwrapData(data, as: SSHChannelData.self)
+        do {
+            try bodyData.validateForSerialization()
+        } catch {
+            promise?.fail(error)
+            return
+        }
         let writeSize = bodyData.data.readableBytes
 
         self.pendingWritesFromChannel.append((.data(bodyData), promise))
@@ -654,7 +658,7 @@ private extension SSHChildChannel {
                 let update = SSHMessage.ChannelWindowAdjustMessage(recipientChannel: self.state.remoteChannelIdentifier!, bytesToAdd: UInt32(increment))
                 self.processOutboundMessage(.channelWindowAdjust(update), promise: nil)
             }
-            self.pipeline.fireChannelRead(NIOAny(data))
+            self.pipeline.syncOperations.fireChannelRead(NIOAny(data))
 
         case .eof:
             self.pipeline.fireUserInboundEventTriggered(ChannelEvent.inputClosed)
@@ -897,7 +901,11 @@ extension SSHChildChannel {
 
         switch content {
         case .data(let message):
-            self.processOutboundMessage(.init(message, recipientChannel: recipientChannel), promise: promise)
+            do {
+                self.processOutboundMessage(try .init(message, recipientChannel: recipientChannel), promise: promise)
+            } catch {
+                promise?.fail(error)
+            }
         case .eof:
             self.processOutboundMessage(.channelEOF(.init(recipientChannel: recipientChannel)), promise: promise)
         }

@@ -45,14 +45,16 @@ public final class SFTPClient: Sendable {
         let serializeHandler = MessageToByteHandler(SFTPMessageSerializer())
         let sftpInboundHandler = SFTPClientInboundHandler(responses: responses, logger: logger)
         
-        return channel.pipeline.addHandlers(
-            SSHChannelDataUnwrapper(),
-            SSHOutboundChannelDataWrapper(),
-            deserializeHandler,
-            serializeHandler,
-            sftpInboundHandler,
-            CloseErrorHandler(logger: logger)
-        ).map {
+        do {
+            try channel.pipeline.syncOperations.addHandlers(
+                SSHChannelDataUnwrapper(),
+                SSHOutboundChannelDataWrapper(),
+                deserializeHandler,
+                serializeHandler,
+                sftpInboundHandler,
+                CloseErrorHandler(logger: logger)
+            )
+
             let client = SFTPClient(channel: channel, responses: responses, logger: logger)
 
             client.channel.closeFuture.whenComplete { _ in
@@ -60,7 +62,9 @@ public final class SFTPClient: Sendable {
                 logger.trace("SFTP shutdown, failing any remaining incomplete requests")
                 responses.close()
             }
-            return client
+            return channel.eventLoop.makeSucceededFuture(client)
+        } catch {
+            return channel.eventLoop.makeFailedFuture(error)
         }
     }
     
@@ -386,11 +390,17 @@ public final class SFTPClient: Sendable {
         
         do {
             let result = try await closure(file)
-            try await file.close() // should we ignore errors from this? always been a question for the close(2) syscall too
+            try await file.close()
             return result
-        } catch {
-            try await file.close() // if this errors, should we throw it as an underlying error? or just ignore?
-            throw error
+        } catch let operationError {
+            do {
+                try await file.close()
+            } catch let closeError {
+                self.logger.warning(
+                    "SFTP file close also failed while preserving the primary operation error: \(closeError)"
+                )
+            }
+            throw operationError
         }
     }
     

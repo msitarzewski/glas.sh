@@ -30,8 +30,9 @@ final class TTYHandler: ChannelDuplexHandler {
     }
     
     func handlerAdded(context: ChannelHandlerContext) {
-        context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { error in
-            context.fireErrorCaught(error)
+        let channel = context.channel
+        channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { error in
+            channel.pipeline.fireErrorCaught(error)
         }
     }
 
@@ -113,15 +114,20 @@ extension SSHClient {
         
         do {
             channel = try await eventLoop.flatSubmit { [eventLoop, sshHandler = session.sshHandler] in
-                let createChannel = eventLoop.makePromise(of: Channel.self)
-                sshHandler.value.createChannel(createChannel) { channel, _ in
-                    channel.pipeline.addHandlers(
+            let createChannel = eventLoop.makePromise(of: Channel.self)
+            sshHandler.value.createChannel(createChannel) { channel, _ in
+                do {
+                    try channel.pipeline.syncOperations.addHandler(
                         TTYHandler(
                             maxResponseSize: maxResponseSize,
                             done: promise
                         )
                     )
+                    return channel.eventLoop.makeSucceededVoidFuture()
+                } catch {
+                    return channel.eventLoop.makeFailedFuture(error)
                 }
+            }
                 
                 eventLoop.scheduleTask(in: .seconds(15)) {
                     createChannel.fail(CitadelError.channelCreationFailed)

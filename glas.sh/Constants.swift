@@ -34,8 +34,12 @@ enum UserDefaultsKeys {
     static let sshKeys = "sshKeys"
     static let sshKeyDeletionJournal = "sshKeyDeletionJournal"
     static let theme = "theme"
+    static let themeLibrary = "themeLibrary"
+    static let iCloudSettingsSyncEnabled = "iCloudSettingsSyncEnabled"
+    static let iCloudSettingsWriterID = "iCloudSettingsWriterID"
     static let snippets = "snippets"
     static let layoutPresets = "layoutPresets"
+    static let macWorkspaceRestoration = "macWorkspaceRestoration"
     static let tailscaleTailnet = "tailscaleTailnet"
     static let tailscaleAuthMethod = "tailscaleAuthMethod"
     static let focusEnvironmentStyle = "focusEnvironmentStyle"
@@ -46,7 +50,14 @@ enum UserDefaultsKeys {
 
 enum SharedDefaults {
     static let suiteName = "group.sh.glas.shared"
+    #if os(macOS)
+    // The Mac terminal must remain outside App Sandbox so it can launch the
+    // user's shell and PTYs. App Group containers require sandbox membership,
+    // so Mac metadata belongs in its bundle-scoped defaults domain instead.
+    static let defaults = UserDefaults.standard
+    #else
     static let defaults = UserDefaults(suiteName: suiteName)!
+    #endif
 
     static let schemaVersionKey = "sharedSchemaVersion"
     static let currentSchemaVersion = 1

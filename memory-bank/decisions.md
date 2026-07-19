@@ -244,3 +244,19 @@
   - Orphaned passphrases/tags/hardware keys are detected even when full material retrieval is nil.
   - GlasSecretStore's 75-test suite and app regression coverage protect the lifecycle contract.
 - References: `Packages/GlasSecretStore/Sources/GlasSecretStore/Keychain/SSHKeyKeychainStore.swift`, `glas.sh/SettingsManager.swift`, `memory-bank/releases/codex-completions/02-secrets-authentication-and-host-trust.md`
+
+## 2026-07-19: Native macOS shell reuses the shared terminal core
+- Status: Approved
+- Context:
+  - macOS needs a day-to-day multiwindow terminal experience with native menus, tabs, splits, local PTY support, and standard window chrome.
+  - The Vision Pro product invariant requires full terminal transparency and independent opacity/blur controls to survive every shared-core change.
+- Decision:
+  - Build a native Apple Silicon/macOS 26+ application target rather than Catalyst.
+  - Reuse the shared SSH, trust, settings, themes, terminal engine, and appearance models; keep AppKit window policy and local PTY lifecycle in the macOS target.
+  - Register workspace commands once at app scope and route window-specific actions through focused values.
+  - Keep SwiftTerm 1.15.0 as the production engine while the current CoreGraphics path satisfies physical Vision Pro rendering; do not begin a terminal rewrite without the separate Phase 09 evidence gate.
+- Consequences:
+  - macOS gains native local/SSH multiwindow workspaces without forking security or appearance policy.
+  - ANSI glyph colors remain independent of the transparent/blurred terminal canvas.
+  - iPadOS/iOS shells, a comparative engine spike, and App Store distribution remain separately tracked work.
+- References: `glas.sh-mac/glas_shMacApp.swift`, `glas.sh-mac/MacWorkspaceView.swift`, `Packages/RealityKitContent/Sources/RealityKitContent/SwiftTermHostView.swift`, `memory-bank/releases/codex-completions/06-native-platform-foundation.md`

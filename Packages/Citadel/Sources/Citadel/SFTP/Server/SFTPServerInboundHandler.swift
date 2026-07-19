@@ -1,48 +1,78 @@
 import Foundation
 import NIO
+import NIOConcurrencyHelpers
 import NIOSSH
 import Logging
 
-struct SFTPDirectoryHandleIterator {
+struct SFTPDirectoryHandleIterator: Sendable {
     var listing = [SFTPFileListing]()
 }
 
-final class SFTPServerInboundHandler: ChannelInboundHandler {
+final class SFTPServerInboundHandler: ChannelInboundHandler, Sendable {
     typealias InboundIn = SFTPMessage
+
+    private struct State: Sendable {
+        var currentHandleID: UInt32 = 0
+        var files = [UInt32: SFTPFileHandle]()
+        var directories = [UInt32: SFTPDirectoryHandle]()
+        var directoryListing = [UInt32: SFTPDirectoryHandleIterator]()
+        var previousTask: EventLoopFuture<Void>
+    }
     
     let logger: Logger
     let delegate: SFTPDelegate
     let initialized: EventLoopPromise<Void>
-    var currentHandleID: UInt32 = 0
-    var files = [UInt32: SFTPFileHandle]()
-    var directories = [UInt32: SFTPDirectoryHandle]()
-    var directoryListing = [UInt32: SFTPDirectoryHandleIterator]()
-    var previousTask: EventLoopFuture<Void>
+    private let state: NIOLockedValueBox<State>
     let username: String?
+
+    private var currentHandleID: UInt32 {
+        get { state.withLockedValue(\.currentHandleID) }
+        set { state.withLockedValue { $0.currentHandleID = newValue } }
+    }
+
+    private var files: [UInt32: SFTPFileHandle] {
+        get { state.withLockedValue(\.files) }
+        set { state.withLockedValue { $0.files = newValue } }
+    }
+
+    private var directories: [UInt32: SFTPDirectoryHandle] {
+        get { state.withLockedValue(\.directories) }
+        set { state.withLockedValue { $0.directories = newValue } }
+    }
+
+    private var directoryListing: [UInt32: SFTPDirectoryHandleIterator] {
+        get { state.withLockedValue(\.directoryListing) }
+        set { state.withLockedValue { $0.directoryListing = newValue } }
+    }
+
+    private var previousTask: EventLoopFuture<Void> {
+        get { state.withLockedValue(\.previousTask) }
+        set { state.withLockedValue { $0.previousTask = newValue } }
+    }
     
     init(logger: Logger, delegate: SFTPDelegate, eventLoop: EventLoop, username: String?) {
         self.logger = logger
         self.delegate = delegate
         self.initialized = eventLoop.makePromise()
-        self.previousTask = eventLoop.makeSucceededVoidFuture()
+        self.state = NIOLockedValueBox(State(previousTask: eventLoop.makeSucceededVoidFuture()))
         self.username = username
     }
     
-    func initialize(command: SFTPMessage.Initialize, context: ChannelHandlerContext) {
+    func initialize(command: SFTPMessage.Initialize, channel: Channel) {
         guard command.version >= .v3 else {
             initialized.fail(SFTPError.connectionClosed)
-            return context.channel.triggerUserOutboundEvent(ChannelFailureEvent()).whenComplete { _ in
-                context.channel.close(promise: nil)
+            return channel.triggerUserOutboundEvent(ChannelFailureEvent()).whenComplete { _ in
+                channel.close(promise: nil)
             }
         }
 
-        context.writeAndFlush(
-            NIOAny(SFTPMessage.version(
+        channel.writeAndFlush(
+            SFTPMessage.version(
                 .init(
                     version: .v3,
                     extensionData: []
                 )
-            )),
+            ),
             promise: nil
         )
         initialized.succeed(())
@@ -52,8 +82,8 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
         SSHContext(username: self.username)
     }
     
-    func openFile(command: SFTPMessage.OpenFile, context: ChannelHandlerContext) {
-        let promise = context.eventLoop.makePromise(of: SFTPFileHandle.self)
+    func openFile(command: SFTPMessage.OpenFile, channel: Channel) {
+        let promise = channel.eventLoop.makePromise(of: SFTPFileHandle.self)
         promise.completeWithTask {
             try await self.delegate.openFile(
                 command.filePath,
@@ -75,11 +105,11 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
                 )
             )
         }.flatMap { handle in
-            context.writeAndFlush(NIOAny(handle))
+            channel.writeAndFlush(handle)
         }
     }
     
-    func closeFile(command: SFTPMessage.CloseFile, context: ChannelHandlerContext) {
+    func closeFile(command: SFTPMessage.CloseFile, channel: Channel) {
         guard let id: UInt32 = command.handle.getInteger(at: 0) else {
             logger.error("bad SFTP file handle")
             return
@@ -87,13 +117,13 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
         
         if let file = files[id] {
             previousTask = previousTask.flatMap {
-                let promise = context.eventLoop.makePromise(of: SFTPStatusCode.self)
+                let promise = channel.eventLoop.makePromise(of: SFTPStatusCode.self)
                 promise.completeWithTask {
                     try await file.close()
                 }
                 self.files[id] = nil
                 return promise.futureResult.flatMap { status in
-                    context.channel.writeAndFlush(
+                    channel.writeAndFlush(
                         SFTPMessage.status(
                             SFTPMessage.Status(
                                 requestId: command.requestId,
@@ -104,8 +134,8 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
                         )
                     )
                 }.flatMapError { _ in
-                    context.channel.triggerUserOutboundEvent(ChannelFailureEvent()).flatMap {
-                        context.channel.close()
+                    channel.triggerUserOutboundEvent(ChannelFailureEvent()).flatMap {
+                        channel.close()
                     }
                 }
             }
@@ -114,7 +144,7 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
             directoryListing[id] = nil
             
             previousTask = previousTask.flatMap {
-                context.channel.writeAndFlush(
+                channel.writeAndFlush(
                     SFTPMessage.status(
                         SFTPMessage.Status(
                             requestId: command.requestId,
@@ -130,13 +160,13 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
         }
     }
     
-    func readFile(command: SFTPMessage.ReadFile, context: ChannelHandlerContext) {
+    func readFile(command: SFTPMessage.ReadFile, channel: Channel) {
         previousTask = previousTask.flatMap {
-            self.withFileHandle(command.handle, context: context) { file -> ByteBuffer in
+            self.withFileHandle(command.handle, channel: channel) { file -> ByteBuffer in
                 try await file.read(at: command.offset, length: command.length)
             }.flatMap { data -> EventLoopFuture<Void> in
                 if data.readableBytes == 0 {
-                    return context.channel.writeAndFlush(
+                    return channel.writeAndFlush(
                         SFTPMessage.status(
                             .init(
                                 requestId: command.requestId,
@@ -147,7 +177,7 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
                         )
                     )
                 } else {
-                    return context.channel.writeAndFlush(
+                    return channel.writeAndFlush(
                         SFTPMessage.data(
                             SFTPMessage.FileData(
                                 requestId: command.requestId,
@@ -157,19 +187,19 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
                     )
                 }
             }.flatMapError { _ in
-                context.channel.triggerUserOutboundEvent(ChannelFailureEvent()).flatMap {
-                    context.channel.close()
+                channel.triggerUserOutboundEvent(ChannelFailureEvent()).flatMap {
+                    channel.close()
                 }
             }
         }
     }
     
-    func writeFile(command: SFTPMessage.WriteFile, context: ChannelHandlerContext) {
+    func writeFile(command: SFTPMessage.WriteFile, channel: Channel) {
         previousTask = previousTask.flatMap {
-            self.withFileHandle(command.handle, context: context) { file -> SFTPStatusCode in
+            self.withFileHandle(command.handle, channel: channel) { file -> SFTPStatusCode in
                 try await file.write(command.data, atOffset: command.offset)
             }.flatMap { status -> EventLoopFuture<Void> in
-                context.channel.writeAndFlush(
+                channel.writeAndFlush(
                     SFTPMessage.status(
                         SFTPMessage.Status(
                             requestId: command.requestId,
@@ -180,15 +210,15 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
                     )
                 )
             }.flatMapError { _ in
-                context.channel.triggerUserOutboundEvent(ChannelFailureEvent()).flatMap {
-                    context.channel.close()
+                channel.triggerUserOutboundEvent(ChannelFailureEvent()).flatMap {
+                    channel.close()
                 }
             }
         }
     }
     
-    func createDir(command: SFTPMessage.MkDir, context: ChannelHandlerContext) {
-        let promise = context.eventLoop.makePromise(of: SFTPStatusCode.self)
+    func createDir(command: SFTPMessage.MkDir, channel: Channel) {
+        let promise = channel.eventLoop.makePromise(of: SFTPStatusCode.self)
         promise.completeWithTask {
             try await self.delegate.createDirectory(
                 command.filePath,
@@ -198,7 +228,7 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
         }
         
         _ = promise.futureResult.flatMap { status -> EventLoopFuture<Void> in
-            context.channel.writeAndFlush(
+            channel.writeAndFlush(
                 SFTPMessage.status(
                     SFTPMessage.Status(
                         requestId: command.requestId,
@@ -209,14 +239,14 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
                 )
             )
         }.flatMapError { _ in
-            context.channel.triggerUserOutboundEvent(ChannelFailureEvent()).flatMap {
-                context.channel.close()
+            channel.triggerUserOutboundEvent(ChannelFailureEvent()).flatMap {
+                channel.close()
             }
         }
     }
     
-    func removeDir(command: SFTPMessage.RmDir, context: ChannelHandlerContext) {
-        let promise = context.eventLoop.makePromise(of: SFTPStatusCode.self)
+    func removeDir(command: SFTPMessage.RmDir, channel: Channel) {
+        let promise = channel.eventLoop.makePromise(of: SFTPStatusCode.self)
         promise.completeWithTask {
             try await self.delegate.removeDirectory(
                 command.filePath,
@@ -225,7 +255,7 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
         }
         
         _ =  promise.futureResult.flatMap { status -> EventLoopFuture<Void> in
-            context.channel.writeAndFlush(
+            channel.writeAndFlush(
                 SFTPMessage.status(
                     SFTPMessage.Status(
                         requestId: command.requestId,
@@ -236,68 +266,68 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
                 )
             )
         }.flatMapError { _ in
-            context.channel.triggerUserOutboundEvent(ChannelFailureEvent()).flatMap {
-                context.channel.close()
+            channel.triggerUserOutboundEvent(ChannelFailureEvent()).flatMap {
+                channel.close()
             }
         }
     }
     
-    func stat(command: SFTPMessage.Stat, context: ChannelHandlerContext) {
-        let promise = context.eventLoop.makePromise(of: SFTPFileAttributes.self)
+    func stat(command: SFTPMessage.Stat, channel: Channel) {
+        let promise = channel.eventLoop.makePromise(of: SFTPFileAttributes.self)
         promise.completeWithTask {
             try await self.delegate.fileAttributes(atPath: command.path, context: self.makeContext())
         }
         
         _ = promise.futureResult.flatMap { attributes -> EventLoopFuture<Void> in
-            context.writeAndFlush(
-                NIOAny(SFTPMessage.attributes(
+            channel.writeAndFlush(
+                SFTPMessage.attributes(
                     .init(
                         requestId: command.requestId,
                         attributes: attributes
                     )
-                ))
+                )
             )
         }.flatMapErrorThrowing { _ in }
     }
     
-    func lstat(command: SFTPMessage.LStat, context: ChannelHandlerContext) {
-        let promise = context.eventLoop.makePromise(of: SFTPFileAttributes.self)
+    func lstat(command: SFTPMessage.LStat, channel: Channel) {
+        let promise = channel.eventLoop.makePromise(of: SFTPFileAttributes.self)
         promise.completeWithTask {
             try await self.delegate.fileAttributes(atPath: command.path, context: self.makeContext())
         }
         
         _ = promise.futureResult.flatMap { attributes -> EventLoopFuture<Void> in
-            context.writeAndFlush(
-                NIOAny(SFTPMessage.attributes(
+            channel.writeAndFlush(
+                SFTPMessage.attributes(
                     .init(
                         requestId: command.requestId,
                         attributes: attributes
                     )
-                ))
+                )
             )
         }.flatMapErrorThrowing { _ in }
     }
     
-    func realPath(command: SFTPMessage.RealPath, context: ChannelHandlerContext) {
-        let promise = context.eventLoop.makePromise(of: [SFTPPathComponent].self)
+    func realPath(command: SFTPMessage.RealPath, channel: Channel) {
+        let promise = channel.eventLoop.makePromise(of: [SFTPPathComponent].self)
         promise.completeWithTask {
             try await self.delegate.realPath(for: command.path, context: self.makeContext())
         }
         
         _ = promise.futureResult.flatMap { components -> EventLoopFuture<Void> in
-            context.writeAndFlush(
-                NIOAny(SFTPMessage.name(
+            channel.writeAndFlush(
+                SFTPMessage.name(
                     .init(
                         requestId: command.requestId,
                         components: components
                     )
-                ))
+                )
             )
         }.flatMapErrorThrowing { _ in }
     }
     
-    func openDir(command: SFTPMessage.OpenDir, context: ChannelHandlerContext) {
-        let promise = context.eventLoop.makePromise(of: (SFTPDirectoryHandle, SFTPDirectoryHandleIterator).self)
+    func openDir(command: SFTPMessage.OpenDir, channel: Channel) {
+        let promise = channel.eventLoop.makePromise(of: (SFTPDirectoryHandle, SFTPDirectoryHandleIterator).self)
         promise.completeWithTask {
             let handle = try await self.delegate.openDirectory(atPath: command.handle, context: self.makeContext())
             let files = try await handle.listFiles(context: self.makeContext())
@@ -318,11 +348,11 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
                 )
             )
         }.flatMap { handle in
-            context.writeAndFlush(NIOAny(handle))
+            channel.writeAndFlush(handle)
         }.flatMapErrorThrowing { _ in }
     }
     
-    func readDir(command: SFTPMessage.ReadDir, context: ChannelHandlerContext) {
+    func readDir(command: SFTPMessage.ReadDir, channel: Channel) {
         guard
             let id: UInt32 = command.handle.getInteger(at: 0),
             var listing = directoryListing[id]
@@ -334,7 +364,7 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
         let result: EventLoopFuture<Void>
         if listing.listing.isEmpty {
             self.directoryListing[id] = nil
-            result = context.channel.writeAndFlush(SFTPMessage.status(
+            result = channel.writeAndFlush(SFTPMessage.status(
                 SFTPMessage.Status(
                     requestId: command.requestId,
                     errorCode: .eof,
@@ -344,7 +374,7 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
             ))
         } else {
             let file = listing.listing.removeFirst()
-            result = context.channel.writeAndFlush(SFTPMessage.name(
+            result = channel.writeAndFlush(SFTPMessage.name(
                 .init(
                     requestId: command.requestId,
                     components: file.path
@@ -355,7 +385,7 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
         self.directoryListing[id] = listing
         _ = result.flatMapError { error -> EventLoopFuture<Void> in
             self.logger.error("\(error)")
-            return context.channel.writeAndFlush(
+            return channel.writeAndFlush(
                 SFTPMessage.status(
                     SFTPMessage.Status(
                         requestId: command.requestId,
@@ -368,11 +398,11 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
         }
     }
     
-    func fileStat(command: SFTPMessage.FileStat, context: ChannelHandlerContext) {
-        _ = self.withFileHandle(command.handle, context: context) { file in
+    func fileStat(command: SFTPMessage.FileStat, channel: Channel) {
+        _ = self.withFileHandle(command.handle, channel: channel) { file in
             try await file.readFileAttributes()
         }.flatMap { attributes -> EventLoopFuture<Void> in
-            context.channel.writeAndFlush(
+            channel.writeAndFlush(
                 SFTPMessage.attributes(
                     .init(
                         requestId: command.requestId,
@@ -381,7 +411,7 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
                 )
             )
         }.flatMapError { _ -> EventLoopFuture<Void> in
-            context.channel.writeAndFlush(
+            channel.writeAndFlush(
                 SFTPMessage.status(
                     SFTPMessage.Status(
                         requestId: command.requestId,
@@ -394,13 +424,13 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
         }
     }
     
-    func removeFile(command: SFTPMessage.Remove, context: ChannelHandlerContext) {
-        let promise = context.eventLoop.makePromise(of: SFTPStatusCode.self)
+    func removeFile(command: SFTPMessage.Remove, channel: Channel) {
+        let promise = channel.eventLoop.makePromise(of: SFTPStatusCode.self)
         promise.completeWithTask {
             try await self.delegate.removeFile(command.filename, context: self.makeContext())
         }
         _ = promise.futureResult.flatMap { status -> EventLoopFuture<Void> in
-            context.channel.writeAndFlush(
+            channel.writeAndFlush(
                 SFTPMessage.status(
                     SFTPMessage.Status(
                         requestId: command.requestId,
@@ -413,11 +443,11 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
         }.flatMapErrorThrowing { _ in }
     }
     
-    func fileSetStat(command: SFTPMessage.FileSetStat, context: ChannelHandlerContext) {
-        _ = self.withFileHandle(command.handle, context: context) { handle in
+    func fileSetStat(command: SFTPMessage.FileSetStat, channel: Channel) {
+        _ = self.withFileHandle(command.handle, channel: channel) { handle in
             try await handle.setFileAttributes(to: command.attributes)
         }.flatMap { () -> EventLoopFuture<Void> in
-            context.channel.writeAndFlush(
+            channel.writeAndFlush(
                 SFTPMessage.status(
                     SFTPMessage.Status(
                         requestId: command.requestId,
@@ -428,7 +458,7 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
                 )
             )
         }.flatMapError { _ -> EventLoopFuture<Void> in
-            context.channel.writeAndFlush(
+            channel.writeAndFlush(
                 SFTPMessage.status(
                     SFTPMessage.Status(
                         requestId: command.requestId,
@@ -441,8 +471,8 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
         }
     }
     
-    func setStat(command: SFTPMessage.SetStat, context: ChannelHandlerContext) {
-        let promise = context.eventLoop.makePromise(of: SFTPStatusCode.self)
+    func setStat(command: SFTPMessage.SetStat, channel: Channel) {
+        let promise = channel.eventLoop.makePromise(of: SFTPStatusCode.self)
         promise.completeWithTask {
             try await self.delegate.setFileAttributes(
                 to: command.attributes,
@@ -451,7 +481,7 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
             )
         }
         _ = promise.futureResult.flatMap { status -> EventLoopFuture<Void> in
-            context.channel.writeAndFlush(
+            channel.writeAndFlush(
                 SFTPMessage.status(
                     SFTPMessage.Status(
                         requestId: command.requestId,
@@ -464,8 +494,8 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
         }.flatMapErrorThrowing { _ in }
     }
     
-    func symlink(command: SFTPMessage.Symlink, context:ChannelHandlerContext) {
-        let promise = context.eventLoop.makePromise(of: SFTPStatusCode.self)
+    func symlink(command: SFTPMessage.Symlink, channel: Channel) {
+        let promise = channel.eventLoop.makePromise(of: SFTPStatusCode.self)
         promise.completeWithTask {
             try await self.delegate.addSymlink(
                 linkPath: command.linkPath,
@@ -474,7 +504,7 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
             )
         }
         _ = promise.futureResult.flatMap { status -> EventLoopFuture<Void> in
-            context.channel.writeAndFlush(
+            channel.writeAndFlush(
                 SFTPMessage.status(
                     SFTPMessage.Status(
                         requestId: command.requestId,
@@ -487,8 +517,8 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
         }.flatMapErrorThrowing { _ in }
     }
 
-    func rename(command: SFTPMessage.Rename, context:ChannelHandlerContext) {
-        let promise = context.eventLoop.makePromise(of: SFTPStatusCode.self)
+    func rename(command: SFTPMessage.Rename, channel: Channel) {
+        let promise = channel.eventLoop.makePromise(of: SFTPStatusCode.self)
         promise.completeWithTask {
             try await self.delegate.rename(
                 oldPath: command.oldPath,
@@ -498,7 +528,7 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
             )
         }
         _ = promise.futureResult.flatMap { status -> EventLoopFuture<Void> in
-            context.channel.writeAndFlush(
+            channel.writeAndFlush(
                 SFTPMessage.status(
                     SFTPMessage.Status(
                         requestId: command.requestId,
@@ -511,8 +541,8 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
         }.flatMapErrorThrowing { _ in }
     }
 
-    func readlink(command: SFTPMessage.Readlink, context:ChannelHandlerContext) {
-        let promise = context.eventLoop.makePromise(of: [SFTPPathComponent].self)
+    func readlink(command: SFTPMessage.Readlink, channel: Channel) {
+        let promise = channel.eventLoop.makePromise(of: [SFTPPathComponent].self)
         promise.completeWithTask {
             try await self.delegate.readSymlink(
                 atPath: command.path,
@@ -520,7 +550,7 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
             )
         }
         _ = promise.futureResult.flatMap { components -> EventLoopFuture<Void> in
-            context.channel.writeAndFlush(
+            channel.writeAndFlush(
                 SFTPMessage.name(
                     SFTPMessage.Name(
                         requestId: command.requestId,
@@ -529,7 +559,7 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
                 )
             )
         }.flatMapError { _ -> EventLoopFuture<Void> in
-            context.channel.writeAndFlush(
+            channel.writeAndFlush(
                 SFTPMessage.status(
                     SFTPMessage.Status(
                         requestId: command.requestId,
@@ -543,45 +573,46 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
     }
     
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        let channel = context.channel
         switch unwrapInboundIn(data) {
         case .initialize(let command):
-            initialize(command: command, context: context)
+            initialize(command: command, channel: channel)
         case .openFile(let command):
-            openFile(command: command, context: context)
+            openFile(command: command, channel: channel)
         case .closeFile(let command):
-            closeFile(command: command, context: context)
+            closeFile(command: command, channel: channel)
         case .read(let command):
-            readFile(command: command, context: context)
+            readFile(command: command, channel: channel)
         case .write(let command):
-            writeFile(command: command, context: context)
+            writeFile(command: command, channel: channel)
         case .mkdir(let command):
-            createDir(command: command, context: context)
+            createDir(command: command, channel: channel)
         case .opendir(let command):
-            openDir(command: command, context: context)
+            openDir(command: command, channel: channel)
         case .rmdir(let command):
-            removeDir(command: command, context: context)
+            removeDir(command: command, channel: channel)
         case .stat(let command):
-            stat(command: command, context: context)
+            stat(command: command, channel: channel)
         case .lstat(let command):
-            lstat(command: command, context: context)
+            lstat(command: command, channel: channel)
         case .realpath(let command):
-            realPath(command: command, context: context)
+            realPath(command: command, channel: channel)
         case .readdir(let command):
-            readDir(command: command, context: context)
+            readDir(command: command, channel: channel)
         case .fstat(let command):
-            fileStat(command: command, context: context)
+            fileStat(command: command, channel: channel)
         case .remove(let command):
-            removeFile(command: command, context: context)
+            removeFile(command: command, channel: channel)
         case .fsetstat(let command):
-            fileSetStat(command: command, context: context)
+            fileSetStat(command: command, channel: channel)
         case .setstat(let command):
-            setStat(command: command, context: context)
+            setStat(command: command, channel: channel)
         case .symlink(let command):
-            symlink(command: command, context: context)
+            symlink(command: command, channel: channel)
         case .readlink(let command):
-            readlink(command: command, context: context)
+            readlink(command: command, channel: channel)
         case .rename(let command):
-            rename(command: command, context: context)
+            rename(command: command, channel: channel)
         case .extended(let command):
             context.writeAndFlush(
                 NIOAny(SFTPMessage.status(.init(
@@ -594,22 +625,22 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
             )
         case .version, .handle, .status, .data, .attributes, .name:
             // Client cannot send these messages
-            context.channel.triggerUserOutboundEvent(ChannelFailureEvent()).whenComplete { _ in
-                context.channel.close(promise: nil)
+            channel.triggerUserOutboundEvent(ChannelFailureEvent()).whenComplete { _ in
+                channel.close(promise: nil)
             }
         }
     }
     
-    func withFileHandle<T>(_ handle: ByteBuffer, context: ChannelHandlerContext, perform: @Sendable @escaping (SFTPFileHandle) async throws -> T) -> EventLoopFuture<T> {
+    func withFileHandle<T: Sendable>(_ handle: ByteBuffer, channel: Channel, perform: @Sendable @escaping (SFTPFileHandle) async throws -> T) -> EventLoopFuture<T> {
         guard
             let id: UInt32 = handle.getInteger(at: 0),
             let file = files[id]
         else {
             logger.error("bad SFTP file handle")
-            return context.eventLoop.makeFailedFuture(SFTPError.fileHandleInvalid)
+            return channel.eventLoop.makeFailedFuture(SFTPError.fileHandleInvalid)
         }
         
-        let promise = context.eventLoop.makePromise(of: T.self)
+        let promise = channel.eventLoop.makePromise(of: T.self)
         promise.completeWithTask {
             try await perform(file)
         }

@@ -50,7 +50,7 @@ public struct SFTPOpenFileFlags: OptionSet, CustomDebugStringConvertible, Sendab
 }
 
 public struct SFTPFileAttributes: CustomDebugStringConvertible, Sendable, Hashable {
-    public struct Flags: OptionSet, Hashable {
+    public struct Flags: OptionSet, Hashable, Sendable {
         public var rawValue: UInt32
         
         public init(rawValue: UInt32) {

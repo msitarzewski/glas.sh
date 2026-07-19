@@ -38,7 +38,7 @@ final class ExampleExecHandler: ChannelDuplexHandler {
     var environment: [String: String] = [:]
 
     func handlerAdded(context: ChannelHandlerContext) {
-        context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { error in
+        context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).assumeIsolated().whenFailure { error in
             context.fireErrorCaught(error)
         }
     }
@@ -71,7 +71,9 @@ final class ExampleExecHandler: ChannelDuplexHandler {
         let data = self.unwrapInboundIn(data)
 
         guard case .byteBuffer(let bytes) = data.data else {
-            fatalError("Unexpected read type")
+            context.fireErrorCaught(SSHServerError.invalidDataType)
+            context.close(promise: nil)
+            return
         }
 
         guard case .channel = data.type else {
@@ -88,44 +90,47 @@ final class ExampleExecHandler: ChannelDuplexHandler {
     }
 
     private func exec(_ event: SSHChannelRequestEvent.ExecRequest, channel: Channel) {
+        let executable = URL(fileURLWithPath: "/usr/local/bin/bash")
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = ["-c", event.command]
+        process.terminationHandler = { process in
+            let returnCode = process.terminationStatus
+            channel.triggerUserOutboundEvent(SSHChannelRequestEvent.ExitStatus(exitStatus: Int(returnCode)))
+                .whenComplete { _ in
+                    channel.close(promise: nil)
+                }
+        }
+
+        let inputPipe = Pipe()
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardInput = inputPipe
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+        process.environment = self.environment
+        self.process = process
+
         // Kick this off to a background queue
         self.queue.async {
             do {
-                // We're not a shell, so we just do our "best".
-                let executable = URL(fileURLWithPath: "/usr/local/bin/bash")
-                let process = Process()
-                process.executableURL = executable
-                process.arguments = ["-c", event.command]
-                process.terminationHandler = { process in
-                    // The process terminated. Check its return code, fire it, and then move on.
-                    let rcode = process.terminationStatus
-                    channel.triggerUserOutboundEvent(SSHChannelRequestEvent.ExitStatus(exitStatus: Int(rcode))).whenComplete { _ in
-                        channel.close(promise: nil)
-                    }
-                }
-
-                let inPipe = Pipe()
-                let outPipe = Pipe()
-                let errPipe = Pipe()
-
-                process.standardInput = inPipe
-                process.standardOutput = outPipe
-                process.standardError = errPipe
-                process.environment = self.environment
-
-                let (ours, theirs) = GlueHandler.matchedPair()
-                try channel.pipeline.addHandler(ours).wait()
-
                 _ = try NIOPipeBootstrap(group: channel.eventLoop)
                     .channelOption(ChannelOptions.allowRemoteHalfClosure, value: true)
                     .channelInitializer { pipeChannel in
-                        pipeChannel.pipeline.addHandler(theirs)
-                    }.withPipes(inputDescriptor: outPipe.fileHandleForReading.fileDescriptor, outputDescriptor: inPipe.fileHandleForWriting.fileDescriptor).wait()
+                        pipeChannel.eventLoop.makeCompletedFuture {
+                            let (ours, theirs) = GlueHandler.matchedPair()
+                            try channel.pipeline.syncOperations.addHandler(ours)
+                            try pipeChannel.pipeline.syncOperations.addHandler(theirs)
+                        }
+                    }.takingOwnershipOfDescriptors(
+                        input: dup(outputPipe.fileHandleForReading.fileDescriptor),
+                        output: dup(inputPipe.fileHandleForWriting.fileDescriptor)
+                    ).wait()
 
                 // Ok, great, we've sorted stdout and stdin. For stderr we need a different strategy: we just park a thread for this.
                 DispatchQueue(label: "stderrorwhatever").async {
                     while true {
-                        let data = errPipe.fileHandleForReading.readData(ofLength: 1024)
+                        let data = errorPipe.fileHandleForReading.readData(ofLength: 1024)
 
                         guard data.count > 0 else {
                             // Stderr is done
@@ -143,7 +148,6 @@ final class ExampleExecHandler: ChannelDuplexHandler {
                 }
 
                 try process.run()
-                self.process = process
             } catch {
                 if event.wantReply {
                     channel.triggerUserOutboundEvent(ChannelFailureEvent()).whenComplete { _ in

@@ -11,7 +11,9 @@ extension Insecure {
 }
 
 extension Insecure.RSA {
-    public final class PublicKey: NIOSSHPublicKeyProtocol {
+    /// Owns immutable BoringSSL BIGNUM allocations for its entire lifetime.
+    /// The pointed-to values are never mutated after initialization.
+    public final class PublicKey: NIOSSHPublicKeyProtocol, @unchecked Sendable {
         public static let publicKeyPrefix = "ssh-rsa"
         public static let keyExchangeAlgorithms = ["diffie-hellman-group1-sha1", "diffie-hellman-group14-sha1"]
         
@@ -164,7 +166,9 @@ extension Insecure.RSA {
         }
     }
     
-    public final class PrivateKey: NIOSSHPrivateKeyProtocol {
+    /// Owns immutable BoringSSL BIGNUM allocations for its entire lifetime.
+    /// Signing copies them into a request-local RSA context before use.
+    public final class PrivateKey: NIOSSHPrivateKeyProtocol, @unchecked Sendable {
         // Keep key prefix as ssh-rsa; user-auth algorithm is selected separately.
         public static let keyPrefix = "ssh-rsa"
         

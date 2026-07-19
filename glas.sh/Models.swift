@@ -1155,7 +1155,26 @@ struct CommandSnippet: Identifiable, Codable {
 
 // MARK: - Terminal Theme
 
-struct TerminalTheme: Identifiable, Codable {
+enum TerminalThemeAppearance: String, Codable, CaseIterable, Equatable, Sendable {
+    case automatic
+    case light
+    case dark
+
+    var displayName: String {
+        switch self {
+        case .automatic: "Automatic"
+        case .light: "Light"
+        case .dark: "Dark"
+        }
+    }
+}
+
+struct TerminalTheme: Identifiable, Codable, Equatable {
+    static let defaultID = UUID(uuidString: "B16B00B5-7E4D-4A51-9A9E-474C41535348")!
+    static let maximumNameLength = 128
+    static let maximumFontNameLength = 128
+    static let minimumFontSize: CGFloat = 10
+    static let maximumFontSize: CGFloat = 24
     let id: UUID
     var name: String
     var background: CodableColor
@@ -1185,37 +1204,425 @@ struct TerminalTheme: Identifiable, Codable {
     
     var fontName: String
     var fontSize: CGFloat
+    /// Optional for backward-compatible decoding of themes created before
+    /// canvas appearance became theme metadata. A missing or automatic value
+    /// derives a stable light/dark canvas from the theme background instead of
+    /// allowing system appearance to wash out an imported terminal palette.
+    var preferredAppearance: TerminalThemeAppearance? = nil
+
+    /// ANSI colors in the index order expected by terminal emulators:
+    /// normal 0...7 followed by bright 8...15.
+    var ansiColors: [CodableColor] {
+        [
+            black, red, green, yellow, blue, magenta, cyan, white,
+            brightBlack, brightRed, brightGreen, brightYellow,
+            brightBlue, brightMagenta, brightCyan, brightWhite,
+        ]
+    }
+
+    var isValidForPersistence: Bool {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedFontName = fontName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmedName.isEmpty
+            && trimmedName.count <= Self.maximumNameLength
+            && !trimmedName.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+            && !trimmedFontName.isEmpty
+            && trimmedFontName.count <= Self.maximumFontNameLength
+            && fontSize.isFinite
+            && (Self.minimumFontSize...Self.maximumFontSize).contains(fontSize)
+            && ([background, foreground, cursor, selection] + ansiColors).allSatisfy(\.isValid)
+    }
+
+    var resolvedAppearance: TerminalThemeAppearance {
+        if let preferredAppearance, preferredAppearance != .automatic {
+            return preferredAppearance
+        }
+        let luminance = (0.2126 * background.red)
+            + (0.7152 * background.green)
+            + (0.0722 * background.blue)
+        return luminance < 0.5 ? .dark : .light
+    }
+
+    /// Terminal coverage is controlled exclusively by the opacity setting.
+    /// Theme background alpha is retained for backward-compatible decoding but
+    /// is never multiplied into the live canvas.
+    var canvasBackgroundColor: CodableColor {
+        CodableColor(
+            sRGBRed: background.red,
+            green: background.green,
+            blue: background.blue,
+            alpha: 1
+        )
+    }
+
+    var swiftTermTheme: SwiftTermTheme {
+        SwiftTermTheme(
+            fontSize: max(Self.minimumFontSize, fontSize),
+            foreground: (foreground.red, foreground.green, foreground.blue),
+            background: (background.red, background.green, background.blue, 0),
+            cursor: (cursor.red, cursor.green, cursor.blue),
+            fontName: fontName,
+            selection: (selection.red, selection.green, selection.blue, selection.alpha),
+            ansiColors: ansiColors.map {
+                SwiftTermThemeColor(red: $0.red, green: $0.green, blue: $0.blue)
+            }
+        )
+    }
+
+    func reidentified(
+        id: UUID = UUID(),
+        name: String? = nil
+    ) -> TerminalTheme {
+        TerminalTheme(
+            id: id,
+            name: name ?? self.name,
+            background: background,
+            foreground: foreground,
+            cursor: cursor,
+            selection: selection,
+            black: black,
+            red: red,
+            green: green,
+            yellow: yellow,
+            blue: blue,
+            magenta: magenta,
+            cyan: cyan,
+            white: white,
+            brightBlack: brightBlack,
+            brightRed: brightRed,
+            brightGreen: brightGreen,
+            brightYellow: brightYellow,
+            brightBlue: brightBlue,
+            brightMagenta: brightMagenta,
+            brightCyan: brightCyan,
+            brightWhite: brightWhite,
+            fontName: fontName,
+            fontSize: fontSize,
+            preferredAppearance: preferredAppearance
+        )
+    }
+
+    static let appleClearDarkForeground = CodableColor(
+        sRGBRed: 0.901596844196,
+        green: 0.901596844196,
+        blue: 0.901596844196
+    )
+    static let appleClearDarkSelection = CodableColor(
+        sRGBRed: 0.200930923223,
+        green: 0.304736882448,
+        blue: 0.370029002428
+    )
+    static let appleClearDarkANSIColors = [
+        CodableColor(sRGBRed: 0.208221729000, green: 0.258872947300, blue: 0.296137570100),
+        CodableColor(sRGBRed: 0.705090082900, green: 0.335715730100, blue: 0.281149064300),
+        CodableColor(sRGBRed: 0.424156630500, green: 0.667281834600, blue: 0.441522716500),
+        CodableColor(sRGBRed: 0.768627451000, green: 0.674509803900, blue: 0.384313725500),
+        CodableColor(sRGBRed: 0.427450980400, green: 0.588235294100, blue: 0.705882352900),
+        CodableColor(sRGBRed: 0.741176470600, green: 0.482352941200, blue: 0.803921568600),
+        CodableColor(sRGBRed: 0.484715120500, green: 0.795007090900, blue: 0.805706814000),
+        CodableColor(sRGBRed: 0.868783575500, green: 0.899543531400, blue: 0.922173947700),
+        CodableColor(sRGBRed: 0.276332894900, green: 0.362595777900, blue: 0.426060269100),
+        CodableColor(sRGBRed: 0.876132015300, green: 0.424238529000, blue: 0.352688727000),
+        CodableColor(sRGBRed: 0.474204848200, green: 0.743332020300, blue: 0.492389116600),
+        CodableColor(sRGBRed: 0.898039215700, green: 0.784313725500, blue: 0.447058823500),
+        CodableColor(sRGBRed: 0.403921568600, green: 0.709803921600, blue: 0.929411764700),
+        CodableColor(sRGBRed: 0.827450980400, green: 0.537254902000, blue: 0.898039215700),
+        CodableColor(sRGBRed: 0.517774366200, green: 0.867731615800, blue: 0.879799107100),
+        CodableColor(sRGBRed: 0.899579140100, green: 0.935473975100, blue: 0.961882174700),
+    ]
+
+    /// Applies the colors shipped in macOS 27 Terminal's Clear Dark profile
+    /// and keeps its dark-canvas contrast contract intact.
+    /// The profile does not override its cursor, so it follows the foreground.
+    /// Window background, identity, name, and font choices remain untouched.
+    mutating func applyAppleClearDarkColors() {
+        preferredAppearance = .dark
+        foreground = Self.appleClearDarkForeground
+        cursor = Self.appleClearDarkForeground
+        selection = Self.appleClearDarkSelection
+
+        let colors = Self.appleClearDarkANSIColors
+        black = colors[0]
+        red = colors[1]
+        green = colors[2]
+        yellow = colors[3]
+        blue = colors[4]
+        magenta = colors[5]
+        cyan = colors[6]
+        white = colors[7]
+        brightBlack = colors[8]
+        brightRed = colors[9]
+        brightGreen = colors[10]
+        brightYellow = colors[11]
+        brightBlue = colors[12]
+        brightMagenta = colors[13]
+        brightCyan = colors[14]
+        brightWhite = colors[15]
+    }
+
+    /// The original Glass Terminal defaults were built from unresolved SwiftUI
+    /// named colors. On macOS those values encoded as black, except white.
+    /// Match every affected color so a customized theme is never rewritten.
+    var hasCorruptedLegacyGlassTerminalColors: Bool {
+        let opaqueBlack = CodableColor(sRGBRed: 0, green: 0, blue: 0)
+        let opaqueWhite = CodableColor(sRGBRed: 1, green: 1, blue: 1)
+        let corruptedANSIColors = [
+            opaqueBlack, opaqueBlack, opaqueBlack, opaqueBlack,
+            opaqueBlack, opaqueBlack, opaqueBlack, opaqueWhite,
+            opaqueBlack, opaqueBlack, opaqueBlack, opaqueBlack,
+            opaqueBlack, opaqueBlack, opaqueBlack, opaqueWhite,
+        ]
+
+        return name == "Glass Terminal"
+            && foreground == opaqueWhite
+            && cursor == opaqueBlack
+            && selection == opaqueBlack
+            && ansiColors == corruptedANSIColors
+    }
     
     static let `default` = TerminalTheme(
-        id: UUID(),
+        id: defaultID,
         name: "Glass Terminal",
-        background: CodableColor(color: Color.black.opacity(0.3)),
-        foreground: CodableColor(color: .white),
-        cursor: CodableColor(color: .green),
-        selection: CodableColor(color: Color.blue.opacity(0.3)),
-        black: CodableColor(color: .black),
-        red: CodableColor(color: .red),
-        green: CodableColor(color: .green),
-        yellow: CodableColor(color: .yellow),
-        blue: CodableColor(color: .blue),
-        magenta: CodableColor(color: .purple),
-        cyan: CodableColor(color: .cyan),
-        white: CodableColor(color: .white),
-        brightBlack: CodableColor(color: .gray),
-        brightRed: CodableColor(color: .red),
-        brightGreen: CodableColor(color: .green),
-        brightYellow: CodableColor(color: .yellow),
-        brightBlue: CodableColor(color: .blue),
-        brightMagenta: CodableColor(color: .purple),
-        brightCyan: CodableColor(color: .cyan),
-        brightWhite: CodableColor(color: .white),
+        background: CodableColor(sRGBRed: 0, green: 0, blue: 0, alpha: 0.3),
+        foreground: appleClearDarkForeground,
+        cursor: appleClearDarkForeground,
+        selection: appleClearDarkSelection,
+        black: appleClearDarkANSIColors[0],
+        red: appleClearDarkANSIColors[1],
+        green: appleClearDarkANSIColors[2],
+        yellow: appleClearDarkANSIColors[3],
+        blue: appleClearDarkANSIColors[4],
+        magenta: appleClearDarkANSIColors[5],
+        cyan: appleClearDarkANSIColors[6],
+        white: appleClearDarkANSIColors[7],
+        brightBlack: appleClearDarkANSIColors[8],
+        brightRed: appleClearDarkANSIColors[9],
+        brightGreen: appleClearDarkANSIColors[10],
+        brightYellow: appleClearDarkANSIColors[11],
+        brightBlue: appleClearDarkANSIColors[12],
+        brightMagenta: appleClearDarkANSIColors[13],
+        brightCyan: appleClearDarkANSIColors[14],
+        brightWhite: appleClearDarkANSIColors[15],
         fontName: "SF Mono",
-        fontSize: 14
+        fontSize: 14,
+        preferredAppearance: .dark
     )
 }
 
+enum TerminalThemeOrigin: String, Codable, Equatable, Sendable {
+    case builtIn
+    case custom
+    case appleTerminal
+}
+
+struct TerminalThemeRecord: Identifiable, Codable, Equatable {
+    var theme: TerminalTheme
+    var origin: TerminalThemeOrigin
+    var modifiedAt: Date
+    var deletedAt: Date?
+
+    var id: UUID { theme.id }
+    var isBuiltIn: Bool { origin == .builtIn }
+    var isDeleted: Bool { deletedAt != nil }
+
+    var changeDate: Date {
+        max(modifiedAt, deletedAt ?? .distantPast)
+    }
+}
+
+struct TerminalThemeLibrary: Codable, Equatable {
+    static let currentSchemaVersion = 1
+    static let maximumThemeCount = 64
+    static let maximumRecordCount = 128
+
+    var schemaVersion: Int
+    var records: [TerminalThemeRecord]
+    var selectedThemeID: UUID
+    var selectionModifiedAt: Date
+
+    init(
+        records: [TerminalThemeRecord],
+        selectedThemeID: UUID,
+        selectionModifiedAt: Date = Date()
+    ) {
+        schemaVersion = Self.currentSchemaVersion
+        self.records = records
+        self.selectedThemeID = selectedThemeID
+        self.selectionModifiedAt = selectionModifiedAt
+        canonicalize()
+    }
+
+    static func initial(
+        theme: TerminalTheme = .default,
+        at timestamp: Date = Date()
+    ) -> TerminalThemeLibrary {
+        TerminalThemeLibrary(
+            records: [
+                TerminalThemeRecord(
+                    theme: theme,
+                    origin: .builtIn,
+                    modifiedAt: timestamp,
+                    deletedAt: nil
+                )
+            ],
+            selectedThemeID: theme.id,
+            selectionModifiedAt: timestamp
+        )
+    }
+
+    var activeRecords: [TerminalThemeRecord] {
+        records
+            .filter { !$0.isDeleted }
+            .sorted {
+                if $0.isBuiltIn != $1.isBuiltIn { return $0.isBuiltIn }
+                let comparison = $0.theme.name.localizedStandardCompare($1.theme.name)
+                if comparison != .orderedSame { return comparison == .orderedAscending }
+                return $0.id.uuidString < $1.id.uuidString
+            }
+    }
+
+    var selectedTheme: TerminalTheme? {
+        records.first { $0.id == selectedThemeID && !$0.isDeleted }?.theme
+    }
+
+    mutating func select(_ id: UUID, at date: Date = Date()) -> Bool {
+        guard records.contains(where: { $0.id == id && !$0.isDeleted }) else { return false }
+        selectedThemeID = id
+        selectionModifiedAt = date
+        return true
+    }
+
+    mutating func upsert(
+        _ theme: TerminalTheme,
+        origin: TerminalThemeOrigin? = nil,
+        at date: Date = Date()
+    ) {
+        if let index = records.firstIndex(where: { $0.id == theme.id }) {
+            records[index].theme = theme
+            records[index].modifiedAt = date
+            records[index].deletedAt = nil
+            if let origin { records[index].origin = origin }
+        } else {
+            guard activeRecords.count < Self.maximumThemeCount,
+                  records.count < Self.maximumRecordCount else { return }
+            records.append(
+                TerminalThemeRecord(
+                    theme: theme,
+                    origin: origin ?? .custom,
+                    modifiedAt: date,
+                    deletedAt: nil
+                )
+            )
+        }
+    }
+
+    mutating func delete(_ id: UUID, at date: Date = Date()) -> Bool {
+        guard let index = records.firstIndex(where: { $0.id == id && !$0.isDeleted }),
+              !records[index].isBuiltIn,
+              activeRecords.count > 1 else {
+            return false
+        }
+        records[index].deletedAt = date
+        records[index].modifiedAt = date
+        if selectedThemeID == id, let replacement = activeRecords.first {
+            selectedThemeID = replacement.id
+            selectionModifiedAt = date
+        }
+        return true
+    }
+
+    mutating func merge(_ incoming: TerminalThemeLibrary) {
+        guard incoming.schemaVersion == Self.currentSchemaVersion else { return }
+        var merged: [UUID: TerminalThemeRecord] = [:]
+        for record in records {
+            guard let existing = merged[record.id] else {
+                merged[record.id] = record
+                continue
+            }
+            if record.changeDate > existing.changeDate
+                || (record.changeDate == existing.changeDate
+                    && Self.stableRecordKey(record) > Self.stableRecordKey(existing)) {
+                merged[record.id] = record
+            }
+        }
+        for record in incoming.records {
+            guard let existing = merged[record.id] else {
+                merged[record.id] = record
+                continue
+            }
+            if record.changeDate > existing.changeDate
+                || (record.changeDate == existing.changeDate
+                    && Self.stableRecordKey(record) > Self.stableRecordKey(existing)) {
+                merged[record.id] = record
+            }
+        }
+        records = Array(merged.values)
+        if incoming.selectionModifiedAt > selectionModifiedAt
+            || (incoming.selectionModifiedAt == selectionModifiedAt
+                && incoming.selectedThemeID.uuidString > selectedThemeID.uuidString) {
+            selectedThemeID = incoming.selectedThemeID
+            selectionModifiedAt = incoming.selectionModifiedAt
+        }
+        canonicalize()
+    }
+
+    mutating func canonicalize() {
+        schemaVersion = Self.currentSchemaVersion
+        let builtInRecords = records.filter { $0.isBuiltIn }
+        if !builtInRecords.isEmpty {
+            let selectedWasBuiltIn = builtInRecords.contains { $0.id == selectedThemeID }
+            let winner = builtInRecords.max {
+                if $0.changeDate != $1.changeDate { return $0.changeDate < $1.changeDate }
+                return Self.stableRecordKey($0) < Self.stableRecordKey($1)
+            }!
+            var canonicalBuiltIn = winner
+            canonicalBuiltIn.theme = winner.theme.reidentified(id: TerminalTheme.defaultID)
+            canonicalBuiltIn.deletedAt = nil
+            records.removeAll { $0.isBuiltIn }
+            records.append(canonicalBuiltIn)
+            if selectedWasBuiltIn { selectedThemeID = TerminalTheme.defaultID }
+        }
+        var seen = Set<UUID>()
+        records = records.filter { seen.insert($0.id).inserted }
+        if records.filter({ !$0.isDeleted }).isEmpty {
+            let fallback = TerminalTheme.default
+            records.append(
+                TerminalThemeRecord(
+                    theme: fallback,
+                    origin: .builtIn,
+                    modifiedAt: Date(),
+                    deletedAt: nil
+                )
+            )
+            selectedThemeID = fallback.id
+            selectionModifiedAt = Date()
+        } else if selectedTheme == nil, let first = activeRecords.first {
+            selectedThemeID = first.id
+            selectionModifiedAt = max(selectionModifiedAt, first.modifiedAt)
+        }
+    }
+
+    private static func stableRecordKey(_ record: TerminalThemeRecord) -> String {
+        let theme = record.theme
+        let colors = ([theme.background, theme.foreground, theme.cursor, theme.selection]
+            + theme.ansiColors)
+            .map { "\($0.red),\($0.green),\($0.blue),\($0.alpha)" }
+            .joined(separator: "|")
+        return [
+            record.origin.rawValue,
+            record.deletedAt?.timeIntervalSinceReferenceDate.description ?? "",
+            theme.id.uuidString,
+            theme.name,
+            theme.fontName,
+            theme.fontSize.description,
+            theme.preferredAppearance?.rawValue ?? "",
+            colors,
+        ].joined(separator: "|")
+    }
+}
+
 // Helper for encoding/decoding Color
-struct CodableColor: Codable {
+struct CodableColor: Codable, Equatable {
     var red: Double
     var green: Double
     var blue: Double
@@ -1224,16 +1631,26 @@ struct CodableColor: Codable {
     var color: Color {
         Color(red: red, green: green, blue: blue, opacity: alpha)
     }
+
+    var isValid: Bool {
+        [red, green, blue, alpha].allSatisfy { $0.isFinite && (0...1).contains($0) }
+    }
+
+    init(sRGBRed red: Double, green: Double, blue: Double, alpha: Double = 1) {
+        self.red = red
+        self.green = green
+        self.blue = blue
+        self.alpha = alpha
+    }
     
     init(color: Color) {
-        let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
-        let components = color.cgColor?
-            .converted(to: sRGB, intent: .defaultIntent, options: nil)?
-            .components ?? [0, 0, 0, 1]
-        self.red = components[0]
-        self.green = components.count > 1 ? components[1] : components[0]
-        self.blue = components.count > 2 ? components[2] : components[0]
-        self.alpha = components.last ?? 1.0
+        let resolved = color.resolve(in: EnvironmentValues())
+        self.init(
+            sRGBRed: Double(resolved.red),
+            green: Double(resolved.green),
+            blue: Double(resolved.blue),
+            alpha: Double(resolved.opacity)
+        )
     }
 }
 // MARK: - SSH Connection
@@ -1597,27 +2014,31 @@ class SSHConnection {
                 )
             }
 
-            try await client.withPTY(pty, environment: env) { inbound, outbound in
-                await MainActor.run {
-                    self.ttyWriter = outbound
-                }
-
-                for try await output in inbound {
-                    let buffer: ByteBuffer
-                    switch output {
-                    case .stdout(let out):
-                        buffer = out
-                    case .stderr(let err):
-                        buffer = err
-                    }
-
-                    let data = Data(buffer.readableBytesView)
+            try await client.withPTY(
+                pty,
+                environment: env,
+                perform: { @Sendable [weak self] inbound, outbound in
                     await MainActor.run {
-                        self.resetKeepAliveCounter()
-                        self.session?.feedTerminalData(data)
+                        self?.ttyWriter = outbound
+                    }
+
+                    for try await output in inbound {
+                        let buffer: ByteBuffer
+                        switch output {
+                        case .stdout(let out):
+                            buffer = out
+                        case .stderr(let err):
+                            buffer = err
+                        }
+
+                        let data = Data(buffer.readableBytesView)
+                        await MainActor.run {
+                            self?.resetKeepAliveCounter()
+                            self?.session?.feedTerminalData(data)
+                        }
                     }
                 }
-            }
+            )
             await MainActor.run {
                 self.session?.handleCleanRemoteExit()
             }

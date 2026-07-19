@@ -12,7 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-import Crypto
+@preconcurrency import Crypto
 import Dispatch
 import Foundation
 
@@ -249,6 +249,10 @@ public struct NIOSSHCertifiedPublicKey {
     }
 }
 
+// `NIOSSHCertifiedPublicKey` implements copy on write (CoW), so values do not
+// share mutable storage across concurrency domains.
+extension NIOSSHCertifiedPublicKey: @unchecked Sendable {}
+
 extension NIOSSHCertifiedPublicKey {
     /// Validates that a given certified public key is valid for usage.
     ///
@@ -407,7 +411,7 @@ extension NIOSSHCertifiedPublicKey {
     ///
     /// For extensibility purposes this is not defined as an enumeration, but instead as a `RawRepresentable` type
     /// wrapping the base type.
-    public struct CertificateType: RawRepresentable {
+    public struct CertificateType: RawRepresentable, Sendable {
         public var rawValue: UInt32
 
         public init(rawValue: UInt32) {

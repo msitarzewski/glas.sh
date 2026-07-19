@@ -8,9 +8,9 @@ Create native Apple-platform shells around shared terminal, SSH, endpoint, and s
 
 `PLAT-001...006` and the platform-enabling portions of `SEC-006...008`.
 
-## Current status — In progress
+## Current status — QA
 
-Terminal/renderer and package dependency separation have begun: SwiftTerm is behind a narrow UIKit-private engine adapter, Citadel links directly to the app rather than through RealityKitContent, and the visionOS candidate is arm64-only with an OS 26 floor. Native macOS, iPadOS, and iOS shells and full platform-neutral target extraction remain open. This phase has not been deferred or declared complete; it remains part of the broader program until the user assigns a separate disposition.
+The native Apple Silicon/macOS 26+ shell is implemented and user-approved. It reuses the shared session, SSH, trust, settings, theme, and terminal layers while adding AppKit window policy, local PTY transport, platform-native multiwindow workspaces, tabs, splits, focused commands, secure keyboard entry, and native material chrome. The macOS suite passes 20/20 and the shared visionOS suite passes 183/183 on both 26.4 and 27.0 after the parity changes. Native iPadOS/iOS shells and final physical accessibility/performance evidence remain open, so the full phase stays in QA rather than Complete.
 
 ## Sequencing constraint
 

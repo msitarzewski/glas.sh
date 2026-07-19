@@ -1,13 +1,21 @@
 {
-  "originHash" : "9fd24149063af8e31bc115580078471170f3044d46c0c59c0348fcce34f9c18c",
+  "originHash" : "18332e75e1523b505518d79eda067554a191df046d5ab65b591de47c9a1021d2",
   "pins" : [
     {
       "identity" : "bigint",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/attaswift/BigInt.git",
       "state" : {
-        "revision" : "e07e00fa1fd435143a2dcf8b7eec9a7710b2fdfe",
-        "version" : "5.7.0"
+        "revision" : "1352e54a022205438e3ef75a32941b47f2f5c189",
+        "version" : "6.0.0"
+      }
+    },
+    {
+      "identity" : "glassecretstore",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/msitarzewski/GlasSecretStore.git",
+      "state" : {
+        "revision" : "1ffaa96312b8e4b4d6b82eb82cc40c8f6df6317f"
       }
     },
     {
@@ -15,8 +23,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-argument-parser",
       "state" : {
-        "revision" : "626b5b7b2f45e1b0b1c6f4a309296d1d21d7311b",
-        "version" : "1.7.1"
+        "revision" : "6a52f3251125d74daf04fcbd5e6f08a75d074382",
+        "version" : "1.8.2"
       }
     },
     {
@@ -87,8 +95,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/migueldeicaza/SwiftTerm",
       "state" : {
-        "revision" : "8e7a1e154f470e19c709a00a8768df348ba5fc43",
-        "version" : "1.13.0"
+        "revision" : "dd2fb8ac5b861e7bf617c872895e338f38165648",
+        "version" : "1.15.0"
       }
     }
   ],

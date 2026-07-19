@@ -89,7 +89,7 @@ final class CustomAppShell: ShellDelegate {
     }
 }
 
-struct LoginHandler: NIOSSHServerUserAuthenticationDelegate {
+struct LoginHandler: NIOSSHServerUserAuthenticationDelegate, Sendable {
     let username: String
     let password: String
     

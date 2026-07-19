@@ -31,7 +31,7 @@ public struct NIOSSHKeyExchangeServerReply {
 
 /// This protocol defines a container used by the key exchange state machine to manage key exchange.
 /// This type erases the specific key exchanger.
-public protocol NIOSSHKeyExchangeAlgorithmProtocol {
+public protocol NIOSSHKeyExchangeAlgorithmProtocol: _NIOSSHSendableMetatype {
     static var keyExchangeInitMessageId: UInt8 { get }
     static var keyExchangeReplyMessageId: UInt8 { get }
 

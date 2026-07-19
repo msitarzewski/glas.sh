@@ -36,8 +36,8 @@ struct HostTrustMigrationReport: Codable, Equatable {
 
 @MainActor
 struct HostTrustMigrationStore {
-    let save: (PinnedSSHHostKey) throws -> Void
-    let allRecords: () throws -> [PinnedSSHHostKey]
+    let save: @MainActor (PinnedSSHHostKey) throws -> Void
+    let allRecords: @MainActor () throws -> [PinnedSSHHostKey]
 
     static let live = HostTrustMigrationStore(
         save: KeychainManager.savePinnedHostKey,

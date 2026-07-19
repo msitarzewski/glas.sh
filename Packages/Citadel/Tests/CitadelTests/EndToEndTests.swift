@@ -4,9 +4,9 @@ import NIO
 import NIOSSH
 import XCTest
 
-final class AuthDelegate: NIOSSHServerUserAuthenticationDelegate {
-    var supportedAuthenticationMethods: NIOSSHAvailableUserAuthenticationMethods
-    var handle: @Sendable (NIOSSHUserAuthenticationRequest, EventLoopPromise<NIOSSHUserAuthenticationOutcome>) -> Void
+final class AuthDelegate: NIOSSHServerUserAuthenticationDelegate, Sendable {
+    let supportedAuthenticationMethods: NIOSSHAvailableUserAuthenticationMethods
+    let handle: @Sendable (NIOSSHUserAuthenticationRequest, EventLoopPromise<NIOSSHUserAuthenticationOutcome>) -> Void
 
     init(
         supportedAuthenticationMethods: NIOSSHAvailableUserAuthenticationMethods,
