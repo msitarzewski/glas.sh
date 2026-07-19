@@ -12,6 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+import Atomics
 import Crypto
 import NIOCore
 import NIOEmbedded
@@ -28,7 +29,7 @@ fileprivate let testKey = Data([0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef])
 final class CustomTransportProtection: NIOSSHTransportProtection {
     static let cipherName = "xor-with-42"
     static let macNames = ["insecure-sha1"]
-    static var wasUsed = false
+    static let wasUsed = ManagedAtomic(false)
     
     static func keySizes(forMac mac: String?) throws -> ExpectedKeySizes {
         .init(ivSize: 19, encryptionKeySize: 17, macKeySize: 15)
@@ -47,7 +48,7 @@ final class CustomTransportProtection: NIOSSHTransportProtection {
     }
 
     func decryptAndVerifyRemainingPacket(_ source: inout ByteBuffer, sequenceNumber: UInt32) throws -> ByteBuffer {
-        Self.wasUsed = true
+        Self.wasUsed.store(true, ordering: .relaxed)
         var plaintext: Data
 
         // The first 4 bytes are the length. The last 16 are the tag. Everything else is ciphertext. We expect
@@ -195,7 +196,7 @@ struct CustomSignature: NIOSSHSignatureProtocol {
 struct CustomPublicKey: NIOSSHPublicKeyProtocol {
     static let publicKeyPrefix = "custom-prefix"
     static let keyExchangeAlgorithmNames: [Substring] = ["custom-handshake"]
-    static var wasUsed = false
+    static let wasUsed = ManagedAtomic(false)
     
     func isValidSignature<D>(_ signature: NIOSSHSignatureProtocol, for data: D) -> Bool where D : DataProtocol {
         let testKeySize = testKey.count
@@ -221,7 +222,7 @@ struct CustomPublicKey: NIOSSHPublicKeyProtocol {
             throw EndToEndTestError.invalidCustomPublicKey
         }
         
-        wasUsed = true
+        wasUsed.store(true, ordering: .relaxed)
         return CustomPublicKey()
     }
 }
@@ -229,7 +230,7 @@ struct CustomPublicKey: NIOSSHPublicKeyProtocol {
 struct CustomKeyExchange: NIOSSHKeyExchangeAlgorithmProtocol {
     static var keyExchangeInitMessageId: UInt8 { 0xff }
     static var keyExchangeReplyMessageId: UInt8 { 0xff }
-    static var wasUsed = false
+    static let wasUsed = ManagedAtomic(false)
     
     private var previousSessionIdentifier: ByteBuffer?
     private var ourKey: CustomPrivateKey
@@ -303,7 +304,7 @@ struct CustomKeyExchange: NIOSSHKeyExchangeAlgorithmProtocol {
         let serverReply = NIOSSHKeyExchangeServerReply(hostKey: serverHostKey.publicKey,
                                                        publicKey: publicKeyBytes, signature: exchangeHashSignature)
        
-        Self.wasUsed = true
+        Self.wasUsed.store(true, ordering: .relaxed)
         return (kexResult, serverReply)
     }
 
@@ -342,7 +343,7 @@ struct CustomKeyExchange: NIOSSHKeyExchangeAlgorithmProtocol {
             throw NIOSSHError.invalidExchangeHashSignature
         }
         
-        Self.wasUsed = true
+        Self.wasUsed.store(true, ordering: .relaxed)
         return KeyExchangeResult(
             sessionID: sessionID,
             keys: NIOSSHSessionKeys(
@@ -367,11 +368,11 @@ class BackToBackEmbeddedChannel {
     private(set) var activeServerChannels: [Channel]
 
     var clientSSHHandler: NIOSSHHandler? {
-        try? self.client.pipeline.handler(type: NIOSSHHandler.self).wait()
+        try? self.client.pipeline.syncOperations.handler(type: NIOSSHHandler.self)
     }
 
     var serverSSHHandler: NIOSSHHandler? {
-        try? self.server.pipeline.handler(type: NIOSSHHandler.self).wait()
+        try? self.server.pipeline.syncOperations.handler(type: NIOSSHHandler.self)
     }
 
     init() {
@@ -385,7 +386,7 @@ class BackToBackEmbeddedChannel {
         self.loop.run()
     }
 
-    func interactInMemory() throws {
+    func interactInMemory(serverFragmentSize: Int? = nil) throws {
         var workToDo = true
 
         while workToDo {
@@ -401,7 +402,17 @@ class BackToBackEmbeddedChannel {
             }
 
             if let serverMsg = serverDatum {
-                try self.client.writeInbound(serverMsg)
+                if case .byteBuffer(var buffer) = serverMsg,
+                   let serverFragmentSize,
+                   serverFragmentSize > 0
+                {
+                    while buffer.readableBytes > 0 {
+                        let length = min(serverFragmentSize, buffer.readableBytes)
+                        try self.client.writeInbound(IOData.byteBuffer(buffer.readSlice(length: length)!))
+                    }
+                } else {
+                    try self.client.writeInbound(serverMsg)
+                }
                 workToDo = true
             }
         }
@@ -442,12 +453,15 @@ class BackToBackEmbeddedChannel {
         let serverHandler = NIOSSHHandler(role: .server(serverConfiguration),
                                           allocator: self.server.allocator) { channel, _ in
             self.activeServerChannels.append(channel)
-            channel.closeFuture.whenComplete { _ in self.activeServerChannels.removeAll(where: { $0 === channel }) }
+            let eventLoopSelf = NIOLoopBound(self, eventLoop: channel.eventLoop)
+            channel.closeFuture.whenComplete { _ in
+                eventLoopSelf.value.activeServerChannels.removeAll(where: { $0 === channel })
+            }
             return channel.eventLoop.makeSucceededFuture(())
         }
 
-        try self.client.pipeline.addHandler(clientHandler).wait()
-        try self.server.pipeline.addHandler(serverHandler).wait()
+        try self.client.pipeline.syncOperations.addHandler(clientHandler)
+        try self.server.pipeline.syncOperations.addHandler(serverHandler)
     }
 
     func finish() throws {
@@ -574,14 +588,16 @@ class EndToEndTests: XCTestCase {
         }
 
         let userEventRecorder = UserEventExpecter()
-        XCTAssertNoThrow(try serverChannel.pipeline.addHandler(userEventRecorder).wait())
+        XCTAssertNoThrow(try serverChannel.pipeline.syncOperations.addHandler(userEventRecorder))
 
         func helper<Event: Equatable>(_ event: Event) {
-            var clientSent = false
-            clientChannel.triggerUserOutboundEvent(event).whenSuccess { clientSent = true }
+            let clientSent = NIOLoopBoundBox(false, eventLoop: clientChannel.eventLoop)
+            let promise = clientChannel.eventLoop.makePromise(of: Void.self)
+            clientChannel.pipeline.syncOperations.triggerUserOutboundEvent(event, promise: promise)
+            promise.futureResult.whenSuccess { clientSent.value = true }
             XCTAssertNoThrow(try self.channel.interactInMemory())
 
-            XCTAssertTrue(clientSent)
+            XCTAssertTrue(clientSent.value)
             XCTAssertEqual(userEventRecorder.userEvents.last as? Event?, event)
         }
 
@@ -620,7 +636,7 @@ class EndToEndTests: XCTestCase {
         }
 
         let userEventRecorder = UserEventExpecter()
-        XCTAssertNoThrow(try serverChannel.pipeline.addHandler(userEventRecorder).wait())
+        XCTAssertNoThrow(try serverChannel.pipeline.syncOperations.addHandler(userEventRecorder))
 
         let hugeCommand = String(repeating: "a", count: 33000)
         try clientChannel.triggerUserOutboundEvent(SSHChannelRequestEvent.ExecRequest(command: hugeCommand, wantReply: true)).wait()
@@ -646,6 +662,24 @@ class EndToEndTests: XCTestCase {
         XCTAssertThrowsError(try helper(.cancel(host: "localhost", port: 8765))) { error in
             XCTAssertEqual((error as? NIOSSHError)?.type, .globalRequestRefused)
         }
+    }
+
+    func testKeepAliveLeavesConnectionUsable() throws {
+        XCTAssertNoThrow(try self.channel.configureWithHarness(TestHarness()))
+        XCTAssertNoThrow(try self.channel.activate())
+        XCTAssertNoThrow(try self.channel.interactInMemory())
+
+        let clientSSHHandler = try XCTUnwrap(self.channel.clientSSHHandler)
+        clientSSHHandler.sendKeepAlive()
+        XCTAssertNoThrow(try self.channel.interactInMemory())
+
+        let reply = self.channel.client.eventLoop.makePromise(of: ByteBuffer?.self)
+        clientSSHHandler.sendGlobalRequestMessage(
+            .init(wantReply: true, type: .unknown("post-keepalive-check", ByteBuffer())),
+            promise: reply
+        )
+        XCTAssertNoThrow(try self.channel.interactInMemory())
+        XCTAssertThrowsError(try reply.futureResult.wait())
     }
     
     func testServerRecordsAuthenticatedUsername() throws {
@@ -676,7 +710,7 @@ class EndToEndTests: XCTestCase {
         
         // Set up the connection, validate all is well.
         XCTAssertNoThrow(try self.channel.configureWithHarness(harness))
-        XCTAssertNoThrow(try self.channel.client.pipeline.addHandler(handshaker).wait())
+        XCTAssertNoThrow(try self.channel.client.pipeline.syncOperations.addHandler(handshaker))
         XCTAssertNoThrow(try self.channel.activate())
         XCTAssertNoThrow(try self.channel.interactInMemory())
         
@@ -757,21 +791,21 @@ class EndToEndTests: XCTestCase {
     }
 
     func testGlobalRequestTooEarlyIsDelayed() throws {
-        var completed = false
+        let completed = NIOLoopBoundBox(false, eventLoop: self.channel.client.eventLoop)
         let promise = self.channel.client.eventLoop.makePromise(of: GlobalRequest.TCPForwardingResponse?.self)
-        promise.futureResult.whenComplete { _ in completed = true }
+        promise.futureResult.whenComplete { _ in completed.value = true }
 
         XCTAssertNoThrow(try self.channel.configureWithHarness(TestHarness()))
 
         // Issue a forwarding request early. This should be queued.
         self.channel.clientSSHHandler?.sendTCPForwardingRequest(.listen(host: "localhost", port: 2222), promise: promise)
-        XCTAssertFalse(completed)
+        XCTAssertFalse(completed.value)
 
         // Activate. This will complete the forwarding request.
         XCTAssertNoThrow(try self.channel.activate())
         XCTAssertNoThrow(try self.channel.interactInMemory())
 
-        XCTAssertTrue(completed)
+        XCTAssertTrue(completed.value)
     }
 
     func testGlobalRequestsAreCancelledIfRemoved() throws {
@@ -780,32 +814,32 @@ class EndToEndTests: XCTestCase {
         XCTAssertNoThrow(try self.channel.interactInMemory())
 
         // Enqueue a global request.
-        var err: Error?
+        let err = NIOLoopBoundBox<Error?>(nil, eventLoop: self.channel.client.eventLoop)
         let promise = self.channel.client.eventLoop.makePromise(of: GlobalRequest.TCPForwardingResponse?.self)
-        promise.futureResult.whenFailure { error in err = error }
+        promise.futureResult.whenFailure { error in err.value = error }
         self.channel.clientSSHHandler?.sendTCPForwardingRequest(.listen(host: "localhost", port: 1234), promise: promise)
-        XCTAssertNil(err)
+        XCTAssertNil(err.value)
 
         self.channel.client.close(promise: nil)
         XCTAssertNoThrow(try self.channel.interactInMemory())
-        XCTAssertEqual(err as? ChannelError, .eof)
+        XCTAssertEqual(err.value as? ChannelError, .eof)
     }
 
     func testNeverStartedGlobalRequestsAreCancelledIfRemoved() throws {
-        var err: Error?
+        let err = NIOLoopBoundBox<Error?>(nil, eventLoop: self.channel.client.eventLoop)
         let promise = self.channel.client.eventLoop.makePromise(of: GlobalRequest.TCPForwardingResponse?.self)
-        promise.futureResult.whenFailure { error in err = error }
+        promise.futureResult.whenFailure { error in err.value = error }
 
         XCTAssertNoThrow(try self.channel.configureWithHarness(TestHarness()))
 
         // Enqueue a forwarding request
         self.channel.clientSSHHandler?.sendTCPForwardingRequest(.listen(host: "localhost", port: 1234), promise: promise)
-        XCTAssertNil(err)
+        XCTAssertNil(err.value)
 
         // Now close the channel.
         self.channel.client.close(promise: nil)
         XCTAssertNoThrow(try self.channel.interactInMemory())
-        XCTAssertEqual(err as? ChannelError, .eof)
+        XCTAssertEqual(err.value as? ChannelError, .eof)
     }
 
     func testGlobalRequestAfterCloseFails() throws {
@@ -821,11 +855,11 @@ class EndToEndTests: XCTestCase {
         XCTAssertNoThrow(try self.channel.interactInMemory())
 
         // Enqueue a global request.
-        var err: Error?
+        let err = NIOLoopBoundBox<Error?>(nil, eventLoop: self.channel.client.eventLoop)
         let promise = self.channel.client.eventLoop.makePromise(of: GlobalRequest.TCPForwardingResponse?.self)
-        promise.futureResult.whenFailure { error in err = error }
+        promise.futureResult.whenFailure { error in err.value = error }
         handler?.sendTCPForwardingRequest(.listen(host: "localhost", port: 1234), promise: promise)
-        XCTAssertEqual(err as? ChannelError, .ioOnClosedChannel)
+        XCTAssertEqual(err.value as? ChannelError, .ioOnClosedChannel)
     }
 
     func testSecureEnclaveKeys() throws {
@@ -859,7 +893,7 @@ class EndToEndTests: XCTestCase {
     
     func testCustomPublicKeyAlgorithms() throws {
         NIOSSHAlgorithms.unregisterAlgorithms()
-        CustomPublicKey.wasUsed = false
+        CustomPublicKey.wasUsed.store(false, ordering: .relaxed)
         NIOSSHAlgorithms.register(publicKey: CustomPublicKey.self, signature: CustomSignature.self)
         
         // If we can't create this key, we skip the test.
@@ -880,12 +914,12 @@ class EndToEndTests: XCTestCase {
         _ = try self.channel.createNewChannel()
         XCTAssertNoThrow(try self.channel.interactInMemory())
         XCTAssertEqual(self.channel.activeServerChannels.count, 1)
-        XCTAssertTrue(CustomPublicKey.wasUsed)
+        XCTAssertTrue(CustomPublicKey.wasUsed.load(ordering: .relaxed))
     }
     
     func testCustomHostKeyAlgorithms() throws {
         NIOSSHAlgorithms.unregisterAlgorithms()
-        CustomPublicKey.wasUsed = false
+        CustomPublicKey.wasUsed.store(false, ordering: .relaxed)
         NIOSSHAlgorithms.register(publicKey: CustomPublicKey.self, signature: CustomSignature.self)
         
         // If we can't create this key, we skip the test.
@@ -906,12 +940,12 @@ class EndToEndTests: XCTestCase {
         _ = try self.channel.createNewChannel()
         XCTAssertNoThrow(try self.channel.interactInMemory())
         XCTAssertEqual(self.channel.activeServerChannels.count, 1)
-        XCTAssertTrue(CustomPublicKey.wasUsed)
+        XCTAssertTrue(CustomPublicKey.wasUsed.load(ordering: .relaxed))
     }
     
     func testCustomTransportProtectionAlgorithms() throws {
         NIOSSHAlgorithms.unregisterAlgorithms()
-        CustomKeyExchange.wasUsed = false
+        CustomKeyExchange.wasUsed.store(false, ordering: .relaxed)
         NIOSSHAlgorithms.register(transportProtectionScheme: CustomTransportProtection.self)
         
         // If we can't create this key, we skip the test.
@@ -933,12 +967,12 @@ class EndToEndTests: XCTestCase {
         _ = try self.channel.createNewChannel()
         XCTAssertNoThrow(try self.channel.interactInMemory())
         XCTAssertEqual(self.channel.activeServerChannels.count, 1)
-        XCTAssertTrue(CustomTransportProtection.wasUsed)
+        XCTAssertTrue(CustomTransportProtection.wasUsed.load(ordering: .relaxed))
     }
     
     func testCustomKeyExchangeAlgorithms() throws {
         NIOSSHAlgorithms.unregisterAlgorithms()
-        CustomKeyExchange.wasUsed = false
+        CustomKeyExchange.wasUsed.store(false, ordering: .relaxed)
         NIOSSHAlgorithms.register(keyExchangeAlgorithm: CustomKeyExchange.self)
         NIOSSHAlgorithms.register(publicKey: CustomPublicKey.self, signature: CustomSignature.self)
         
@@ -961,7 +995,7 @@ class EndToEndTests: XCTestCase {
         _ = try self.channel.createNewChannel()
         XCTAssertNoThrow(try self.channel.interactInMemory())
         XCTAssertEqual(self.channel.activeServerChannels.count, 1)
-        XCTAssertTrue(CustomKeyExchange.wasUsed)
+        XCTAssertTrue(CustomKeyExchange.wasUsed.load(ordering: .relaxed))
     }
 
     func testSupportClientInitiatedRekeying() throws {
@@ -996,14 +1030,32 @@ class EndToEndTests: XCTestCase {
         XCTAssertEqual(self.channel.activeServerChannels.count, 1)
     }
 
+    func testSupportSimultaneousRekeying() throws {
+        XCTAssertNoThrow(try self.channel.configureWithHarness(TestHarness()))
+        XCTAssertNoThrow(try self.channel.activate())
+        XCTAssertNoThrow(try self.channel.interactInMemory())
+
+        XCTAssertNoThrow(try self.channel.clientSSHHandler!._rekey())
+        XCTAssertNoThrow(try self.channel.serverSSHHandler!._rekey())
+        XCTAssertNoThrow(try self.channel.interactInMemory())
+
+        self.channel.clientSSHHandler?.createChannel(nil, nil)
+        XCTAssertNoThrow(try self.channel.interactInMemory())
+        XCTAssertEqual(self.channel.activeServerChannels.count, 1)
+    }
+
     func testDelayedHostKeyValidation() throws {
         class DelayedValidationDelegate: NIOSSHClientServerAuthenticationDelegate {
             var validationCount = 0
 
             func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
                 // Short delay here, but we'll be forced to wait.
+                let eventLoopSelf = NIOLoopBoundBox(
+                    self,
+                    eventLoop: validationCompletePromise.futureResult.eventLoop
+                )
                 validationCompletePromise.futureResult.eventLoop.scheduleTask(in: .milliseconds(100)) {
-                    self.validationCount += 1
+                    eventLoopSelf.value.validationCount += 1
                     validationCompletePromise.succeed(())
                 }
             }
@@ -1016,7 +1068,9 @@ class EndToEndTests: XCTestCase {
         // Set up the connection, validate all is well.
         XCTAssertNoThrow(try self.channel.configureWithHarness(harness))
         XCTAssertNoThrow(try self.channel.activate())
-        XCTAssertNoThrow(try self.channel.interactInMemory())
+        // Byte-at-a-time delivery ensures additional reads arrive while host-key
+        // validation is pending; the handler must serialize them until it resumes.
+        XCTAssertNoThrow(try self.channel.interactInMemory(serverFragmentSize: 1))
 
         // This will not be active yet! Advance time and interact again.
         XCTAssertEqual(delegate.validationCount, 0)
@@ -1029,6 +1083,43 @@ class EndToEndTests: XCTestCase {
         self.channel.clientSSHHandler?.createChannel(nil, nil)
         XCTAssertNoThrow(try self.channel.interactInMemory())
         XCTAssertEqual(self.channel.activeServerChannels.count, 1)
+    }
+
+    func testDelayedHostKeyValidationRejectsExcessDeferredInboundData() throws {
+        final class NeverCompletingValidationDelegate: NIOSSHClientServerAuthenticationDelegate {
+            var validationRequested = false
+
+            func validateHostKey(
+                hostKey: NIOSSHPublicKey,
+                validationCompletePromise: EventLoopPromise<Void>
+            ) {
+                self.validationRequested = true
+            }
+        }
+
+        let delegate = NeverCompletingValidationDelegate()
+        var harness = TestHarness()
+        harness.clientServerAuthDelegate = delegate
+
+        XCTAssertNoThrow(try self.channel.configureWithHarness(harness))
+        XCTAssertNoThrow(try self.channel.activate())
+        XCTAssertNoThrow(try self.channel.interactInMemory())
+        XCTAssertTrue(delegate.validationRequested)
+
+        var excess = self.channel.client.allocator.buffer(
+            capacity: NIOSSHHandler.maximumDeferredInboundBytes + 1
+        )
+        excess.writeRepeatingByte(
+            0,
+            count: NIOSSHHandler.maximumDeferredInboundBytes + 1
+        )
+
+        XCTAssertThrowsError(
+            try self.channel.client.writeInbound(IOData.byteBuffer(excess))
+        ) { error in
+            XCTAssertEqual((error as? NIOSSHError)?.type, .protocolViolation)
+        }
+        XCTAssertFalse(self.channel.client.isActive)
     }
 
     func testHostKeyRejection() throws {
@@ -1048,7 +1139,7 @@ class EndToEndTests: XCTestCase {
 
         // Set up the connection, validate all is well.
         XCTAssertNoThrow(try self.channel.configureWithHarness(harness))
-        XCTAssertNoThrow(try self.channel.client.pipeline.addHandler(errorCatcher).wait())
+        XCTAssertNoThrow(try self.channel.client.pipeline.syncOperations.addHandler(errorCatcher))
         XCTAssertNoThrow(try self.channel.activate())
         XCTAssertThrowsError(try self.channel.interactInMemory()) { error in
             XCTAssertEqual(error as? TestError, .bang)
@@ -1073,18 +1164,18 @@ class EndToEndTests: XCTestCase {
         harness.clientServerAuthDelegate = RejectDelegate()
 
         XCTAssertNoThrow(try self.channel.configureWithHarness(harness))
-        XCTAssertNoThrow(try self.channel.client.pipeline.addHandler(ErrorClosingHandler()).wait())
+        XCTAssertNoThrow(try self.channel.client.pipeline.syncOperations.addHandler(ErrorClosingHandler()))
 
         // Get an early ref to the handler and try to create a child channel.
         let handler = self.channel.clientSSHHandler
 
-        var err: Error?
+        let err = NIOLoopBoundBox<Error?>(nil, eventLoop: self.channel.client.eventLoop)
         let promise = self.channel.client.eventLoop.makePromise(of: Channel.self)
-        promise.futureResult.whenFailure { error in err = error }
+        promise.futureResult.whenFailure { error in err.value = error }
         handler!.createChannel(promise, channelType: .session) { channel, _ in
             channel.eventLoop.makeSucceededFuture(())
         }
-        XCTAssertNil(err)
+        XCTAssertNil(err.value)
 
         // Activation errors.
         XCTAssertNoThrow(try self.channel.activate())
@@ -1092,7 +1183,7 @@ class EndToEndTests: XCTestCase {
             XCTAssertEqual(error as? TestError, .bang)
         }
         self.channel.run()
-        XCTAssertEqual(err as? ChannelError?, .eof)
+        XCTAssertEqual(err.value as? ChannelError?, .eof)
     }
 
     func testCreateChannelAfterDisconnectFailsWithEventLoopTick() throws {
@@ -1105,16 +1196,16 @@ class EndToEndTests: XCTestCase {
         XCTAssertNoThrow(try self.channel.interactInMemory())
 
         // Attempting to create a child channel should immediately fail.
-        var err: Error?
+        let err = NIOLoopBoundBox<Error?>(nil, eventLoop: self.channel.client.eventLoop)
         let promise = self.channel.client.eventLoop.makePromise(of: Channel.self)
-        promise.futureResult.whenFailure { error in err = error }
+        promise.futureResult.whenFailure { error in err.value = error }
         self.channel.clientSSHHandler!.createChannel(promise, channelType: .session) { channel, _ in
             channel.eventLoop.makeSucceededFuture(())
         }
         self.channel.run()
 
-        XCTAssertNotNil(err)
-        XCTAssertEqual((err as? NIOSSHError)?.type, .creatingChannelAfterClosure)
+        XCTAssertNotNil(err.value)
+        XCTAssertEqual((err.value as? NIOSSHError)?.type, .creatingChannelAfterClosure)
     }
 
     func testCreateChannelAfterDisconnectFailsWithoutEventLoopTick() throws {
@@ -1127,16 +1218,16 @@ class EndToEndTests: XCTestCase {
         XCTAssertNoThrow(try self.channel.interactInMemory())
 
         // Attempting to create a child channel should immediately fail.
-        var err: Error?
+        let err = NIOLoopBoundBox<Error?>(nil, eventLoop: self.channel.client.eventLoop)
         let promise = self.channel.client.eventLoop.makePromise(of: Channel.self)
-        promise.futureResult.whenFailure { error in err = error }
+        promise.futureResult.whenFailure { error in err.value = error }
         self.channel.clientSSHHandler!.createChannel(promise, channelType: .session) { channel, _ in
             channel.eventLoop.makeSucceededFuture(())
         }
         self.channel.run()
 
-        XCTAssertNotNil(err)
-        XCTAssertEqual((err as? NIOSSHError)?.type, .creatingChannelAfterClosure)
+        XCTAssertNotNil(err.value)
+        XCTAssertEqual((err.value as? NIOSSHError)?.type, .creatingChannelAfterClosure)
     }
 
     func testHandshakeSuccess() throws {
@@ -1163,7 +1254,7 @@ class EndToEndTests: XCTestCase {
 
         // Set up the connection, validate all is well.
         XCTAssertNoThrow(try self.channel.configureWithHarness(harness))
-        XCTAssertNoThrow(try self.channel.client.pipeline.addHandler(handshaker).wait())
+        XCTAssertNoThrow(try self.channel.client.pipeline.syncOperations.addHandler(handshaker))
         XCTAssertNoThrow(try self.channel.activate())
         XCTAssertNoThrow(try self.channel.interactInMemory())
 
@@ -1204,7 +1295,7 @@ class EndToEndTests: XCTestCase {
 
         // Set up the connection, validate all is well.
         XCTAssertNoThrow(try self.channel.configureWithHarness(harness))
-        XCTAssertNoThrow(try self.channel.client.pipeline.addHandler(handshaker).wait())
+        XCTAssertNoThrow(try self.channel.client.pipeline.syncOperations.addHandler(handshaker))
         XCTAssertNoThrow(try self.channel.activate())
         XCTAssertNoThrow(try self.channel.interactInMemory())
 
@@ -1248,7 +1339,7 @@ class EndToEndTests: XCTestCase {
 
         // Set up the connection, validate all is well.
         XCTAssertNoThrow(try self.channel.configureWithHarness(harness))
-        XCTAssertNoThrow(try self.channel.client.pipeline.addHandler(handshaker).wait())
+        XCTAssertNoThrow(try self.channel.client.pipeline.syncOperations.addHandler(handshaker))
         XCTAssertNoThrow(try self.channel.activate())
         XCTAssertNoThrow(try self.channel.interactInMemory())
 
@@ -1291,7 +1382,7 @@ class EndToEndTests: XCTestCase {
 
         // Set up the connection, validate all is well.
         XCTAssertNoThrow(try self.channel.configureWithHarness(harness))
-        XCTAssertNoThrow(try self.channel.client.pipeline.addHandler(handshaker).wait())
+        XCTAssertNoThrow(try self.channel.client.pipeline.syncOperations.addHandler(handshaker))
         XCTAssertNoThrow(try self.channel.activate())
         XCTAssertNoThrow(try self.channel.interactInMemory())
 

@@ -24,6 +24,9 @@ import NIOCore
 /// other usage models, including port forwarding. It is also able to construct somewhat
 /// arbitrary secure multiplexed channels.
 public final class NIOSSHHandler {
+    static let maximumDeferredInboundBytes = 1 * 1024 * 1024
+    static let maximumDeferredReadCompletions = 1_024
+
     internal var channel: Channel? {
         self.context.map { $0.channel }
     }
@@ -48,6 +51,14 @@ public final class NIOSSHHandler {
     // Whether we're expecting a channelReadComplete.
     private var expectingChannelReadComplete: Bool = false
 
+    // Authentication and host-key delegates may complete asynchronously. While one of
+    // those decisions is pending, preserve inbound ordering here instead of advancing
+    // the connection state machine concurrently with the delegate callback.
+    private var awaitingInboundDecision: Bool
+    private var deferredInboundData: CircularBuffer<ByteBuffer>
+    private var deferredInboundByteCount: Int
+    private var deferredReadCompletions: Int
+
     // A buffer of pending channel initializations. A channel initialization is pending if
     // we're attempting to initialize a channel before user auth is complete.
     private var pendingChannelInitializations: CircularBuffer<(promise: EventLoopPromise<Channel>?, channelType: SSHChannelType, initializer: SSHChildChannel.Initializer?)>
@@ -70,6 +81,10 @@ public final class NIOSSHHandler {
         self.stateMachine = SSHConnectionStateMachine(role: role)
         self.pendingWrite = false
         self.outboundFrameBuffer = allocator.buffer(capacity: 1024)
+        self.awaitingInboundDecision = false
+        self.deferredInboundData = CircularBuffer(initialCapacity: 2)
+        self.deferredInboundByteCount = 0
+        self.deferredReadCompletions = 0
         self.pendingChannelInitializations = CircularBuffer(initialCapacity: 4)
         self.pendingGlobalRequests = CircularBuffer(initialCapacity: 4)
         self.pendingGlobalRequestResponses = CircularBuffer(initialCapacity: 4)
@@ -120,6 +135,8 @@ extension NIOSSHHandler: ChannelDuplexHandler {
 
     public func handlerRemoved(context: ChannelHandlerContext) {
         self.context = nil
+        self.awaitingInboundDecision = false
+        self.discardDeferredInboundData()
 
         // We don't actually need to nil out the multiplexer here (it will nil its reference to us)
         // but we _can_, and it doesn't hurt.
@@ -165,18 +182,39 @@ extension NIOSSHHandler: ChannelDuplexHandler {
         self.expectingChannelReadComplete = true
 
         var data = self.unwrapInboundIn(data)
-        self.stateMachine.bufferInboundData(&data)
+
+        guard !self.awaitingInboundDecision else {
+            guard data.readableBytes <= Self.maximumDeferredInboundBytes - self.deferredInboundByteCount else {
+                self.closeForExceededInboundDecisionBudget(context: context)
+                return
+            }
+            self.deferredInboundByteCount += data.readableBytes
+            self.deferredInboundData.append(data)
+            return
+        }
 
         do {
-            while let result = try self.stateMachine.processInboundMessage(allocator: context.channel.allocator, loop: context.eventLoop) {
-                try self.processInboundMessageResult(result, context: context)
-            }
+            self.stateMachine.bufferInboundData(&data)
+            try self.drainInboundMessages(context: context)
         } catch {
             context.fireErrorCaught(error)
         }
     }
 
     public func channelReadComplete(context: ChannelHandlerContext) {
+        guard !self.awaitingInboundDecision else {
+            guard self.deferredReadCompletions < Self.maximumDeferredReadCompletions else {
+                self.closeForExceededInboundDecisionBudget(context: context)
+                return
+            }
+            self.deferredReadCompletions += 1
+            return
+        }
+
+        self.completeInboundRead(context: context)
+    }
+
+    private func completeInboundRead(context: ChannelHandlerContext) {
         self.multiplexer?.parentChannelReadComplete()
         self.expectingChannelReadComplete = false
 
@@ -187,6 +225,54 @@ extension NIOSSHHandler: ChannelDuplexHandler {
 
         self.createPendingChannelsIfPossible()
         self.sendGlobalRequestsIfPossible()
+    }
+
+    private func drainInboundMessages(context: ChannelHandlerContext) throws {
+        while !self.awaitingInboundDecision {
+            guard let result = try self.stateMachine.processInboundMessage(
+                allocator: context.channel.allocator,
+                loop: context.eventLoop
+            ) else {
+                break
+            }
+            try self.processInboundMessageResult(result, context: context)
+        }
+    }
+
+    private func resumeDeferredInboundMessages(context: ChannelHandlerContext) throws {
+        // The parser may already contain complete packets from the read that produced
+        // the asynchronous decision, so drain it before appending later reads.
+        try self.drainInboundMessages(context: context)
+
+        while !self.awaitingInboundDecision, var data = self.deferredInboundData.popFirst() {
+            self.deferredInboundByteCount -= data.readableBytes
+            self.stateMachine.bufferInboundData(&data)
+            try self.drainInboundMessages(context: context)
+        }
+
+        guard !self.awaitingInboundDecision else {
+            return
+        }
+
+        while self.deferredReadCompletions > 0 {
+            self.deferredReadCompletions -= 1
+            self.completeInboundRead(context: context)
+        }
+    }
+
+    private func discardDeferredInboundData() {
+        while self.deferredInboundData.popFirst() != nil {}
+        self.deferredInboundByteCount = 0
+        self.deferredReadCompletions = 0
+    }
+
+    private func closeForExceededInboundDecisionBudget(context: ChannelHandlerContext) {
+        self.discardDeferredInboundData()
+        context.fireErrorCaught(NIOSSHError.protocolViolation(
+            protocolName: "transport",
+            violation: "peer data exceeded the asynchronous decision buffer budget"
+        ))
+        context.close(promise: nil)
     }
 
     private func writeMessage(_ multiMessage: SSHMultiMessage, context: ChannelHandlerContext, promise: EventLoopPromise<Void>? = nil) throws {
@@ -207,22 +293,34 @@ extension NIOSSHHandler: ChannelDuplexHandler {
         case .noMessage:
             break
         case .possibleFutureMessage(let future):
-            // TODO(cory): This is not right, but for now it's good enough.
-            future.whenComplete { result in
+            precondition(!self.awaitingInboundDecision)
+            self.awaitingInboundDecision = true
+            future.hop(to: context.eventLoop).assumeIsolatedUnsafeUnchecked().whenComplete { result in
+                guard self.context === context else {
+                    return
+                }
+
+                self.awaitingInboundDecision = false
                 switch result {
                 case .success(.some(let message)):
                     do {
                         try self.writeMessage(message, context: context)
                         self.pendingWrite = false
                         context.flush()
+                        try self.resumeDeferredInboundMessages(context: context)
                     } catch {
                         context.fireErrorCaught(error)
                     }
                 case .success(.none):
-                    // Do nothing
-                    break
+                    do {
+                        try self.resumeDeferredInboundMessages(context: context)
+                    } catch {
+                        context.fireErrorCaught(error)
+                    }
                 case .failure(let error):
+                    self.discardDeferredInboundData()
                     context.fireErrorCaught(error)
+                    context.close(promise: nil)
                 }
             }
         case .forwardToMultiplexer(let message):
@@ -375,7 +473,8 @@ extension NIOSSHHandler {
             }
         }
 
-        responsePromise.futureResult.whenComplete { result in
+        // This promise is created on the context's event loop above.
+        responsePromise.futureResult.assumeIsolatedUnsafeUnchecked().whenComplete { result in
             guard message.wantReply else {
                 // Nothing to do.
                 return
@@ -423,7 +522,7 @@ extension NIOSSHHandler {
         // Sending a single global request is tricky, because we don't want to succeed the promise until we have the result of the
         // request. That means we need a buffer of promises for request success/failure messages, as well as to create new promises.
         let writePromise = context.eventLoop.makePromise(of: Void.self)
-        writePromise.futureResult.whenComplete { result in
+        writePromise.futureResult.assumeIsolatedUnsafeUnchecked().whenComplete { result in
             switch result {
             case .success:
                 guard self.context != nil else {

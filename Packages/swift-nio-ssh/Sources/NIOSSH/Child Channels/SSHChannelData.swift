@@ -36,7 +36,7 @@ public struct SSHChannelData {
 
 extension SSHChannelData: Equatable {}
 
-extension SSHChannelData: NIOSSHSendable {}
+extension SSHChannelData: Sendable {}
 
 public extension SSHChannelData {
     /// The type of this channel data. Regular `.channel` data is the standard type of data on an `SSHChannel`,
@@ -51,9 +51,14 @@ public extension SSHChannelData {
         public static let stdErr = DataType(_baseType: 1)
 
         /// Construct an `SSHChannelData` for an unknown type of extended data.
-        public init(extended: Int) {
-            precondition(extended != 0)
-            self._baseType = UInt32(extended)
+        ///
+        /// Returns `nil` for the reserved channel-data code (`0`) and for values
+        /// outside the unsigned 32-bit range used by the SSH wire format.
+        public init?(extended: Int) {
+            guard let extended = UInt32(exactly: extended), extended != 0 else {
+                return nil
+            }
+            self._baseType = extended
         }
 
         private init(_baseType: UInt32) {
@@ -64,7 +69,7 @@ public extension SSHChannelData {
 
 extension SSHChannelData.DataType: Hashable {}
 
-extension SSHChannelData.DataType: NIOSSHSendable {}
+extension SSHChannelData.DataType: Sendable {}
 
 extension SSHChannelData.DataType: CustomStringConvertible {
     public var description: String {
@@ -79,14 +84,17 @@ extension SSHChannelData.DataType: CustomStringConvertible {
     }
 }
 
-extension SSHChannelData.DataType: ExpressibleByIntegerLiteral {
-    public init(integerLiteral value: UInt32) {
-        precondition(value != 0)
-        self._baseType = value
-    }
-}
-
 extension SSHChannelData {
+    internal func validateForSerialization() throws {
+        guard case .byteBuffer = self.data else {
+            throw ChannelError.operationUnsupported
+        }
+
+        guard self.type == .channel || self.type == .stdErr else {
+            throw ChannelError.operationUnsupported
+        }
+    }
+
     internal init(_ message: SSHMessage.ChannelDataMessage) {
         self = .init(type: .channel, data: .byteBuffer(message.data))
     }
@@ -106,10 +114,11 @@ extension SSHChannelData.DataType {
 }
 
 extension SSHMessage {
-    internal init(_ channelData: SSHChannelData, recipientChannel: UInt32) {
+    internal init(_ channelData: SSHChannelData, recipientChannel: UInt32) throws {
+        try channelData.validateForSerialization()
+
         guard case .byteBuffer(let bb) = channelData.data else {
-            // TODO: Support fileregion!
-            preconditionFailure("FileRegion not supported at this time")
+            throw ChannelError.operationUnsupported
         }
 
         switch channelData.type {
@@ -118,7 +127,7 @@ extension SSHMessage {
         case .stdErr:
             self = .channelExtendedData(.init(recipientChannel: recipientChannel, dataTypeCode: .stderr, data: bb))
         default:
-            preconditionFailure("Non-stderr extended data codes are not supported")
+            throw ChannelError.operationUnsupported
         }
     }
 }

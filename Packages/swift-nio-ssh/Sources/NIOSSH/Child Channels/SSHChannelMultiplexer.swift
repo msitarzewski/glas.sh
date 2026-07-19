@@ -193,7 +193,8 @@ extension SSHChannelMultiplexer {
             throw NIOSSHError.tcpShutdown
         }
 
-        // TODO: We need a better channel ID system. Maybe use indices into Arrays instead?
+        // Allocate sequential channel identifiers and wrap at OpenSSH's signed
+        // 32-bit upper bound below; the dictionary remains the channel lookup.
         let channelID = self.nextChannelID
         self.nextChannelID &+= 1
 

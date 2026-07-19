@@ -9,6 +9,46 @@ import SwiftUI
 import GlasSecretStore
 import os
 
+extension View {
+    @ViewBuilder
+    func terminalTextInputDefaults() -> some View {
+        #if canImport(UIKit)
+        self
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func terminalNumericInput() -> some View {
+        #if canImport(UIKit)
+        self.keyboardType(.numberPad)
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func terminalHoverHighlight() -> some View {
+        #if os(visionOS)
+        self.hoverEffect(.highlight)
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func terminalPlatformGlassBackground(cornerRadius: CGFloat) -> some View {
+        #if os(visionOS)
+        self.glassBackgroundEffect(in: .rect(cornerRadius: cornerRadius))
+        #else
+        self.background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        #endif
+    }
+}
+
 private let supportedAuthenticationMethods: [AuthenticationMethod] = [.password, .sshKey]
 
 // MARK: - Add Server View
@@ -60,14 +100,12 @@ struct AddServerView: View {
                     TextField("Display Name", text: $name)
                         .focused($focusedField, equals: .name)
                     TextField("Host", text: $host)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                        .terminalTextInputDefaults()
                         .focused($focusedField, equals: .host)
                     TextField("Port", text: $port)
                         .focused($focusedField, equals: .port)
                     TextField("Username", text: $username)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                        .terminalTextInputDefaults()
                         .focused($focusedField, equals: .username)
                 }
 

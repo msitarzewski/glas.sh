@@ -36,8 +36,14 @@ final class BenchmarkLinearThroughput: Benchmark {
 
         let clientHandler = NIOSSHHandler(role: self.clientRole, allocator: self.b2b.client.allocator, inboundChildChannelInitializer: nil)
 
-        try self.b2b.client.pipeline.addHandler(clientHandler).wait()
-        try self.b2b.server.pipeline.addHandler(NIOSSHHandler(role: self.serverRole, allocator: self.b2b.server.allocator, inboundChildChannelInitializer: nil)).wait()
+        try self.b2b.client.pipeline.syncOperations.addHandler(clientHandler)
+        try self.b2b.server.pipeline.syncOperations.addHandler(
+            NIOSSHHandler(
+                role: self.serverRole,
+                allocator: self.b2b.server.allocator,
+                inboundChildChannelInitializer: nil
+            )
+        )
         try self.b2b.interactInMemory()
 
         let clientChannelPromise = self.b2b.client.eventLoop.makePromise(of: Channel.self)

@@ -1,9 +1,9 @@
 # Active Context
 
 ## Current Focus
-- The `codex-completions` implementation and automated-QA checkpoint was approved on 2026-07-17. Functional hardening for the current visionOS candidate is implemented; the repository is now in release validation rather than feature-count expansion.
+- The `codex-completions` native macOS/visionOS parity candidate was approved on 2026-07-19. The implementation is ready for publication from `agent/macos-27-terminal`; distribution gates remain separate.
 - The current checkpoint is not an App Store go decision. Physical-device, matching-toolchain, conformance, cross-repository, and distribution gates remain open.
-- Working branch: `glass-system-redesign`. The worktree contains active user changes; do not overwrite or revert them.
+- Working branch: `agent/macos-27-terminal`. The approved worktree must be committed intact; do not overwrite or revert it.
 
 ## What's Next
 - **Close the remaining codex-completions release gates.**
@@ -16,7 +16,8 @@
   - Output-only recording default, protected/bounded storage, fail-closed deletion, redacted diagnostics, SFTP no-clobber transfer, and deterministic AI confirmation.
   - SharePlay and unused AI summaries removed, HTML Preview Debug-only, unsupported SSH Agent/inert settings absent, and forwarding backed by the shared manager.
 - **Current automated evidence.**
-  - 164/164 app tests pass on both visionOS 26.4 and visionOS 27.0 arm64 simulators with zero failures, skips, expected failures, or runtime warnings.
+  - 183/183 app tests pass on both visionOS 26.4 and visionOS 27.0 arm64 simulators; native macOS tests pass 20/20.
+  - NIOSSH passes 331/331; Citadel executes 44 tests with 39 passed and five expected environment-dependent skips.
   - GlasSecretStore passes 75/75 tests across 13 suites.
   - The generic Release app is arm64 with minimum visionOS 26.0 and SDK 27.0; simulator installation and smoke launch pass on both runtimes.
   - Independent post-fix audits, `git diff --check`, and the production stub scan pass. The sibling glassdb repair still needs its own current suite and cross-repository acceptance.

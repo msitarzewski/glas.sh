@@ -16,3 +16,11 @@
 {"timestamp":"2026-07-17T17:59:12-05:00","session_id":"codex-completions-release","event":"state_transition","from":"APPROVAL","to":"APPLY"}
 {"timestamp":"2026-07-17T17:59:13-05:00","session_id":"codex-completions-release","event":"state_transition","from":"APPLY","to":"DOCS"}
 {"timestamp":"2026-07-17T17:59:14-05:00","session_id":"codex-completions-release","event":"qa_evidence_final","app_tests_visionos_26_4":"164/164","app_tests_visionos_27_0":"164/164","secret_store_tests":"75/75","release_build":"passed","architecture":"arm64","minimum_os":"visionOS 26.0","actionable_production_credentials":0}
+{"timestamp":"2026-07-18T04:43:12Z","session_id":"codex-macos-27-terminal","mode":"deep","mb_version":"2024-10"}
+{"timestamp":"2026-07-18T04:43:13Z","session_id":"codex-macos-27-terminal","event":"state_transition","from":"PLAN","to":"BUILD","baseline":"7556cb70e0d67506729ecb88d47dcdd8791940f0","branch":"agent/macos-27-terminal"}
+{"timestamp":"2026-07-18T08:53:00Z","session_id":"codex-macos-27-terminal","event":"qa_checkpoint","mac_tests":"13/13","visionos_27_tests":"164/164","secret_store_tests":"68/68","mac_release":"arm64; minimum macOS 26.0","stub_scan":"clean","gitleaks":"0 findings","visual_approval":"pending"}
+{"timestamp":"2026-07-19T21:40:07Z","session_id":"codex-macos-27-terminal","event":"state_transition","from":"QA","to":"APPROVAL"}
+{"timestamp":"2026-07-19T21:40:08Z","session_id":"codex-macos-27-terminal","event":"approval_received","state":"APPROVAL","decision":"approved"}
+{"timestamp":"2026-07-19T21:40:09Z","session_id":"codex-macos-27-terminal","event":"state_transition","from":"APPROVAL","to":"APPLY"}
+{"timestamp":"2026-07-19T21:40:10Z","session_id":"codex-macos-27-terminal","event":"state_transition","from":"APPLY","to":"DOCS"}
+{"timestamp":"2026-07-19T21:40:11Z","session_id":"codex-macos-27-terminal","event":"qa_evidence_final","mac_tests":"20/20","app_tests_visionos_26_4":"183/183","app_tests_visionos_27_0":"183/183","nio_ssh_tests":"331/331","citadel_tests":"39 passed; 5 environment skips","secret_store_tests":"75/75","mac_release":"signed arm64 hardened runtime","stub_scan":"clean","gitleaks":"0 findings"}

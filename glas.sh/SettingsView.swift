@@ -7,6 +7,9 @@
 
 import SwiftUI
 import GlasSecretStore
+#if os(macOS)
+import UniformTypeIdentifiers
+#endif
 #if canImport(UIKit)
 import UIKit
 #elseif canImport(AppKit)
@@ -43,7 +46,7 @@ struct SettingsView: View {
                 }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .glassBackgroundEffect(in: .rect(cornerRadius: 28))
+        .terminalPlatformGlassBackground(cornerRadius: 28)
     }
 }
 
@@ -135,8 +138,7 @@ struct GeneralSettingsView: View {
 
             Section("Tailscale") {
                 TextField("Tailnet name", text: $settings.tailscaleTailnet)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
+                    .terminalTextInputDefaults()
                     .onChange(of: settings.tailscaleTailnet) { _, _ in
                         settings.saveSettings()
                     }
@@ -158,8 +160,7 @@ struct GeneralSettingsView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     TextField("OAuth Client ID", text: $tailscaleOAuthClientID)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                        .terminalTextInputDefaults()
                     SecureField("OAuth Client Secret", text: $tailscaleOAuthClientSecret)
                         .textContentType(.init(rawValue: ""))
                     Text("Create at admin console → Settings → OAuth clients")
@@ -561,6 +562,7 @@ struct AppearanceSettingsView: View {
         
         Form {
             Section("Glass") {
+                #if os(visionOS)
                 Picker("Frost", selection: $settings.glassFrost) {
                     Text("Light").tag("ultraThin")
                     Text("Medium").tag("thin")
@@ -570,6 +572,7 @@ struct AppearanceSettingsView: View {
                 .onChange(of: settings.glassFrost) { _, _ in
                     settings.saveSettings()
                 }
+                #endif
 
                 Slider(value: $settings.windowOpacity, in: 0.0...1.0) {
                     Text("Opacity")
@@ -593,14 +596,22 @@ struct AppearanceSettingsView: View {
                     settings.saveSettings()
                 }
 
+                #if os(visionOS)
                 Toggle("Interactive glass", isOn: $settings.interactiveGlass)
                     .onChange(of: settings.interactiveGlass) { _, _ in
                         settings.saveSettings()
                     }
+                #endif
 
+                #if os(visionOS)
                 Text("Opacity paints the theme color; Blur controls passthrough frosting independently. Set both to zero for a completely transparent terminal. Interactive glass changes how the selected frost responds to gaze without disabling either slider.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                #else
+                Text("Tint, opacity, and blur apply only to the terminal canvas. Set opacity and blur to zero for a completely transparent typing surface; window chrome keeps the system Liquid Glass appearance.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                #endif
 
                 GlassTintPicker(value: $settings.glassTint)
                     .onChange(of: settings.glassTint) { _, _ in
@@ -923,51 +934,396 @@ struct EditSnippetView: View {
 struct ThemeEditorView: View {
     @Environment(SettingsManager.self) private var settingsManager
     @Environment(\.dismiss) private var dismiss
-    
+
     @State private var theme: TerminalTheme
-    
+    @State private var themeLibraryDraft: TerminalThemeLibrary
+    @State private var selectedRecordID: UUID?
+    @State private var themeImportError: String?
+    @State private var themePendingDeletion: TerminalThemeRecord?
+
     init() {
         _theme = State(initialValue: TerminalTheme.default)
+        _themeLibraryDraft = State(initialValue: .initial())
+        _selectedRecordID = State(initialValue: nil)
     }
-    
+
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("Colors") {
-                    ColorPicker("Background", selection: colorBinding(for: \.background))
-                    ColorPicker("Foreground", selection: colorBinding(for: \.foreground))
-                    ColorPicker("Cursor", selection: colorBinding(for: \.cursor))
-                    ColorPicker("Selection", selection: colorBinding(for: \.selection))
-                }
-                
-                Section("ANSI Colors") {
-                    ColorPicker("Red", selection: colorBinding(for: \.red))
-                    ColorPicker("Green", selection: colorBinding(for: \.green))
-                    ColorPicker("Blue", selection: colorBinding(for: \.blue))
-                    ColorPicker("Yellow", selection: colorBinding(for: \.yellow))
-                    ColorPicker("Cyan", selection: colorBinding(for: \.cyan))
-                    ColorPicker("Magenta", selection: colorBinding(for: \.magenta))
-                }
-            }
-            .navigationTitle("Edit Theme")
-            .onAppear {
-                theme = settingsManager.currentTheme
-            }
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
+        NavigationSplitView {
+            VStack(spacing: 0) {
+                List {
+                    if let loadError = settingsManager.themeLibraryLoadError {
+                        Label(loadError, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                            .font(.caption)
+                    }
+                    ForEach(themeLibraryDraft.activeRecords) { record in
+                        Button {
+                            selectDraft(record.id)
+                        } label: {
+                            themeListRow(
+                                theme: record.theme,
+                                originDescription: originDescription(record.origin),
+                                isActive: record.id == themeLibraryDraft.selectedThemeID,
+                                isDraftSelected: record.id == selectedRecordID
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .listRowBackground(
+                            record.id == selectedRecordID
+                                ? Color.accentColor.opacity(0.14)
+                                : Color.clear
+                        )
                     }
                 }
-                
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        settingsManager.saveTheme(theme)
-                        dismiss()
+                .accessibilityLabel("Terminal themes")
+
+                Divider()
+
+                managementActions
+                    .padding(.horizontal)
+                    .padding(.vertical, 10)
+
+                GroupBox("iCloud Sync") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle("Sync themes", isOn: iCloudSyncBinding)
+                        Text(settingsManager.iCloudSyncStatusText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        #if os(visionOS)
+                        Text("Apple Terminal profiles imported on your Mac appear here after iCloud sync. Profile colors and fonts sync; Mac shell commands and window backgrounds do not.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        #endif
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding([.horizontal, .bottom])
+            }
+            .navigationTitle("Themes")
+        } detail: {
+            if selectedRecordID == nil {
+                ContentUnavailableView(
+                    "Select a Theme",
+                    systemImage: "paintpalette",
+                    description: Text("Choose a terminal theme to inspect or edit.")
+                )
+            } else {
+                Form {
+                    Section("Preview") {
+                        livePreview
+                    }
+
+                    Section("General") {
+                        TextField("Name", text: themeNameBinding)
+                            .disabled(selectedThemeIsBuiltIn)
+                        Picker("Canvas Material", selection: canvasAppearanceBinding) {
+                            ForEach(TerminalThemeAppearance.allCases, id: \.self) { appearance in
+                                Text(appearance.displayName).tag(appearance)
+                            }
+                        }
+                        Text("Window chrome remains native. Canvas material controls only the terminal's blur polarity so theme contrast stays stable across bright and dark surroundings.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ColorPicker(
+                            "Background",
+                            selection: colorBinding(for: \.background),
+                            supportsOpacity: false
+                        )
+                        ColorPicker(
+                            "Foreground",
+                            selection: colorBinding(for: \.foreground),
+                            supportsOpacity: false
+                        )
+                        ColorPicker(
+                            "Cursor",
+                            selection: colorBinding(for: \.cursor),
+                            supportsOpacity: false
+                        )
+                        ColorPicker("Selection", selection: colorBinding(for: \.selection))
+
+                        Picker("Font Family", selection: $theme.fontName) {
+                            if !["SF Mono", "Monaco", "Menlo", "Courier New"].contains(theme.fontName) {
+                                Text(theme.fontName).tag(theme.fontName)
+                            }
+                            Text("SF Mono").tag("SF Mono")
+                            Text("Monaco").tag("Monaco")
+                            Text("Menlo").tag("Menlo")
+                            Text("Courier New").tag("Courier New")
+                        }
+
+                        Slider(
+                            value: fontSizeBinding,
+                            in: Double(TerminalTheme.minimumFontSize)...Double(TerminalTheme.maximumFontSize),
+                            step: 1
+                        ) {
+                            Text("Font Size")
+                        } minimumValueLabel: {
+                            Text("10")
+                        } maximumValueLabel: {
+                            Text("24")
+                        }
+
+                        Button("Use Apple Clear Dark Colors", systemImage: "paintpalette") {
+                            theme.applyAppleClearDarkColors()
+                        }
+                    }
+
+                    Section("ANSI Colors") {
+                        ansiColorGrid
+                    }
+                }
+                .formStyle(.grouped)
+                .navigationTitle(theme.name)
+            }
+        }
+        .onAppear(perform: loadInitialSelection)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") {
+                    dismiss()
+                }
+            }
+
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    saveSelectedTheme()
+                }
+                .disabled(
+                    settingsManager.themeLibraryLoadError != nil
+                        || selectedRecordID == nil
+                        || !theme.isValidForPersistence
+                        || !themeLibraryDraft.activeRecords.allSatisfy({ $0.theme.isValidForPersistence })
+                )
+            }
+        }
+        .alert("Theme Import Failed", isPresented: themeImportErrorPresented) {
+            Button("OK", role: .cancel) { themeImportError = nil }
+        } message: {
+            Text(themeImportError ?? "The selected theme could not be imported.")
+        }
+        .confirmationDialog(
+            "Delete \(themePendingDeletion?.theme.name ?? "Theme")?",
+            isPresented: deleteConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Theme", role: .destructive) {
+                confirmDeleteSelectedTheme()
+            }
+            Button("Cancel", role: .cancel) {
+                themePendingDeletion = nil
+            }
+        } message: {
+            Text("This removes the custom theme from the library when you save your changes.")
+        }
+        #if os(macOS)
+        .frame(minWidth: 880, minHeight: 620)
+        #endif
+    }
+
+    private var managementActions: some View {
+        HStack(spacing: 12) {
+            Button("New", systemImage: "plus") {
+                duplicateSelectedTheme(asNewTheme: true)
+            }
+            .disabled(selectedRecordID == nil)
+
+            Button("Duplicate", systemImage: "plus.square.on.square") {
+                duplicateSelectedTheme(asNewTheme: false)
+            }
+            .disabled(selectedRecordID == nil)
+
+            Button("Delete", systemImage: "trash", role: .destructive) {
+                deleteSelectedTheme()
+            }
+            .disabled(selectedRecordID == nil || selectedThemeIsBuiltIn)
+
+            Button("Reset", systemImage: "arrow.counterclockwise") {
+                resetSelectedTheme()
+            }
+            .disabled(selectedRecordID == nil || !selectedThemeIsBuiltIn)
+
+            #if os(macOS)
+            Menu {
+                Button("From .terminal File…") {
+                    importThemeFromDisk()
+                }
+                if !appleTerminalBuiltInProfiles.isEmpty {
+                    Menu("Apple Built-in Profiles") {
+                        ForEach(appleTerminalBuiltInProfiles, id: \.path) { url in
+                            Button(url.deletingPathExtension().lastPathComponent) {
+                                importTheme(at: url)
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Label("Import", systemImage: "square.and.arrow.down")
+            }
+            #endif
+        }
+        #if os(macOS)
+        .labelStyle(.iconOnly)
+        .controlSize(.small)
+        .help("Create, duplicate, delete, reset, or import terminal themes")
+        #else
+        .frame(minHeight: 60)
+        #endif
+    }
+
+    private func themeListRow(
+        theme: TerminalTheme,
+        originDescription: String,
+        isActive: Bool,
+        isDraftSelected: Bool
+    ) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
+                    Text(theme.name)
+                        .lineLimit(1)
+                    if isActive {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.tint)
+                            .accessibilityLabel("Active")
+                    }
+                }
+                Text(originDescription)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 4)
+
+            HStack(spacing: 2) {
+                ForEach(Array(theme.ansiColors.prefix(4).enumerated()), id: \.offset) { _, color in
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(color.color)
+                        .frame(width: 8, height: 22)
+                }
+            }
+            .accessibilityHidden(true)
+        }
+        .contentShape(Rectangle())
+        .accessibilityAddTraits(isDraftSelected ? .isSelected : [])
+        .accessibilityValue(isDraftSelected ? "Selected for editing" : originDescription)
+        #if os(visionOS)
+        .frame(minHeight: 60)
+        #else
+        .frame(minHeight: 34)
+        #endif
+    }
+
+    private var livePreview: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text("Aa 01")
+                    .font(.custom(theme.fontName, size: max(10, theme.fontSize)))
+                    .foregroundStyle(theme.foreground.color)
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(theme.cursor.color)
+                    .frame(width: 8, height: 20)
+            }
+
+            HStack(spacing: 3) {
+                ForEach(Array(theme.ansiColors.enumerated()), id: \.offset) { _, color in
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(color.color)
+                        .frame(maxWidth: .infinity, minHeight: 14)
                 }
             }
         }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            livePreviewBackground
+                .clipShape(.rect(cornerRadius: 10))
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Live preview of \(theme.name)")
+    }
+
+    @ViewBuilder
+    private var livePreviewBackground: some View {
+        #if os(macOS)
+        TerminalCanvasBackground(
+            color: theme.canvasBackgroundColor,
+            tint: TerminalGlassTint.color(for: settingsManager.glassTint),
+            opacity: settingsManager.windowOpacity,
+            blur: settingsManager.blurBackground,
+            appearance: theme.resolvedAppearance
+        )
+        #else
+        ZStack {
+            Rectangle()
+                .fill(theme.canvasBackgroundColor.color)
+                .opacity(settingsManager.windowOpacity)
+            if let tint = TerminalGlassTint.color(for: settingsManager.glassTint) {
+                Rectangle()
+                    .fill(tint.opacity(0.12 * settingsManager.windowOpacity))
+            }
+        }
+        .modifier(GlassWindowBackground(
+            interactive: false,
+            material: .regularMaterial,
+            blurAmount: settingsManager.blurBackground,
+            appearance: theme.resolvedAppearance
+        ))
+        #endif
+    }
+
+    private var ansiColorGrid: some View {
+        Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
+            GridRow {
+                Text("Color")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Normal")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Bright")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            ansiColorRow("Black", normal: \.black, bright: \.brightBlack)
+            ansiColorRow("Red", normal: \.red, bright: \.brightRed)
+            ansiColorRow("Green", normal: \.green, bright: \.brightGreen)
+            ansiColorRow("Yellow", normal: \.yellow, bright: \.brightYellow)
+            ansiColorRow("Blue", normal: \.blue, bright: \.brightBlue)
+            ansiColorRow("Magenta", normal: \.magenta, bright: \.brightMagenta)
+            ansiColorRow("Cyan", normal: \.cyan, bright: \.brightCyan)
+            ansiColorRow("White", normal: \.white, bright: \.brightWhite)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func ansiColorRow(
+        _ name: String,
+        normal: WritableKeyPath<TerminalTheme, CodableColor>,
+        bright: WritableKeyPath<TerminalTheme, CodableColor>
+    ) -> some View {
+        GridRow {
+            Text(name)
+            ansiColorPicker("\(name), normal", keyPath: normal)
+            ansiColorPicker("\(name), bright", keyPath: bright)
+        }
+    }
+
+    @ViewBuilder
+    private func ansiColorPicker(
+        _ label: String,
+        keyPath: WritableKeyPath<TerminalTheme, CodableColor>
+    ) -> some View {
+        ColorPicker(
+            label,
+            selection: colorBinding(for: keyPath),
+            supportsOpacity: false
+        )
+            .labelsHidden()
+            .accessibilityLabel(label)
+            #if os(visionOS)
+            .frame(minWidth: 60, minHeight: 60)
+            #endif
     }
 
     private func colorBinding(for keyPath: WritableKeyPath<TerminalTheme, CodableColor>) -> Binding<Color> {
@@ -978,6 +1334,213 @@ struct ThemeEditorView: View {
             }
         )
     }
+
+    private var fontSizeBinding: Binding<Double> {
+        Binding(
+            get: { Double(theme.fontSize) },
+            set: { theme.fontSize = CGFloat($0) }
+        )
+    }
+
+    private var themeNameBinding: Binding<String> {
+        Binding(
+            get: { theme.name },
+            set: { theme.name = String($0.prefix(TerminalTheme.maximumNameLength)) }
+        )
+    }
+
+    private var iCloudSyncBinding: Binding<Bool> {
+        Binding(
+            get: { settingsManager.iCloudSyncEnabled },
+            set: { settingsManager.setICloudSyncEnabled($0) }
+        )
+    }
+
+    private var canvasAppearanceBinding: Binding<TerminalThemeAppearance> {
+        Binding(
+            get: { theme.preferredAppearance ?? .automatic },
+            set: { theme.preferredAppearance = $0 }
+        )
+    }
+
+    private var selectedThemeIsBuiltIn: Bool {
+        guard let selectedRecordID else { return false }
+        return themeLibraryDraft.activeRecords.first {
+            $0.id == selectedRecordID
+        }?.isBuiltIn == true
+    }
+
+    private var themeImportErrorPresented: Binding<Bool> {
+        Binding(
+            get: { themeImportError != nil },
+            set: { if !$0 { themeImportError = nil } }
+        )
+    }
+
+    private func loadInitialSelection() {
+        themeLibraryDraft = settingsManager.themeLibrary
+        let selectedID = themeLibraryDraft.selectedThemeID
+        let fallbackID = themeLibraryDraft.activeRecords.first?.id
+        selectDraft(
+            themeLibraryDraft.activeRecords.contains(where: { $0.id == selectedID })
+                ? selectedID
+                : fallbackID
+        )
+    }
+
+    private func selectDraft(_ id: UUID?) {
+        stageCurrentTheme()
+        guard let id,
+              let record = themeLibraryDraft.activeRecords.first(where: { $0.id == id }) else {
+            selectedRecordID = nil
+            return
+        }
+        selectedRecordID = id
+        theme = record.theme
+        _ = themeLibraryDraft.select(id)
+    }
+
+    private func saveSelectedTheme() {
+        theme.name = theme.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        stageCurrentTheme()
+        guard settingsManager.replaceThemeLibrary(themeLibraryDraft) else {
+            themeImportError = "The theme library contains an invalid theme and was not saved."
+            return
+        }
+        dismiss()
+    }
+
+    private func duplicateSelectedTheme(asNewTheme: Bool) {
+        stageCurrentTheme()
+        guard themeLibraryDraft.activeRecords.count < TerminalThemeLibrary.maximumThemeCount,
+              themeLibraryDraft.records.count < TerminalThemeLibrary.maximumRecordCount,
+              let selectedRecordID,
+              let source = themeLibraryDraft.activeRecords.first(where: { $0.id == selectedRecordID }) else {
+            return
+        }
+        let copy = source.theme.reidentified(
+            name: asNewTheme ? "New Theme" : "\(source.theme.name) Copy"
+        )
+        themeLibraryDraft.upsert(copy, origin: .custom)
+        _ = themeLibraryDraft.select(copy.id)
+        selectDraft(copy.id)
+    }
+
+    private func deleteSelectedTheme() {
+        guard let selectedRecordID,
+              !selectedThemeIsBuiltIn,
+              let record = themeLibraryDraft.activeRecords.first(where: { $0.id == selectedRecordID }) else {
+            return
+        }
+        themePendingDeletion = record
+    }
+
+    private func confirmDeleteSelectedTheme() {
+        guard let record = themePendingDeletion else { return }
+        themePendingDeletion = nil
+        _ = themeLibraryDraft.delete(record.id)
+        selectDraft(themeLibraryDraft.selectedThemeID)
+    }
+
+    private func resetSelectedTheme() {
+        guard let selectedRecordID, selectedThemeIsBuiltIn else { return }
+        let reset = TerminalTheme.default.reidentified(id: selectedRecordID, name: theme.name)
+        themeLibraryDraft.upsert(reset, origin: .builtIn)
+        selectDraft(selectedRecordID)
+    }
+
+    private func stageCurrentTheme() {
+        guard let selectedRecordID,
+              theme.id == selectedRecordID,
+              let record = themeLibraryDraft.activeRecords.first(where: { $0.id == selectedRecordID }) else {
+            return
+        }
+        themeLibraryDraft.upsert(theme, origin: record.origin)
+    }
+
+    private var deleteConfirmationPresented: Binding<Bool> {
+        Binding(
+            get: { themePendingDeletion != nil },
+            set: { if !$0 { themePendingDeletion = nil } }
+        )
+    }
+
+    private func originDescription(_ origin: TerminalThemeOrigin) -> String {
+        switch origin {
+        case .builtIn: "Built-in"
+        case .custom: "Custom"
+        case .appleTerminal: "Apple Terminal"
+        }
+    }
+
+    #if os(macOS)
+    private var appleTerminalBuiltInProfiles: [URL] {
+        let directory = URL(
+            fileURLWithPath: "/System/Applications/Utilities/Terminal.app/Contents/Resources/Initial Settings",
+            isDirectory: true
+        )
+        return (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ))?
+        .filter { $0.pathExtension.lowercased() == "terminal" }
+        .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        ?? []
+    }
+
+    private func importThemeFromDisk() {
+        let panel = NSOpenPanel()
+        panel.title = "Import Apple Terminal Profile"
+        panel.prompt = "Import"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [
+            UTType(filenameExtension: "terminal") ?? .propertyList
+        ]
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            let hasScopedAccess = url.startAccessingSecurityScopedResource()
+            defer {
+                if hasScopedAccess { url.stopAccessingSecurityScopedResource() }
+            }
+            importTheme(at: url)
+        }
+    }
+
+    private func importTheme(at url: URL) {
+        do {
+            stageCurrentTheme()
+            let importedTheme = try TerminalThemeImportService.importTheme(
+                from: url,
+                fallback: theme
+            )
+            guard themeLibraryDraft.activeRecords.count < TerminalThemeLibrary.maximumThemeCount,
+                  themeLibraryDraft.records.count < TerminalThemeLibrary.maximumRecordCount else {
+                throw ThemeImportError.libraryFull
+            }
+            let imported = importedTheme.reidentified()
+            themeLibraryDraft.upsert(imported, origin: .appleTerminal)
+            _ = themeLibraryDraft.select(imported.id)
+            let importedID = imported.id
+            selectDraft(importedID)
+        } catch {
+            themeImportError = error.localizedDescription
+        }
+    }
+
+    private enum ThemeImportError: LocalizedError {
+        case libraryFull
+
+        var errorDescription: String? {
+            switch self {
+            case .libraryFull:
+                "The theme library is full. Delete a custom theme before importing another."
+            }
+        }
+    }
+    #endif
 }
 
 struct AddSSHKeyView: View {

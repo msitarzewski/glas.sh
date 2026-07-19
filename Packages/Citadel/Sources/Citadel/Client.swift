@@ -2,6 +2,7 @@ import NIO
 import Crypto
 import Logging
 import NIOSSH
+import NIOConcurrencyHelpers
 
 extension SSHAlgorithms.Modification<NIOSSHTransportProtection.Type> {
     func apply(to configuration: inout [any NIOSSHTransportProtection.Type]) {
@@ -112,15 +113,24 @@ public struct SSHAlgorithms: @unchecked Sendable {
 }
 
 /// Represents an SSH connection.
-public final class SSHClient {
-    private(set) var session: SSHClientSession
-    private var userInitiatedClose = false
-    let authenticationMethod: () -> SSHAuthenticationMethod
+public final class SSHClient: Sendable {
+    private struct State: Sendable {
+        var session: SSHClientSession
+        var userInitiatedClose = false
+        var reconnect = _SSHReconnectMode.never
+        var onDisconnect: (@Sendable () -> Void)?
+        var reconnectTask: Task<Void, Never>?
+    }
+
+    private let state: NIOLockedValueBox<State>
+    private(set) var session: SSHClientSession {
+        get { state.withLockedValue(\.session) }
+        set { state.withLockedValue { $0.session = newValue } }
+    }
+    let authenticationMethod: @Sendable () -> SSHAuthenticationMethod
     let hostKeyValidator: SSHHostKeyValidator
-    internal var connectionSettings = SSHConnectionPoolSettings()
     private let algorithms: SSHAlgorithms
     private let protocolOptions: Set<SSHProtocolOption>
-    private var onDisconnect: (@Sendable () -> ())?
     public let logger = Logger(label: "nl.orlandos.citadel.client")
     public var isConnected: Bool {
         session.channel.isActive
@@ -133,12 +143,12 @@ public final class SSHClient {
     
     init(
         session: SSHClientSession,
-        authenticationMethod: @escaping @autoclosure () -> SSHAuthenticationMethod,
+        authenticationMethod: @escaping @Sendable @autoclosure () -> SSHAuthenticationMethod,
         hostKeyValidator: SSHHostKeyValidator,
         algorithms: SSHAlgorithms = SSHAlgorithms(),
         protocolOptions: Set<SSHProtocolOption>
     ) {
-        self.session = session
+        self.state = NIOLockedValueBox(State(session: session))
         self.authenticationMethod = authenticationMethod
         self.hostKeyValidator = hostKeyValidator
         self.algorithms = algorithms
@@ -148,7 +158,7 @@ public final class SSHClient {
     }
     
     public func onDisconnect(perform onDisconnect: @escaping @Sendable () -> ()) {
-        self.onDisconnect = onDisconnect
+        state.withLockedValue { $0.onDisconnect = onDisconnect }
     }
 
     /// Connects to an SSH server.
@@ -182,11 +192,10 @@ public final class SSHClient {
             settings: settings
         ).get()
         
-        let sshHandler = try await channel.pipeline.handler(type: NIOSSHHandler.self).get()
-        let handshakeHandler = try await channel.pipeline.handler(type: ClientHandshakeHandler.self).get()
-        let session = try await handshakeHandler.authenticated.map {
-            SSHClientSession(channel: channel, inboundChannelHandler: inboundChannelHandler, sshHandler: sshHandler)
-        }.get()
+        let session = try await SSHClientSession.established(
+            on: channel,
+            inboundChannelHandler: inboundChannelHandler
+        )
 
         return SSHClient(
             session: session,
@@ -214,11 +223,10 @@ public final class SSHClient {
             )
         }
         
-        let sshHandler = try await channel.pipeline.handler(type: NIOSSHHandler.self).get()
-        let handshakeHandler = try await channel.pipeline.handler(type: ClientHandshakeHandler.self).get()
-        let session = try await handshakeHandler.authenticated.map {
-            SSHClientSession(channel: channel, inboundChannelHandler: inboundChannelHandler, sshHandler: sshHandler)
-        }.get()
+        let session = try await SSHClientSession.established(
+            on: channel,
+            inboundChannelHandler: inboundChannelHandler
+        )
 
         return SSHClient(
             session: session,
@@ -239,7 +247,7 @@ public final class SSHClient {
     /// - Returns: An SSH client.
     public static func connect(
         on channel: Channel,
-        authenticationMethod: @escaping @autoclosure () -> SSHAuthenticationMethod,
+        authenticationMethod: @escaping @Sendable @autoclosure () -> SSHAuthenticationMethod,
         hostKeyValidator: SSHHostKeyValidator,
         algorithms: SSHAlgorithms = SSHAlgorithms(),
         protocolOptions: Set<SSHProtocolOption> = []
@@ -253,8 +261,11 @@ public final class SSHClient {
             protocolOptions: protocolOptions
         ).get()
         
-        let sshHandler = try await channel.pipeline.handler(type: NIOSSHHandler.self).get()
-        let session = SSHClientSession(channel: channel, inboundChannelHandler: inboundChannelHandler, sshHandler: sshHandler)
+        let session = try await SSHClientSession.established(
+            on: channel,
+            inboundChannelHandler: inboundChannelHandler,
+            awaitingHandshake: false
+        )
         
         return SSHClient(
             session: session,
@@ -287,7 +298,7 @@ public final class SSHClient {
         algorithms: SSHAlgorithms = SSHAlgorithms(),
         protocolOptions: Set<SSHProtocolOption> = [],
         group: MultiThreadedEventLoopGroup = .singleton,
-        channelHandlers: [ChannelHandler] = [],
+        channelHandlers: [ChannelHandler & Sendable] = [],
         connectTimeout:TimeAmount = .seconds(30)
     ) async throws -> SSHClient {
         let session = try await SSHClientSession.connect(
@@ -312,11 +323,11 @@ public final class SSHClient {
         
         switch reconnect.mode {
         case .always:
-            client.connectionSettings.reconnect = .always(to: host, port: port)
+            client.state.withLockedValue { $0.reconnect = .always(to: host, port: port) }
         case .once:
-            client.connectionSettings.reconnect = .once(to: host, port: port)
+            client.state.withLockedValue { $0.reconnect = .once(to: host, port: port) }
         case .never:
-            client.connectionSettings.reconnect = .never
+            client.state.withLockedValue { $0.reconnect = .never }
         }
         
         return client
@@ -329,34 +340,60 @@ public final class SSHClient {
     }
     
     private func onClose() {
-        Task {
-            self.onDisconnect?()
-            
-            switch connectionSettings.reconnect.mode {
+        let reconnectTask = Task { [weak self] in
+            guard let self else { return }
+            let state = self.state.withLockedValue {
+                ($0.onDisconnect, $0.reconnect.mode, $0.userInitiatedClose)
+            }
+            state.0?()
+            guard !state.2, !Task.isCancelled else { return }
+
+            switch state.1 {
             case .never:
                 return
             case .once(let host, let port):
                 _ = try? await self.recreateSession(host: host, port: port)
             case .always(let host, let port):
-                func tryAgain() async throws {
+                var retryDelayMilliseconds: Int64 = 250
+                while !Task.isCancelled {
                     do {
                         try await self.recreateSession(host: host, port: port)
+                        return
                     } catch {
-                        return try await tryAgain()
+                        guard !Task.isCancelled else { return }
+                        let jitter = Int64.random(
+                            in: 0...max(1, retryDelayMilliseconds / 4)
+                        )
+                        do {
+                            try await Task.sleep(
+                                for: .milliseconds(retryDelayMilliseconds + jitter)
+                            )
+                        } catch {
+                            return
+                        }
+                        retryDelayMilliseconds = min(
+                            retryDelayMilliseconds * 2,
+                            30_000
+                        )
                     }
                 }
-                
-                _ = try? await tryAgain()
             }
         }
+        let previousTask = self.state.withLockedValue { state in
+            let previousTask = state.reconnectTask
+            state.reconnectTask = reconnectTask
+            return previousTask
+        }
+        previousTask?.cancel()
     }
     
     private func recreateSession(host: String, port: Int) async throws {
-        if userInitiatedClose {
+        try Task.checkCancellation()
+        if state.withLockedValue(\.userInitiatedClose) {
             return
         }
-        
-        self.session = try await SSHClientSession.connect(
+
+        let newSession = try await SSHClientSession.connect(
             host: host,
             port: port,
             authenticationMethod: self.authenticationMethod(),
@@ -364,20 +401,35 @@ public final class SSHClient {
             protocolOptions: protocolOptions,
             group: session.channel.eventLoop
         )
-        
-        onNewSession(session)
+
+        guard !Task.isCancelled,
+              !state.withLockedValue(\.userInitiatedClose) else {
+            try? await newSession.channel.close()
+            try Task.checkCancellation()
+            return
+        }
+
+        self.session = newSession
+        onNewSession(newSession)
     }
     
     /// Sends a keepalive@openssh.com global request to keep the connection alive.
     public func sendKeepAlive() async throws {
+        let session = self.session
         guard session.channel.isActive else { return }
-        try await session.channel.eventLoop.submit {
-            self.session.sshHandler.value.sendKeepAlive()
+        try await session.channel.eventLoop.submit { [sshHandler = session.sshHandler] in
+            sshHandler.value.sendKeepAlive()
         }.get()
     }
 
     public func close() async throws {
-        self.userInitiatedClose = true
-        try await self.session.channel.close()
+        let (session, reconnectTask) = state.withLockedValue { state in
+            state.userInitiatedClose = true
+            let reconnectTask = state.reconnectTask
+            state.reconnectTask = nil
+            return (state.session, reconnectTask)
+        }
+        reconnectTask?.cancel()
+        try await session.channel.close()
     }
 }

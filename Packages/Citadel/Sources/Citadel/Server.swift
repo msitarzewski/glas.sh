@@ -3,7 +3,7 @@ import Logging
 @preconcurrency import NIOSSH
 import NIOConcurrencyHelpers
 
-final class CloseErrorHandler: ChannelInboundHandler {
+final class CloseErrorHandler: ChannelInboundHandler, Sendable {
     typealias InboundIn = Any
     let logger: Logger
     
@@ -17,32 +17,38 @@ final class CloseErrorHandler: ChannelInboundHandler {
     }
 }
 
-final class SubsystemHandler: ChannelDuplexHandler {
+final class SubsystemHandler: ChannelDuplexHandler, Sendable {
     typealias InboundIn = SSHChannelData
     typealias InboundOut = SSHChannelData
     typealias OutboundIn = SSHChannelData
     typealias OutboundOut = SSHChannelData
     
+    private struct State {
+        var isConfigured = false
+        var pendingReads = [SSHChannelData]()
+    }
+
     let shell: ShellDelegate?
     let sftp: SFTPDelegate?
     let eventLoop: EventLoop
-    var configured: EventLoopPromise<Void>
+    private let state: NIOLoopBoundBox<State>
     
     init(sftp: SFTPDelegate?, shell: ShellDelegate?, eventLoop: EventLoop) {
         self.sftp = sftp
         self.shell = shell
         self.eventLoop = eventLoop
-        self.configured = eventLoop.makePromise()
+        self.state = NIOLoopBoundBox(State(), eventLoop: eventLoop)
     }
     
     func handlerAdded(context: ChannelHandlerContext) {
-        context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { error in
-            context.fireErrorCaught(error)
+        let channel = context.channel
+        channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { error in
+            channel.pipeline.fireErrorCaught(error)
         }
     }
     
     func handlerRemoved(context: ChannelHandlerContext) {
-        self.configured.succeed(())
+        configurationSucceeded(channel: context.channel)
     }
     
     func channelInactive(context: ChannelHandlerContext) {
@@ -50,56 +56,67 @@ final class SubsystemHandler: ChannelDuplexHandler {
     }
     
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        let channel = context.channel
         switch event {
         case let event as SSHChannelRequestEvent.ExecRequest:
             context.fireUserInboundEventTriggered(event)
         case is SSHChannelRequestEvent.ShellRequest:
-            guard let shell = shell, let parent = context.channel.parent else {
-                _ = context.channel.triggerUserOutboundEvent(ChannelFailureEvent()).flatMap {
-                    self.configured.succeed(())
-                    return context.channel.close()
+            guard let shell = shell, let parent = channel.parent else {
+                _ = channel.triggerUserOutboundEvent(ChannelFailureEvent()).flatMap {
+                    self.configurationSucceeded(channel: channel)
+                    return channel.close()
                 }
                 return
             }
-            
-            parent.pipeline.handler(type: NIOSSHHandler.self).flatMap { handler in
-                ShellServerSubsystem.setupChannelHanders(
-                    channel: context.channel,
+
+            let setup: EventLoopFuture<Void>
+            do {
+                let handler = try parent.pipeline.syncOperations.handler(type: NIOSSHHandler.self)
+                setup = ShellServerSubsystem.setupChannelHanders(
+                    channel: channel,
                     shell: shell,
                     logger: .init(label: "nl.orlandos.citadel.sftp-server"),
                     username: handler.username
                 )
-            }.flatMap { () -> EventLoopFuture<Void> in
-                let promise = context.eventLoop.makePromise(of: Void.self)
-                context.channel.triggerUserOutboundEvent(ChannelSuccessEvent(), promise: promise)
-                self.configured.succeed(())
+            } catch {
+                setup = channel.eventLoop.makeFailedFuture(error)
+            }
+            setup.flatMap { () -> EventLoopFuture<Void> in
+                let promise = channel.eventLoop.makePromise(of: Void.self)
+                channel.triggerUserOutboundEvent(ChannelSuccessEvent(), promise: promise)
+                self.configurationSucceeded(channel: channel)
                 return promise.futureResult
             }.whenFailure { _ in
-                context.channel.triggerUserOutboundEvent(ChannelFailureEvent(), promise: nil)
+                channel.triggerUserOutboundEvent(ChannelFailureEvent(), promise: nil)
             }
         case let event as SSHChannelRequestEvent.SubsystemRequest:
             switch event.subsystem {
             case "sftp":
-                guard let sftp = sftp, let parent = context.channel.parent else {
-                    context.channel.close(promise: nil)
-                    self.configured.succeed(())
+                guard let sftp = sftp, let parent = channel.parent else {
+                    channel.close(promise: nil)
+                    configurationSucceeded(channel: channel)
                     return
                 }
-                
-                parent.pipeline.handler(type: NIOSSHHandler.self).flatMap { handler in
-                    SFTPServerSubsystem.setupChannelHanders(
-                        channel: context.channel,
+
+                let setup: EventLoopFuture<Void>
+                do {
+                    let handler = try parent.pipeline.syncOperations.handler(type: NIOSSHHandler.self)
+                    setup = SFTPServerSubsystem.setupChannelHanders(
+                        channel: channel,
                         sftp: sftp,
                         logger: .init(label: "nl.orlandos.citadel.sftp-server"),
                         username: handler.username
                     )
-                }.flatMap { () -> EventLoopFuture<Void> in
-                    let promise = context.eventLoop.makePromise(of: Void.self)
-                    context.channel.triggerUserOutboundEvent(ChannelSuccessEvent(), promise: promise)
-                    self.configured.succeed(())
+                } catch {
+                    setup = channel.eventLoop.makeFailedFuture(error)
+                }
+                setup.flatMap { () -> EventLoopFuture<Void> in
+                    let promise = channel.eventLoop.makePromise(of: Void.self)
+                    channel.triggerUserOutboundEvent(ChannelSuccessEvent(), promise: promise)
+                    self.configurationSucceeded(channel: channel)
                     return promise.futureResult
                 }.whenFailure { _ in
-                    context.channel.triggerUserOutboundEvent(ChannelFailureEvent(), promise: nil)
+                    channel.triggerUserOutboundEvent(ChannelFailureEvent(), promise: nil)
                 }
             default:
                 context.fireUserInboundEventTriggered(event)
@@ -110,17 +127,26 @@ final class SubsystemHandler: ChannelDuplexHandler {
     }
     
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        configured.futureResult.whenSuccess {
-            context.fireChannelRead(data)
+        let channelData = unwrapInboundIn(data)
+        if state.value.isConfigured {
+            context.fireChannelRead(wrapInboundOut(channelData))
+        } else {
+            state.value.pendingReads.append(channelData)
+        }
+    }
+
+    private func configurationSucceeded(channel: Channel) {
+        guard !state.value.isConfigured else { return }
+        state.value.isConfigured = true
+        let pendingReads = state.value.pendingReads
+        state.value.pendingReads.removeAll(keepingCapacity: false)
+        for data in pendingReads {
+            channel.pipeline.fireChannelRead(data)
         }
     }
     
     func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
         context.write(data, promise: promise)
-    }
-
-    deinit {
-        configured.fail(CitadelError.channelCreationFailed)
     }
 }
 
@@ -165,18 +191,26 @@ final class CitadelServerDelegate: Sendable, GlobalRequestDelegate {
             
             handlers.append(ExecHandler(delegate: exec, username: username))
             
-            return channel.pipeline.addHandlers(handlers)
+            do {
+                try channel.pipeline.syncOperations.addHandlers(handlers)
+                return channel.eventLoop.makeSucceededVoidFuture()
+            } catch {
+                return channel.eventLoop.makeFailedFuture(error)
+            }
         case .directTCPIP(let request):
             guard let delegate = directTCPIP else {
                 return channel.eventLoop.makeFailedFuture(CitadelError.unsupported)
             }
 
-            return channel.pipeline.addHandler(DataToBufferCodec()).flatMap {
+            do {
+                try channel.pipeline.syncOperations.addHandler(DataToBufferCodec())
                 return delegate.initializeDirectTCPIPChannel(
                     channel,
                     request: request,
                     context: SSHContext(username: username)
                 )
+            } catch {
+                return channel.eventLoop.makeFailedFuture(error)
             }
         case .forwardedTCPIP:
             return channel.eventLoop.makeFailedFuture(CitadelError.unsupported)
@@ -237,8 +271,7 @@ final class CitadelServerDelegate: Sendable, GlobalRequestDelegate {
 /// An SSH Server implementation.
 /// This class is used to start an SSH server on a specified host and port.
 /// The server can be closed using the `close()` method.
-/// - Note: This class is not thread safe.
-public final class SSHServer {
+public final class SSHServer: Sendable {
     let channel: Channel
     let delegate: CitadelServerDelegate
     let logger: Logger
@@ -297,7 +330,7 @@ public final class SSHServer {
         algorithms: SSHAlgorithms = SSHAlgorithms(),
         protocolOptions: Set<SSHProtocolOption> = [],
         logger: Logger = Logger(label: "nl.orlandos.citadel.server"),
-        authenticationDelegate: NIOSSHServerUserAuthenticationDelegate,
+        authenticationDelegate: NIOSSHServerUserAuthenticationDelegate & Sendable,
         group: MultiThreadedEventLoopGroup = .init(numberOfThreads: 1)
     ) async throws -> SSHServer {
         let delegate = CitadelServerDelegate()
@@ -320,8 +353,9 @@ public final class SSHServer {
                     option.apply(to: &server)
                 }
                 
-                return channel.pipeline.addHandlers([
-                    NIOSSHHandler(
+                do {
+                    try channel.pipeline.syncOperations.addHandlers([
+                        NIOSSHHandler(
                         role: .server(server),
                         allocator: channel.allocator,
                         inboundChildChannelInitializer: { childChannel, channelType in
@@ -329,9 +363,13 @@ public final class SSHServer {
                                 delegate.initializeSshChildChannel(childChannel, channelType, username: handler.username)
                             }
                         }
-                    ),
-                    CloseErrorHandler(logger: logger)
-                ])
+                        ),
+                        CloseErrorHandler(logger: logger)
+                    ])
+                    return channel.eventLoop.makeSucceededVoidFuture()
+                } catch {
+                    return channel.eventLoop.makeFailedFuture(error)
+                }
             }
             .serverChannelOption(ChannelOptions.socket(SocketOptionLevel(SOL_SOCKET), SO_REUSEADDR), value: 1)
             .serverChannelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), TCP_NODELAY), value: 1)

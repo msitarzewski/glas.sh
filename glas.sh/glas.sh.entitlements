@@ -10,5 +10,7 @@
 	<array>
 		<string>group.sh.glas.shared</string>
 	</array>
+	<key>com.apple.developer.ubiquity-kvstore-identifier</key>
+	<string>$(TeamIdentifierPrefix)sh.glas.app</string>
 </dict>
 </plist>

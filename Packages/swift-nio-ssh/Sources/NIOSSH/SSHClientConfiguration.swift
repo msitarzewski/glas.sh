@@ -41,3 +41,8 @@ public struct SSHClientConfiguration {
         self.globalRequestDelegate = globalRequestDelegate ?? DefaultGlobalRequestDelegate()
     }
 }
+
+// The delegates are intentionally not required to be Sendable, so neither is
+// the configuration that stores them.
+@available(*, unavailable)
+extension SSHClientConfiguration: Sendable {}

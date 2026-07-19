@@ -15,12 +15,14 @@
 import NIOCore
 
 struct UserAuthenticationStateMachine {
+    static let maximumServerAuthenticationAttempts = 6
+
     private var state: State
     private var delegate: UserAuthDelegate
     private let loop: EventLoop
     private var sessionID: ByteBuffer
+    private var receivedAuthenticationRequestCount = 0
 
-    // TODO: The server SHOULD limit the number of authentication attempts the client may make.
     init(role: SSHConnectionRole, loop: EventLoop, sessionID: ByteBuffer) {
         self.state = .idle
         self.delegate = UserAuthDelegate(role: role)
@@ -73,7 +75,7 @@ extension UserAuthenticationStateMachine {
             return nil
 
         case (.server, .authenticationFailed):
-            // TODO(cory): We should be limiting the maximum number of authentication attempts.
+            // This state is client-only; servers reject excess attempts by throwing.
             preconditionFailure("Servers cannot enter authentication failed")
 
         case (.client, _):
@@ -118,10 +120,12 @@ extension UserAuthenticationStateMachine {
 
         switch (self.delegate, self.state) {
         case (.server(let delegate), .awaitingNextRequest):
+            try self.recordServerAuthenticationAttempt()
             self.state = .awaitingResponses(1)
             return self.nextAuthResponse(request: message, delegate: delegate)
 
         case (.server(let delegate), .awaitingResponses(let pending)):
+            try self.recordServerAuthenticationAttempt()
             self.state = .awaitingResponses(pending + 1)
             return self.nextAuthResponse(request: message, delegate: delegate)
 
@@ -133,7 +137,7 @@ extension UserAuthenticationStateMachine {
             return nil
 
         case (.server, .authenticationFailed):
-            // TODO(cory): We should be limiting the maximum number of authentication attempts.
+            // This state is client-only; servers reject excess attempts by throwing.
             preconditionFailure("Servers cannot enter authentication failed")
 
         case (.client, _):
@@ -247,7 +251,7 @@ extension UserAuthenticationStateMachine {
              (.client, .awaitingServiceAcceptance):
             preconditionFailure("Sent an auth request without asking us first")
         case (.client, .awaitingResponses):
-            // TODO(cory): We could probably support parallel auth attempts if we wanted to.
+            // Parallel client authentication attempts are deliberately unsupported.
             preconditionFailure("Attempted to send a user auth request while we were waiting for a response to the last one.")
         case (.client, .authenticationSucceeded):
             preconditionFailure("Attempted to send a user auth request after auth succeeded")
@@ -349,7 +353,7 @@ extension UserAuthenticationStateMachine {
              (.client, .awaitingResponses),
              (.client, .authenticationSucceeded),
              (.client, .authenticationFailed):
-            // TODO(cory): We could probably support parallel auth attempts if we wanted to.
+            // Authentication startup is deliberately single-shot.
             preconditionFailure("Cannot start authentication twice, state: \(self.state)")
         case (.server, _):
             return nil
@@ -367,11 +371,23 @@ extension UserAuthenticationStateMachine {
         case (.client, .awaitingResponses),
              (.client, .authenticationSucceeded),
              (.client, .authenticationFailed):
-            // TODO(cory): We could probably support parallel auth attempts if we wanted to.
+            // Only one delegate request may be outstanding at a time.
             preconditionFailure("Request for further auth failed when no such request should be outstanding")
         case (.server, _):
             preconditionFailure("Servers may not authenticate")
         }
+    }
+}
+
+private extension UserAuthenticationStateMachine {
+    mutating func recordServerAuthenticationAttempt() throws {
+        guard self.receivedAuthenticationRequestCount < Self.maximumServerAuthenticationAttempts else {
+            throw NIOSSHError.protocolViolation(
+                protocolName: Self.protocolName,
+                violation: "too many authentication attempts"
+            )
+        }
+        self.receivedAuthenticationRequestCount += 1
     }
 }
 

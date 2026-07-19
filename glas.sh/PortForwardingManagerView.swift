@@ -265,23 +265,21 @@ struct AddPortForwardView: View {
                 
                 Section("Configuration") {
                     TextField("Local Port", text: $localPort)
-                        .keyboardType(.numberPad)
+                        .terminalNumericInput()
                     
                     if forwardType != .dynamic {
                         TextField("Remote Host", text: $remoteHost)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
+                            .terminalTextInputDefaults()
                         
                         TextField("Remote Port", text: $remotePort)
-                            .keyboardType(.numberPad)
+                            .terminalNumericInput()
                     }
                 }
 
                 if forwardType == .dynamic {
                     Section("SOCKS5 Authentication") {
                         TextField("Username", text: $socks5Username)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
+                            .terminalTextInputDefaults()
                         SecureField("Password", text: $socks5Password)
 
                         Text("Required for every local SOCKS5 client. These credentials stay only in app memory for this session and are never saved with the forward.")

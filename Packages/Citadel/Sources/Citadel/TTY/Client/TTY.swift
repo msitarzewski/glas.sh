@@ -5,19 +5,19 @@ import NIO
 import NIOConcurrencyHelpers
 
 /// Represents an error that occurred while processing TTY standard error output
-public struct TTYSTDError: Error {
+public struct TTYSTDError: Error, Sendable {
     /// The error message as a raw byte buffer
     public let message: ByteBuffer
 }
 
 /// A pair of streams representing the stdout and stderr output of an executed command
-public struct ExecCommandStream {
+public struct ExecCommandStream: Sendable {
     /// An async stream of bytes representing the standard output
     public let stdout: AsyncThrowingStream<ByteBuffer, Error>
     /// An async stream of bytes representing the standard error
     public let stderr: AsyncThrowingStream<ByteBuffer, Error>
     
-    struct Continuation {
+    struct Continuation: Sendable {
         let stdout: AsyncThrowingStream<ByteBuffer, Error>.Continuation
         let stderr: AsyncThrowingStream<ByteBuffer, Error>.Continuation
         
@@ -44,7 +44,7 @@ public struct ExecCommandStream {
 }
 
 /// Represents the output from an executed command, either stdout or stderr data
-public enum ExecCommandOutput {
+public enum ExecCommandOutput: Sendable {
     /// Standard output data as a byte buffer
     case stdout(ByteBuffer)
     /// Standard error data as a byte buffer 
@@ -53,7 +53,7 @@ public enum ExecCommandOutput {
 
 /// An async sequence that provides TTY output data
 @available(macOS 15.0, *)
-public struct TTYOutput: AsyncSequence {
+public struct TTYOutput: AsyncSequence, Sendable {
     internal let sequence: AsyncThrowingStream<ExecCommandOutput, Error>
     public typealias Element = ExecCommandOutput
 
@@ -72,7 +72,7 @@ public struct TTYOutput: AsyncSequence {
 }
 
 /// Allows writing data to a TTY's standard input and controlling terminal properties
-public struct TTYStdinWriter {
+public struct TTYStdinWriter: Sendable {
     internal let channel: Channel
 
     /// Write raw bytes to the TTY's standard input
@@ -119,9 +119,10 @@ final class ExecCommandHandler: ChannelDuplexHandler, Sendable {
     }
     
     func handlerAdded(context: ChannelHandlerContext) {
-        context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { error in
+        let channel = context.channel
+        channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { error in
             self.logger.debug("Failed to set allowRemoteHalfClosure: \(error)")
-            context.fireErrorCaught(error)
+            channel.pipeline.fireErrorCaught(error)
         }
     }
 
@@ -308,7 +309,12 @@ extension SSHClient {
         let channel = try await eventLoop.flatSubmit { [eventLoop, sshHandler = session.sshHandler] in
             let createChannel = eventLoop.makePromise(of: Channel.self)
             sshHandler.value.createChannel(createChannel) { channel, _ in
-                channel.pipeline.addHandlers(handler)
+                do {
+                    try channel.pipeline.syncOperations.addHandler(handler)
+                    return channel.eventLoop.makeSucceededVoidFuture()
+                } catch {
+                    return channel.eventLoop.makeFailedFuture(error)
+                }
             }
 
             eventLoop.scheduleTask(in: .seconds(15)) {

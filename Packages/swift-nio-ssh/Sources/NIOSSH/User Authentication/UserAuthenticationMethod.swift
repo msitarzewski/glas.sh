@@ -14,7 +14,7 @@
 import NIOCore
 
 /// The user authentication modes available at this point in time.
-public struct NIOSSHAvailableUserAuthenticationMethods: OptionSet {
+public struct NIOSSHAvailableUserAuthenticationMethods: OptionSet, Sendable {
     public var rawValue: UInt8
 
     public init(rawValue: UInt8) {
@@ -23,9 +23,11 @@ public struct NIOSSHAvailableUserAuthenticationMethods: OptionSet {
 
     public static let publicKey: NIOSSHAvailableUserAuthenticationMethods = .init(rawValue: 1 << 0)
     public static let password: NIOSSHAvailableUserAuthenticationMethods = .init(rawValue: 1 << 1)
+    /// A method that may be reported by a remote peer. NIOSSH does not implement
+    /// host-based authentication and therefore never advertises or sends it.
     public static let hostBased: NIOSSHAvailableUserAuthenticationMethods = .init(rawValue: 1 << 2)
 
-    public static let all: NIOSSHAvailableUserAuthenticationMethods = [.publicKey, .password, .hostBased]
+    public static let all: NIOSSHAvailableUserAuthenticationMethods = [.publicKey, .password]
 }
 
 extension NIOSSHAvailableUserAuthenticationMethods {
@@ -62,10 +64,6 @@ extension NIOSSHAvailableUserAuthenticationMethods {
         if self.contains(.publicKey) {
             methods.append("publickey")
         }
-        if self.contains(.hostBased) {
-            methods.append("hostbased")
-        }
-
         return methods
     }
 }
@@ -74,7 +72,7 @@ extension NIOSSHAvailableUserAuthenticationMethods: Hashable {}
 
 /// A specific request for user authentication. This type is the one observed from the server side. The
 /// associated client side type is `NIOSSHUserAuthenticationOffer`.
-public struct NIOSSHUserAuthenticationRequest {
+public struct NIOSSHUserAuthenticationRequest: Sendable {
     public var username: String
 
     public var request: Request
@@ -86,7 +84,7 @@ public struct NIOSSHUserAuthenticationRequest {
 }
 
 public extension NIOSSHUserAuthenticationRequest {
-    enum Request {
+    enum Request: Sendable {
         case publicKey(PublicKey)
         case password(Password)
         case hostBased(HostBased)
@@ -95,7 +93,7 @@ public extension NIOSSHUserAuthenticationRequest {
 }
 
 public extension NIOSSHUserAuthenticationRequest.Request {
-    struct PublicKey {
+    struct PublicKey: Sendable {
         public var publicKey: NIOSSHPublicKey
 
         public init(publicKey: NIOSSHPublicKey) {
@@ -103,7 +101,7 @@ public extension NIOSSHUserAuthenticationRequest.Request {
         }
     }
 
-    struct Password {
+    struct Password: Sendable {
         public var password: String
 
         public init(password: String) {
@@ -111,10 +109,10 @@ public extension NIOSSHUserAuthenticationRequest.Request {
         }
     }
 
-    struct HostBased {
-        init() {
-            fatalError("PublicKeyRequest is currently unimplemented")
-        }
+    struct HostBased: Sendable {
+        /// Creates a value representing a peer's host-based request. NIOSSH does
+        /// not currently parse or authenticate this method.
+        public init() {}
     }
 }
 
@@ -130,7 +128,7 @@ extension NIOSSHUserAuthenticationRequest.Request.HostBased: Hashable {}
 
 /// A specific offer of user authentication. This type is the one used on the client side. The
 /// associated server side type is `NIOSSHUserAuthenticationRequest`.
-public struct NIOSSHUserAuthenticationOffer {
+public struct NIOSSHUserAuthenticationOffer: Sendable {
     public var username: String
 
     public var offer: Offer
@@ -142,7 +140,7 @@ public struct NIOSSHUserAuthenticationOffer {
 }
 
 public extension NIOSSHUserAuthenticationOffer {
-    enum Offer {
+    enum Offer: Sendable {
         case privateKey(PrivateKey)
         case password(Password)
         case hostBased(HostBased)
@@ -151,7 +149,7 @@ public extension NIOSSHUserAuthenticationOffer {
 }
 
 public extension NIOSSHUserAuthenticationOffer.Offer {
-    struct PrivateKey {
+    struct PrivateKey: Sendable {
         public var privateKey: NIOSSHPrivateKey
         public var publicKey: NIOSSHPublicKey
 
@@ -166,7 +164,7 @@ public extension NIOSSHUserAuthenticationOffer.Offer {
         }
     }
 
-    struct Password {
+    struct Password: Sendable {
         public var password: String
 
         public init(password: String) {
@@ -174,10 +172,10 @@ public extension NIOSSHUserAuthenticationOffer.Offer {
         }
     }
 
-    struct HostBased {
-        init() {
-            fatalError("PublicKeyRequest is currently unimplemented")
-        }
+    struct HostBased: Sendable {
+        /// Creates an unsupported host-based offer. Attempting to serialize this
+        /// offer fails with a protocol error instead of terminating the process.
+        public init() {}
     }
 }
 
@@ -200,7 +198,10 @@ extension SSHMessage.UserAuthRequestMessage {
         case .password(let passwordRequest):
             self.method = .password(passwordRequest.password)
         case .hostBased:
-            fatalError("Unsupported")
+            throw NIOSSHError.protocolViolation(
+                protocolName: "user auth",
+                violation: "Host-based authentication is not supported"
+            )
         case .none:
             self.method = .none
         }
@@ -208,13 +209,13 @@ extension SSHMessage.UserAuthRequestMessage {
 }
 
 /// The outcome of a user authentication attempt.
-public enum NIOSSHUserAuthenticationOutcome {
+public enum NIOSSHUserAuthenticationOutcome: Sendable {
     case success
     case partialSuccess(remainingMethods: NIOSSHAvailableUserAuthenticationMethods)
     case failure
 }
 
-enum NIOSSHUserAuthenticationResponseMessage {
+enum NIOSSHUserAuthenticationResponseMessage: Sendable {
     case success
     case failure(SSHMessage.UserAuthFailureMessage)
     case publicKeyOK(SSHMessage.UserAuthPKOKMessage)

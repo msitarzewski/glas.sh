@@ -144,6 +144,8 @@ class SettingsManager {
     static let maximumSSHKeyCatalogBytes = 1024 * 1024
 
     var currentTheme: TerminalTheme = .default
+    var themeLibrary: TerminalThemeLibrary = .initial(at: .distantPast)
+    private(set) var themeLibraryLoadError: String?
     var snippets: [CommandSnippet] = []
     var autoReconnect: Bool = true
     var confirmBeforeClosing: Bool = true
@@ -172,18 +174,27 @@ class SettingsManager {
     var sessionOverrides: [String: TerminalSessionOverride] = [:]
     var layoutPresets: [LayoutPreset] = []
     var tailscaleTailnet: String = ""
+    private(set) var iCloudSyncEnabled: Bool = true
+    private(set) var iCloudSyncStatusText: String = "Waiting to sync"
     private var hasLoadedPersistentState = false
+    private var isApplyingICloudPayload = false
+    private var iCloudSyncConfigured = false
+    private var iCloudPushTask: Task<Void, Never>?
+    private var iCloudSyncDirty = false
+    private var iCloudRetryAttempt = 0
     private let settingsDefaults: UserDefaults
     private let sshKeyDefaults: UserDefaults
     private let sshKeyLifecycleStore: SSHKeyLifecycleStore
     private let sshKeyCatalogWriter: (Data) -> Void
+    private let iCloudSettingsSyncService: ICloudSettingsSyncService
 
     init(
         loadImmediately: Bool = true,
         settingsDefaults: UserDefaults? = nil,
         sshKeyDefaults: UserDefaults? = nil,
         sshKeyLifecycleStore: SSHKeyLifecycleStore? = nil,
-        sshKeyCatalogWriter: ((Data) -> Void)? = nil
+        sshKeyCatalogWriter: ((Data) -> Void)? = nil,
+        iCloudSettingsSyncService: ICloudSettingsSyncService? = nil
     ) {
         self.settingsDefaults = settingsDefaults ?? .standard
         let resolvedSSHKeyDefaults = sshKeyDefaults ?? SharedDefaults.defaults
@@ -192,6 +203,20 @@ class SettingsManager {
         self.sshKeyCatalogWriter = sshKeyCatalogWriter ?? { data in
             resolvedSSHKeyDefaults.set(data, forKey: UserDefaultsKeys.sshKeys)
         }
+        let writerID: UUID
+        if let persistedWriterID = self.settingsDefaults.string(
+            forKey: UserDefaultsKeys.iCloudSettingsWriterID
+        ).flatMap(UUID.init(uuidString:)) {
+            writerID = persistedWriterID
+        } else {
+            writerID = UUID()
+            self.settingsDefaults.set(
+                writerID.uuidString,
+                forKey: UserDefaultsKeys.iCloudSettingsWriterID
+            )
+        }
+        self.iCloudSettingsSyncService = iCloudSettingsSyncService
+            ?? ICloudSettingsSyncService(writerID: writerID)
         if loadImmediately {
             loadPersistentStateIfNeeded()
         }
@@ -270,6 +295,9 @@ class SettingsManager {
         if let savedTailnet = settingsDefaults.string(forKey: UserDefaultsKeys.tailscaleTailnet) {
             tailscaleTailnet = savedTailnet
         }
+        if settingsDefaults.object(forKey: UserDefaultsKeys.iCloudSettingsSyncEnabled) != nil {
+            iCloudSyncEnabled = settingsDefaults.bool(forKey: UserDefaultsKeys.iCloudSettingsSyncEnabled)
+        }
 
         if settingsDefaults.integer(forKey: Self.appearanceSchemaVersionKey)
             < Self.currentAppearanceSchemaVersion {
@@ -287,6 +315,7 @@ class SettingsManager {
         loadLayoutPresets()
         loadSSHKeys()
         reconcileSSHKeyDeletionJournalAtStartup()
+        configureICloudSettingsSync()
     }
 
     func saveSettings() {
@@ -328,6 +357,7 @@ class SettingsManager {
         } catch {
             Logger.settings.error("Failed to save session overrides: \(error)")
         }
+        scheduleICloudSettingsPush()
     }
 
     func sessionOverride(for sessionID: UUID) -> TerminalSessionOverride? {
@@ -1007,27 +1037,404 @@ class SettingsManager {
     }
 
     func loadTheme() {
-        guard let data = settingsDefaults.data(forKey: UserDefaultsKeys.theme) else {
-            currentTheme = .default
-            return
+        if let libraryData = settingsDefaults.data(forKey: UserDefaultsKeys.themeLibrary) {
+            do {
+                var library = try JSONDecoder().decode(TerminalThemeLibrary.self, from: libraryData)
+                guard library.schemaVersion == TerminalThemeLibrary.currentSchemaVersion else {
+                    themeLibraryLoadError = "This theme library was created by a newer version of glas.sh and is read-only here."
+                    return
+                }
+                var repairedLegacyColors = false
+                for index in library.records.indices where !library.records[index].isDeleted {
+                    if library.records[index].theme.hasCorruptedLegacyGlassTerminalColors {
+                        library.records[index].theme.applyAppleClearDarkColors()
+                        library.records[index].modifiedAt = Date()
+                        repairedLegacyColors = true
+                    }
+                }
+                library.canonicalize()
+                themeLibrary = library
+                currentTheme = library.selectedTheme ?? .default
+                themeLibraryLoadError = nil
+                if repairedLegacyColors { persistThemeLibrary() }
+                return
+            } catch {
+                Logger.settings.error("Failed to load theme library: \(error)")
+                themeLibraryLoadError = "The saved theme library could not be read and was left untouched."
+                return
+            }
         }
 
-        do {
-            currentTheme = try JSONDecoder().decode(TerminalTheme.self, from: data)
-        } catch {
-            Logger.settings.error("Failed to load theme: \(error)")
-            currentTheme = .default
+        var migratedTheme = TerminalTheme.default
+        var migrationTimestamp = Date.distantPast
+        if let data = settingsDefaults.data(forKey: UserDefaultsKeys.theme) {
+            do {
+                migratedTheme = try JSONDecoder().decode(TerminalTheme.self, from: data)
+                // A successfully decoded legacy theme represents real local
+                // user state. A synthetic first-launch default does not and
+                // must never defeat an existing iCloud selection.
+                migrationTimestamp = Date()
+                if migratedTheme.hasCorruptedLegacyGlassTerminalColors {
+                    migratedTheme.applyAppleClearDarkColors()
+                }
+            } catch {
+                Logger.settings.error("Failed to load legacy theme: \(error)")
+            }
         }
+        themeLibrary = .initial(theme: migratedTheme, at: migrationTimestamp)
+        currentTheme = migratedTheme
+        themeLibraryLoadError = nil
+        persistThemeLibrary()
     }
 
     func saveTheme(_ theme: TerminalTheme) {
-        do {
-            let data = try JSONEncoder().encode(theme)
-            settingsDefaults.set(data, forKey: UserDefaultsKeys.theme)
-            currentTheme = theme
-        } catch {
-            Logger.settings.error("Failed to save theme: \(error)")
+        guard themeLibraryLoadError == nil, theme.isValidForPersistence else { return }
+        themeLibrary.upsert(theme)
+        _ = themeLibrary.select(theme.id)
+        currentTheme = theme
+        persistThemeLibrary()
+    }
+
+    var selectedThemeID: UUID {
+        themeLibrary.selectedThemeID
+    }
+
+    @discardableResult
+    func selectTheme(id: UUID) -> Bool {
+        guard themeLibraryLoadError == nil else { return false }
+        guard themeLibrary.select(id), let selected = themeLibrary.selectedTheme else { return false }
+        currentTheme = selected
+        persistThemeLibrary()
+        return true
+    }
+
+    @discardableResult
+    func createTheme(named name: String = "New Theme") -> UUID? {
+        guard themeLibraryLoadError == nil, canAddThemeRecord else { return nil }
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let theme = currentTheme.reidentified(
+            name: trimmedName.isEmpty ? "New Theme" : String(trimmedName.prefix(80))
+        )
+        themeLibrary.upsert(theme, origin: .custom)
+        _ = themeLibrary.select(theme.id)
+        currentTheme = theme
+        persistThemeLibrary()
+        return theme.id
+    }
+
+    @discardableResult
+    func duplicateTheme(id: UUID) -> UUID? {
+        guard themeLibraryLoadError == nil, canAddThemeRecord,
+              let source = themeLibrary.activeRecords.first(where: { $0.id == id }) else {
+            return nil
         }
+        let copy = source.theme.reidentified(name: "\(source.theme.name) Copy")
+        themeLibrary.upsert(copy, origin: .custom)
+        _ = themeLibrary.select(copy.id)
+        currentTheme = copy
+        persistThemeLibrary()
+        return copy.id
+    }
+
+    @discardableResult
+    func deleteTheme(id: UUID) -> Bool {
+        guard themeLibraryLoadError == nil else { return false }
+        guard themeLibrary.delete(id), let selected = themeLibrary.selectedTheme else { return false }
+        currentTheme = selected
+        persistThemeLibrary()
+        return true
+    }
+
+    @discardableResult
+    func resetTheme(id: UUID) -> Bool {
+        guard themeLibraryLoadError == nil,
+              let record = themeLibrary.activeRecords.first(where: { $0.id == id }),
+              record.isBuiltIn else {
+            return false
+        }
+        let reset = TerminalTheme.default.reidentified(id: record.id, name: record.theme.name)
+        themeLibrary.upsert(reset, origin: .builtIn)
+        if selectedThemeID == id { currentTheme = reset }
+        persistThemeLibrary()
+        return true
+    }
+
+    @discardableResult
+    func addImportedTheme(_ importedTheme: TerminalTheme) -> UUID? {
+        guard themeLibraryLoadError == nil,
+              canAddThemeRecord,
+              importedTheme.isValidForPersistence else { return nil }
+        let theme = importedTheme.reidentified()
+        themeLibrary.upsert(theme, origin: .appleTerminal)
+        _ = themeLibrary.select(theme.id)
+        currentTheme = theme
+        persistThemeLibrary()
+        return theme.id
+    }
+
+    @discardableResult
+    func replaceThemeLibrary(_ replacement: TerminalThemeLibrary) -> Bool {
+        guard themeLibraryLoadError == nil,
+              replacement.schemaVersion == TerminalThemeLibrary.currentSchemaVersion,
+              replacement.records.count <= TerminalThemeLibrary.maximumRecordCount,
+              replacement.activeRecords.count <= TerminalThemeLibrary.maximumThemeCount,
+              replacement.activeRecords.allSatisfy({ $0.theme.isValidForPersistence }),
+              replacement.activeRecords.filter(\.isBuiltIn).count == 1 else {
+            return false
+        }
+        var canonical = replacement
+        canonical.canonicalize()
+        themeLibrary = canonical
+        currentTheme = canonical.selectedTheme ?? currentTheme
+        persistThemeLibrary()
+        return true
+    }
+
+    private var canAddThemeRecord: Bool {
+        themeLibrary.activeRecords.count < TerminalThemeLibrary.maximumThemeCount
+            && themeLibrary.records.count < TerminalThemeLibrary.maximumRecordCount
+    }
+
+    private func persistThemeLibrary() {
+        guard themeLibraryLoadError == nil else { return }
+        do {
+            themeLibrary.canonicalize()
+            let data = try JSONEncoder().encode(themeLibrary)
+            settingsDefaults.set(data, forKey: UserDefaultsKeys.themeLibrary)
+            if let selected = themeLibrary.selectedTheme {
+                currentTheme = selected
+                settingsDefaults.set(
+                    try JSONEncoder().encode(selected),
+                    forKey: UserDefaultsKeys.theme
+                )
+            }
+        } catch {
+            Logger.settings.error("Failed to save theme library: \(error)")
+        }
+        scheduleICloudSettingsPush()
+    }
+
+    func setICloudSyncEnabled(_ enabled: Bool) {
+        guard iCloudSyncEnabled != enabled else { return }
+        iCloudSyncEnabled = enabled
+        settingsDefaults.set(enabled, forKey: UserDefaultsKeys.iCloudSettingsSyncEnabled)
+        configureICloudSettingsSync()
+    }
+
+    private func configureICloudSettingsSync() {
+        iCloudPushTask?.cancel()
+        iCloudSyncConfigured = false
+
+        guard iCloudSyncEnabled else {
+            iCloudSettingsSyncService.stop()
+            iCloudSyncStatusText = "Off"
+            return
+        }
+
+        iCloudSettingsSyncService.start(
+            enabled: true,
+            onMerge: { [weak self] payload in
+                self?.applyICloudSettingsPayload(payload)
+            },
+            onStatusChange: { [weak self] status, errorDescription in
+                self?.updateICloudSyncStatus(status, errorDescription: errorDescription)
+            }
+        )
+        iCloudSyncConfigured = true
+        scheduleICloudSettingsPush()
+    }
+
+    private func updateICloudSyncStatus(
+        _ status: ICloudSettingsSyncStatus,
+        errorDescription: String?
+    ) {
+        switch status {
+        case .disabled:
+            iCloudSyncStatusText = "Off"
+        case .syncing:
+            iCloudSyncStatusText = "Syncing…"
+        case .synced:
+            iCloudSyncStatusText = "Up to date"
+            if iCloudSyncDirty {
+                scheduleICloudSettingsPush(markDirty: false)
+            }
+        case .unavailable:
+            iCloudSyncStatusText = errorDescription ?? "iCloud sync is unavailable"
+        case .quota:
+            iCloudSyncStatusText = errorDescription ?? "iCloud storage quota exceeded"
+        case .account:
+            iCloudSyncStatusText = errorDescription ?? "Sign in to iCloud to sync"
+        case .error:
+            iCloudSyncStatusText = errorDescription ?? "Sync failed"
+        }
+    }
+
+    private func scheduleICloudSettingsPush(
+        markDirty: Bool = true,
+        delay: Duration = .milliseconds(400)
+    ) {
+        guard iCloudSyncConfigured, iCloudSyncEnabled, !isApplyingICloudPayload else { return }
+        if markDirty {
+            iCloudSyncDirty = true
+            iCloudRetryAttempt = 0
+        }
+        iCloudPushTask?.cancel()
+        iCloudPushTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            self.iCloudSyncDirty = false
+            do {
+                _ = try self.iCloudSettingsSyncService.push(self.makeICloudSettingsPayload())
+            } catch {
+                self.iCloudSyncDirty = true
+                Logger.settings.error("Failed to synchronize portable settings: \(error)")
+                if self.shouldRetryICloudSync(after: error), self.iCloudRetryAttempt < 5 {
+                    self.iCloudRetryAttempt += 1
+                    let seconds = min(30, 1 << self.iCloudRetryAttempt)
+                    self.scheduleICloudSettingsPush(
+                        markDirty: false,
+                        delay: .seconds(seconds)
+                    )
+                }
+            }
+        }
+    }
+
+    private func shouldRetryICloudSync(after error: Error) -> Bool {
+        guard let syncError = error as? ICloudSettingsSyncError else { return false }
+        switch syncError {
+        case .unavailable, .accountUnavailable:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func applyICloudSettingsPayload(_ payload: ICloudSettingsSyncPayload) {
+        guard (try? payload.validate()) != nil else { return }
+        isApplyingICloudPayload = true
+        defer { isApplyingICloudPayload = false }
+
+        let incomingLibrary = TerminalThemeLibrary(
+            records: payload.themeRecords.map(Self.localThemeRecord),
+            selectedThemeID: payload.selectedThemeID,
+            selectionModifiedAt: payload.selectionModifiedAt
+        )
+        themeLibrary.merge(incomingLibrary)
+        currentTheme = themeLibrary.selectedTheme ?? currentTheme
+
+        let preferences = payload.preferences
+        autoReconnect = preferences.autoReconnect
+        confirmBeforeClosing = preferences.confirmBeforeClosing
+        saveScrollback = preferences.saveScrollback
+        maxScrollbackLines = Self.clampedScrollbackLines(preferences.maximumScrollbackLines)
+        bellEnabled = preferences.bellEnabled
+        visualBell = preferences.visualBell
+        cursorStyle = preferences.cursorStyle
+        blinkingCursor = preferences.blinkingCursor
+        glassFrost = preferences.glassFrost
+        windowOpacity = Self.unitValue(preferences.windowOpacity)
+        blurBackground = Self.unitValue(preferences.blurBackground)
+        interactiveGlass = preferences.interactiveGlass
+        glassTint = preferences.glassTint
+
+        persistThemeLibrary()
+        saveSettings()
+    }
+
+    private func makeICloudSettingsPayload() -> ICloudSettingsSyncPayload {
+        ICloudSettingsSyncPayload(
+            themeRecords: themeLibrary.records.map(Self.cloudThemeRecord),
+            selectedThemeID: themeLibrary.selectedThemeID,
+            selectionModifiedAt: themeLibrary.selectionModifiedAt,
+            preferences: ICloudPortableTerminalPreferences(
+                autoReconnect: autoReconnect,
+                confirmBeforeClosing: confirmBeforeClosing,
+                saveScrollback: saveScrollback,
+                maximumScrollbackLines: maxScrollbackLines,
+                bellEnabled: bellEnabled,
+                visualBell: visualBell,
+                cursorStyle: cursorStyle,
+                blinkingCursor: blinkingCursor,
+                glassFrost: glassFrost,
+                windowOpacity: windowOpacity,
+                blurBackground: blurBackground,
+                interactiveGlass: interactiveGlass,
+                glassTint: glassTint
+            )
+        )
+    }
+
+    private static func cloudThemeRecord(_ record: TerminalThemeRecord) -> ICloudTerminalThemeRecord {
+        ICloudTerminalThemeRecord(
+            theme: cloudTheme(record.theme),
+            origin: record.origin,
+            modifiedAt: record.modifiedAt,
+            deletedAt: record.deletedAt
+        )
+    }
+
+    private static func localThemeRecord(_ record: ICloudTerminalThemeRecord) -> TerminalThemeRecord {
+        TerminalThemeRecord(
+            theme: localTheme(record.theme),
+            origin: record.origin,
+            modifiedAt: record.modifiedAt,
+            deletedAt: record.deletedAt
+        )
+    }
+
+    private static func cloudTheme(_ theme: TerminalTheme) -> ICloudTerminalTheme {
+        ICloudTerminalTheme(
+            id: theme.id,
+            name: theme.name,
+            background: cloudColor(theme.background),
+            foreground: cloudColor(theme.foreground),
+            cursor: cloudColor(theme.cursor),
+            selection: cloudColor(theme.selection),
+            ansiColors: theme.ansiColors.map(cloudColor),
+            fontName: theme.fontName,
+            fontSize: Double(theme.fontSize),
+            preferredAppearance: theme.preferredAppearance
+        )
+    }
+
+    private static func localTheme(_ theme: ICloudTerminalTheme) -> TerminalTheme {
+        let colors = theme.ansiColors
+        return TerminalTheme(
+            id: theme.id,
+            name: theme.name,
+            background: localColor(theme.background),
+            foreground: localColor(theme.foreground),
+            cursor: localColor(theme.cursor),
+            selection: localColor(theme.selection),
+            black: localColor(colors[0]),
+            red: localColor(colors[1]),
+            green: localColor(colors[2]),
+            yellow: localColor(colors[3]),
+            blue: localColor(colors[4]),
+            magenta: localColor(colors[5]),
+            cyan: localColor(colors[6]),
+            white: localColor(colors[7]),
+            brightBlack: localColor(colors[8]),
+            brightRed: localColor(colors[9]),
+            brightGreen: localColor(colors[10]),
+            brightYellow: localColor(colors[11]),
+            brightBlue: localColor(colors[12]),
+            brightMagenta: localColor(colors[13]),
+            brightCyan: localColor(colors[14]),
+            brightWhite: localColor(colors[15]),
+            fontName: theme.fontName,
+            fontSize: CGFloat(theme.fontSize),
+            preferredAppearance: theme.preferredAppearance
+        )
+    }
+
+    private static func cloudColor(_ color: CodableColor) -> ICloudTerminalColor {
+        ICloudTerminalColor(red: color.red, green: color.green, blue: color.blue, alpha: color.alpha)
+    }
+
+    private static func localColor(_ color: ICloudTerminalColor) -> CodableColor {
+        CodableColor(sRGBRed: color.red, green: color.green, blue: color.blue, alpha: color.alpha)
     }
 
     func loadSnippets() {

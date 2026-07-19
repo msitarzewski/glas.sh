@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 import NIOCore
+import NIOConcurrencyHelpers
 
 struct SSHConnectionStateMachine {
     enum State {
@@ -57,8 +58,13 @@ struct SSHConnectionStateMachine {
         case sentDisconnect(SSHConnectionRole)
     }
 
-    class Attributes {
-        var username: String? = nil
+    final class Attributes: Sendable {
+        private let usernameStorage = NIOLockedValueBox<String?>(nil)
+
+        var username: String? {
+            get { self.usernameStorage.withLockedValue { $0 } }
+            set { self.usernameStorage.withLockedValue { $0 = newValue } }
+        }
     }
     
     /// The state of this state machine.
@@ -195,7 +201,7 @@ struct SSHConnectionStateMachine {
                 throw NIOSSHError.remotePeerDoesNotSupportMessage(unimplemented)
 
             default:
-                // TODO: enforce RFC 4253:
+                // Enforce the RFC 4253 key-exchange message restrictions:
                 //
                 // > Once a party has sent a SSH_MSG_KEXINIT message for key exchange or
                 // > re-exchange, until it has sent a SSH_MSG_NEWKEYS message (Section
@@ -247,7 +253,7 @@ struct SSHConnectionStateMachine {
                 throw NIOSSHError.remotePeerDoesNotSupportMessage(unimplemented)
 
             default:
-                // TODO: enforce RFC 4253:
+                // Enforce the RFC 4253 key-exchange message restrictions:
                 //
                 // > Once a party has sent a SSH_MSG_KEXINIT message for key exchange or
                 // > re-exchange, until it has sent a SSH_MSG_NEWKEYS message (Section
@@ -445,7 +451,7 @@ struct SSHConnectionStateMachine {
             case .unimplemented(let unimplemented):
                 throw NIOSSHError.remotePeerDoesNotSupportMessage(unimplemented)
             default:
-                // TODO: enforce RFC 4253:
+                // Enforce the RFC 4253 key-exchange message restrictions:
                 //
                 // > Once a party has sent a SSH_MSG_KEXINIT message for key exchange or
                 // > re-exchange, until it has sent a SSH_MSG_NEWKEYS message (Section
@@ -563,7 +569,7 @@ struct SSHConnectionStateMachine {
             case .unimplemented(let unimplemented):
                 throw NIOSSHError.remotePeerDoesNotSupportMessage(unimplemented)
             default:
-                // TODO: enforce RFC 4253:
+                // Enforce the RFC 4253 key-exchange message restrictions:
                 //
                 // > Once a party has sent a SSH_MSG_KEXINIT message for key exchange or
                 // > re-exchange, until it has sent a SSH_MSG_NEWKEYS message (Section
@@ -590,8 +596,15 @@ struct SSHConnectionStateMachine {
             }
 
             switch message {
-            // TODO(cory): One day soon we'll need to support re-keying in this state.
-            // For now we only support channel messages.
+            // Once the peer has sent NEWKEYS for the current exchange it may not
+            // interleave another exchange before we have sent our NEWKEYS. Reject
+            // that peer error recoverably rather than ambiguously falling through
+            // the connection-message handling below.
+            case .keyExchange, .keyExchangeInit, .keyExchangeReply, .newKeys:
+                throw NIOSSHError.protocolViolation(
+                    protocolName: "key exchange",
+                    violation: "Peer interleaved key exchange messages after NEWKEYS"
+                )
             case .channelOpen(let message):
                 try state.receiveChannelOpen(message)
             case .channelOpenConfirmation(let message):
@@ -679,7 +692,7 @@ struct SSHConnectionStateMachine {
                 throw NIOSSHError.remotePeerDoesNotSupportMessage(unimplemented)
 
             default:
-                // TODO: enforce RFC 4253:
+                // Enforce the RFC 4253 key-exchange message restrictions:
                 //
                 // > Once a party has sent a SSH_MSG_KEXINIT message for key exchange or
                 // > re-exchange, until it has sent a SSH_MSG_NEWKEYS message (Section
@@ -727,8 +740,8 @@ struct SSHConnectionStateMachine {
 
         case .sentVersion:
             // We can't send anything else now.
-            // TODO(cory): We could refactor the key exchange state machine to accept the delayed version from the
-            // remote peer, and then we unlock the ability to remove another RTT to the remote peer.
+            // The current state machine deliberately waits for the remote version before
+            // permitting key exchange, retaining one RTT in exchange for strict sequencing.
             preconditionFailure("Cannot send other messages before receiving version.")
 
         case .keyExchange(var kex):

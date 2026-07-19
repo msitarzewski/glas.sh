@@ -33,7 +33,8 @@ final class ExampleExecHandler: ChannelDuplexHandler {
     }
 
     func handlerAdded(context: ChannelHandlerContext) {
-        context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { error in
+        let setOption = context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true)
+        setOption.assumeIsolated().whenFailure { error in
             context.fireErrorCaught(error)
         }
     }
@@ -41,26 +42,35 @@ final class ExampleExecHandler: ChannelDuplexHandler {
     func channelActive(context: ChannelHandlerContext) {
         // We need to set up a pipe channel and glue it to this. This will control our I/O.
         let (ours, theirs) = GlueHandler.matchedPair()
+        let loopBoundGlueHandler = NIOLoopBound(theirs, eventLoop: context.eventLoop)
+        let loopBoundContext = NIOLoopBound(context, eventLoop: context.eventLoop)
 
-        // Sadly we have to kick off to a background thread to bootstrap the pipe channel.
-        let bootstrap = NIOPipeBootstrap(group: context.eventLoop)
-        context.channel.pipeline.addHandler(ours, position: .last).whenSuccess { _ in
-            DispatchQueue(label: "pipe bootstrap").async {
-                bootstrap.channelOption(ChannelOptions.allowRemoteHalfClosure, value: true).channelInitializer { channel in
-                    channel.pipeline.addHandler(theirs)
-                }.withPipes(inputDescriptor: 0, outputDescriptor: 1).whenComplete { result in
+        do {
+            try context.channel.pipeline.syncOperations.addHandler(ours, position: .last)
+
+            DispatchQueue(label: "pipe bootstrap").async { [eventLoop = context.eventLoop, command = self.command] in
+                let bootstrap = NIOPipeBootstrap(group: eventLoop)
+                bootstrap.channelOption(.allowRemoteHalfClosure, value: true).channelInitializer { channel in
+                    channel.eventLoop.makeCompletedFuture {
+                        try channel.pipeline.syncOperations.addHandler(loopBoundGlueHandler.value)
+                    }
+                }.takingOwnershipOfDescriptors(input: 0, output: 1).whenComplete { result in
                     switch result {
                     case .success:
                         // We need to exec a thing.
-                        let execRequest = SSHChannelRequestEvent.ExecRequest(command: self.command, wantReply: false)
-                        context.triggerUserOutboundEvent(execRequest).whenFailure { _ in
+                        let execRequest = SSHChannelRequestEvent.ExecRequest(command: command, wantReply: false)
+                        let context = loopBoundContext.value
+                        context.triggerUserOutboundEvent(execRequest).assumeIsolated().whenFailure { _ in
                             context.close(promise: nil)
                         }
                     case .failure(let error):
+                        let context = loopBoundContext.value
                         context.fireErrorCaught(error)
                     }
                 }
             }
+        } catch {
+            context.fireErrorCaught(error)
         }
     }
 
@@ -88,7 +98,9 @@ final class ExampleExecHandler: ChannelDuplexHandler {
         let data = self.unwrapInboundIn(data)
 
         guard case .byteBuffer(let bytes) = data.data else {
-            fatalError("Unexpected read type")
+            context.fireErrorCaught(SSHClientError.invalidData)
+            context.close(promise: nil)
+            return
         }
 
         switch data.type {
@@ -100,12 +112,13 @@ final class ExampleExecHandler: ChannelDuplexHandler {
         case .stdErr:
             // We just write to stderr directly, pipe channel can't help us here.
             bytes.withUnsafeReadableBytes { str in
-                let rc = fwrite(str.baseAddress, 1, str.count, stderr)
+                let rc = writeToFD(STDERR_FILENO, str.baseAddress!, str.count)
                 precondition(rc == str.count)
             }
 
         default:
-            fatalError("Unexpected message type")
+            context.fireErrorCaught(SSHClientError.invalidData)
+            context.close(promise: nil)
         }
     }
 
@@ -113,6 +126,11 @@ final class ExampleExecHandler: ChannelDuplexHandler {
         let data = self.unwrapOutboundIn(data)
         context.write(self.wrapOutboundOut(SSHChannelData(type: .channel, data: .byteBuffer(data))), promise: promise)
     }
+}
+
+@inlinable
+func writeToFD(_ fd: Int32, _ buffer: UnsafeRawPointer!, _ byteCount: Int) -> Int {
+    write(fd, buffer, byteCount)
 }
 
 enum SSHClientError: Swift.Error {

@@ -10,7 +10,7 @@ Add semantic terminal workflows and resumable workspace behavior using shell int
 
 ## Current status — In progress
 
-The layout-restoration foundation is implemented and tested: versioned `SessionIntent` records migrate legacy server IDs, preserve repeated intentions and unsupported restoration values, create fresh authorized sessions, and aggregate per-session failures without discarding valid targets. Those cases pass in the current 164-test app suite. Tabs/splits, semantic history and command blocks, broader shell integration, and tmux/Zellij discovery remain open; this phase has not been deferred or declared complete.
+The layout-restoration foundation and native macOS workspace shell are implemented and tested. Versioned session intentions create fresh authorized sessions; macOS workspaces add platform-native windows, tabs, horizontal/vertical splits, focused-pane commands, local/SSH launch choices, teardown, and bounded restoration. Semantic history/command blocks, broader shell integration, and tmux/Zellij discovery remain open, so the phase remains In progress.
 
 ## Existing architecture to reuse
 

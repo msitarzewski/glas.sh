@@ -7,6 +7,7 @@
 
 import SwiftUI
 
+#if os(visionOS)
 @main
 struct glas_shApp: App {
     @State private var sessionManager = SessionManager(loadImmediately: false)
@@ -118,14 +119,17 @@ struct glas_shApp: App {
         .windowStyle(.plain)
         .defaultSize(width: 700, height: 600)
 
+        #if os(visionOS)
         // Immersive focus environment
         ImmersiveSpace(id: "focus-environment") {
             FocusEnvironmentView()
         }
         .immersionStyle(selection: .constant(.progressive), in: .progressive)
         .restorationBehavior(.disabled)
+        #endif
     }
 }
+#endif
 
 struct MainBootstrapView: View {
     @Environment(SessionManager.self) private var sessionManager
@@ -438,7 +442,7 @@ struct MinimizedConnectionsView: View {
                 .background(.regularMaterial, in: .circle)
         }
         .buttonStyle(.plain)
-        .hoverEffect(.highlight)
+        .terminalHoverHighlight()
         .help("Open Connections")
         .accessibilityLabel("Open Connections")
     }

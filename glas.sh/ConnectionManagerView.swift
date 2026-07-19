@@ -32,12 +32,19 @@ struct ConnectionManagerView: View {
     @State private var tailscaleClient = TailscaleClient()
     @State private var tailscaleUsernamePromptDevice: TailscaleDevice?
     @State private var serverPendingDeletion: ServerConfiguration?
+    #if os(macOS)
+    @State private var macSelectedServerID: UUID?
+    @State private var macShowsTailscale = false
+    #endif
     
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     
     var body: some View {
         NavigationSplitView {
+            #if os(macOS)
+            macConnectionSidebar
+            #else
             List {
                 Section("Connections") {
                     ForEach(sortedSections) { section in
@@ -58,64 +65,26 @@ struct ConnectionManagerView: View {
                 }
             }
             .navigationTitle("Connections")
+            #endif
         } detail: {
+            #if os(macOS)
+            macConnectionDetail
+                .navigationTitle(macSelectedServer?.name ?? selectedSection.title)
+                .searchable(text: $searchQuery, prompt: "Search connections...")
+                .onSubmit(of: .search) {
+                    handleSearchSubmission()
+                }
+            #else
             detailView
                 .navigationTitle(selectedSection.title)
                 .searchable(text: $searchQuery, prompt: "Search servers...")
                 .onSubmit(of: .search) {
-                    if let config = quickConnectConfig {
-                        quickConnectPasswordPrompt = config
-                    } else {
-                        applySearchAsTagFilterIfPossible()
-                    }
+                    handleSearchSubmission()
                 }
                 .toolbar {
-                    ToolbarItemGroup(placement: .primaryAction) {
-                        Menu {
-                            Button("Save Current Layout") {
-                                saveCurrentLayout()
-                            }
-                            .disabled(sessionManager.sessions.isEmpty)
-
-                            if !settingsManager.layoutPresets.isEmpty {
-                                Divider()
-
-                                ForEach(settingsManager.layoutPresets) { preset in
-                                    Button(preset.name) {
-                                        openLayout(preset)
-                                    }
-                                }
-
-                                Divider()
-
-                                Menu("Delete Layout") {
-                                    ForEach(settingsManager.layoutPresets) { preset in
-                                        Button(preset.name, role: .destructive) {
-                                            settingsManager.deleteLayoutPreset(preset)
-                                        }
-                                    }
-                                }
-                            }
-                        } label: {
-                            Image(systemName: "rectangle.3.group")
-                        }
-                        .accessibilityLabel("Layouts")
-
-                        Button {
-                            showingAddServer = true
-                        } label: {
-                            Image(systemName: "plus")
-                        }
-                        .accessibilityLabel("Add server")
-
-                        Button {
-                            openWindow(id: "settings")
-                        } label: {
-                            Image(systemName: "gearshape")
-                        }
-                        .accessibilityLabel("Settings")
-                    }
+                    connectionToolbar
                 }
+            #endif
         }
         .sheet(isPresented: $showingAddServer) {
             AddServerView(serverManager: serverManager)
@@ -216,8 +185,7 @@ struct ConnectionManagerView: View {
                                 password: password
                             )
                             if launch.session.state == .connected {
-                                openWindow(id: "terminal", value: launch.session.id)
-                                dismissWindow(id: "main")
+                                presentTerminalWindow(for: launch.session)
                             } else if let challenge = launch.session.pendingHostKeyChallenge {
                                 stageHostKeyChallenge(
                                     challenge,
@@ -245,6 +213,341 @@ struct ConnectionManagerView: View {
             serverManager.loadServersIfNeeded()
         }
     }
+
+    @ToolbarContentBuilder
+    private var connectionToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Menu {
+                layoutMenuItems
+            } label: {
+                Image(systemName: "rectangle.3.group")
+            }
+            .accessibilityLabel("Layouts")
+
+            Button {
+                showingAddServer = true
+            } label: {
+                Image(systemName: "plus")
+            }
+            .accessibilityLabel("Add server")
+
+            Button {
+                openWindow(id: "settings")
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .accessibilityLabel("Settings")
+        }
+    }
+
+    @ViewBuilder
+    private var layoutMenuItems: some View {
+        Button("Save Current Layout") {
+            saveCurrentLayout()
+        }
+        .disabled(sessionManager.sessions.isEmpty)
+
+        if !settingsManager.layoutPresets.isEmpty {
+            Divider()
+
+            ForEach(settingsManager.layoutPresets) { preset in
+                Button(preset.name) {
+                    openLayout(preset)
+                }
+            }
+
+            Divider()
+
+            Menu("Delete Layout") {
+                ForEach(settingsManager.layoutPresets) { preset in
+                    Button(preset.name, role: .destructive) {
+                        settingsManager.deleteLayoutPreset(preset)
+                    }
+                }
+            }
+        }
+    }
+
+    #if os(macOS)
+    private var macConnectionSidebar: some View {
+        List(selection: $macSelectedServerID) {
+            if serverManager.servers.isEmpty {
+                ContentUnavailableView {
+                    Label("No Connections", systemImage: "server.rack")
+                } description: {
+                    Text("Add a saved host to begin.")
+                }
+                .listRowBackground(Color.clear)
+            } else if macFilteredServers(serverManager.servers).isEmpty,
+                      quickConnectConfig == nil {
+                ContentUnavailableView.search(text: searchQuery)
+                    .listRowBackground(Color.clear)
+            }
+
+            if let config = quickConnectConfig {
+                Section("Quick Connect") {
+                    Button {
+                        quickConnectPasswordPrompt = config
+                    } label: {
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Connect")
+                                Text("\(config.username)@\(config.host):\(config.port)")
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "bolt.fill")
+                                .foregroundStyle(.green)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            let favoriteServers = macFilteredServers(serverManager.favoriteServers)
+            if !favoriteServers.isEmpty {
+                Section("Favorites") {
+                    ForEach(favoriteServers) { server in
+                        macSavedHostSidebarItem(server)
+                    }
+                }
+            }
+
+            let recentServers = macFilteredServers(serverManager.recentServers)
+            if !recentServers.isEmpty {
+                Section("Recent") {
+                    ForEach(recentServers) { server in
+                        macSavedHostSidebarItem(server)
+                    }
+                }
+            }
+
+            let allServers = macFilteredServers(serverManager.servers)
+            if !allServers.isEmpty {
+                Section("All Connections") {
+                    ForEach(allServers) { server in
+                        macSavedHostSidebarItem(server)
+                    }
+                }
+            }
+
+            if !activeTagFilters.isEmpty {
+                Section("Filters") {
+                    ForEach(activeTagFilters, id: \.self) { tag in
+                        Button {
+                            activeTagFilters.removeAll { $0.caseInsensitiveCompare(tag) == .orderedSame }
+                        } label: {
+                            Label(tag, systemImage: "xmark.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            Section("Network") {
+                Button {
+                    macSelectedServerID = nil
+                    macShowsTailscale = true
+                    selectedSection = .tailscale
+                } label: {
+                    Label("Tailscale", systemImage: "network")
+                        .foregroundStyle(ConnectionSection.tailscale.color)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .listStyle(.sidebar)
+        .navigationTitle("Connections")
+        .navigationSplitViewColumnWidth(min: 230, ideal: 280, max: 360)
+        .onChange(of: macSelectedServerID) { _, serverID in
+            if serverID != nil {
+                macShowsTailscale = false
+                selectedSection = .all
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            HStack(spacing: 8) {
+                Button("Add Server", systemImage: "plus") {
+                    showingAddServer = true
+                }
+
+                Menu {
+                    layoutMenuItems
+                } label: {
+                    Label("Layouts", systemImage: "rectangle.3.group")
+                }
+
+                Spacer(minLength: 0)
+            }
+            .controlSize(.small)
+            .padding(8)
+            .background(.bar)
+        }
+    }
+
+    private var macConnectionDetail: some View {
+        Group {
+            if macShowsTailscale {
+                tailscaleDetailView
+            } else if let server = macSelectedServer {
+                VStack(spacing: 0) {
+                    Form {
+                        Section("Connection") {
+                            LabeledContent("Host", value: "\(server.host):\(server.port)")
+                            LabeledContent("User", value: server.username)
+                            LabeledContent("Authentication", value: server.authMethod.displayName)
+                        }
+
+                        Section("Activity") {
+                            LabeledContent(
+                                "Status",
+                                value: sessionForServer(server)?.state.displayName ?? "Disconnected"
+                            )
+                            LabeledContent(
+                                "Last Connected",
+                                value: server.lastConnected.map {
+                                    relativeDateFormatter.localizedString(for: $0, relativeTo: Date())
+                                } ?? "Never"
+                            )
+                        }
+
+                        if !server.tags.isEmpty {
+                            Section("Tags") {
+                                Text(server.tags.joined(separator: ", "))
+                            }
+                        }
+                    }
+                    .formStyle(.grouped)
+
+                    HStack {
+                        Button("Details", systemImage: "info.circle") {
+                            viewingServer = server
+                        }
+                        Button("Edit", systemImage: "pencil") {
+                            editingServer = server
+                        }
+                        Spacer()
+                        Button("Connect", systemImage: "terminal") {
+                            connectToServer(server)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                    }
+                    .padding()
+                    .background(.bar)
+                }
+            } else {
+                ContentUnavailableView {
+                    Label("Select a Connection", systemImage: "server.rack")
+                } description: {
+                    Text("Choose a saved host in the sidebar, or add a new connection.")
+                } actions: {
+                    Button("Local Terminal", systemImage: "apple.terminal") {
+                        openLocalTerminal()
+                    }
+                    Button("Add Server", systemImage: "plus") {
+                        showingAddServer = true
+                    }
+                }
+            }
+        }
+    }
+
+    private var macSelectedServer: ServerConfiguration? {
+        guard let macSelectedServerID else { return nil }
+        return serverManager.server(for: macSelectedServerID)
+    }
+
+    @ViewBuilder
+    private func macSavedHostSidebarItem(_ server: ServerConfiguration) -> some View {
+        macSavedHostRow(server)
+            .tag(server.id)
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) {
+                macSelectedServerID = server.id
+                connectToServer(server)
+            }
+            .contextMenu {
+                Button("Connect", systemImage: "terminal") {
+                    connectToServer(server)
+                }
+                Button("Details", systemImage: "info.circle") {
+                    viewingServer = server
+                }
+                Button("Edit", systemImage: "pencil") {
+                    editingServer = server
+                }
+                Button(
+                    server.isFavorite ? "Remove from Favorites" : "Add to Favorites",
+                    systemImage: server.isFavorite ? "heart.slash" : "heart"
+                ) {
+                    serverManager.toggleFavorite(server)
+                }
+                Divider()
+                Button("Delete", systemImage: "trash", role: .destructive) {
+                    serverPendingDeletion = server
+                }
+            }
+    }
+
+    private func macFilteredServers(_ servers: [ServerConfiguration]) -> [ServerConfiguration] {
+        var result = servers
+        if !activeTagFilters.isEmpty {
+            let active = Set(activeTagFilters.map { $0.lowercased() })
+            result = result.filter { server in
+                !active.isDisjoint(with: Set(server.tags.map { $0.lowercased() }))
+            }
+        }
+
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !query.isEmpty {
+            result = result.filter {
+                $0.name.localizedCaseInsensitiveContains(query)
+                    || $0.host.localizedCaseInsensitiveContains(query)
+                    || $0.username.localizedCaseInsensitiveContains(query)
+                    || $0.tags.contains { $0.localizedCaseInsensitiveContains(query) }
+            }
+        }
+        return result
+    }
+
+    private func macSavedHostRow(_ server: ServerConfiguration) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(server.colorTag.color)
+                .frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 5) {
+                    Text(server.name)
+                        .font(.callout.weight(.medium))
+                        .lineLimit(1)
+                    if server.isFavorite {
+                        Image(systemName: "heart.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.pink)
+                    }
+                }
+                Text("\(server.username)@\(server.host):\(server.port)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+            if let session = sessionForServer(server) {
+                Circle()
+                    .fill(session.state.color)
+                    .frame(width: 6, height: 6)
+                    .accessibilityLabel(session.state.displayName)
+            }
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(server.name), \(server.username) at \(server.host)")
+        .accessibilityHint("Double-click to connect")
+    }
+    #endif
     
     private var availableTags: [String] {
         Array(Set(serverManager.servers.flatMap { $0.tags })).sorted()
@@ -411,11 +714,10 @@ struct ConnectionManagerView: View {
         }
         .alert("SSH Login", isPresented: tailscaleUsernamePromptBinding) {
             TextField("Username", text: $quickConnectUsername)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
+                .terminalTextInputDefaults()
             SecureField("Password", text: $quickConnectPassword)
             TextField("Port", text: $quickConnectPort)
-                .keyboardType(.numberPad)
+                .terminalNumericInput()
             Button("Connect") {
                 if let device = tailscaleUsernamePromptDevice {
                     guard let port = Int(quickConnectPort), (1...65_535).contains(port) else {
@@ -441,8 +743,7 @@ struct ConnectionManagerView: View {
                                 password: password
                             )
                             if launch.session.state == .connected {
-                                openWindow(id: "terminal", value: launch.session.id)
-                                dismissWindow(id: "main")
+                                presentTerminalWindow(for: launch.session)
                             } else if let challenge = launch.session.pendingHostKeyChallenge {
                                 stageHostKeyChallenge(
                                     challenge,
@@ -590,6 +891,14 @@ struct ConnectionManagerView: View {
         }
     }
 
+    private func handleSearchSubmission() {
+        if let config = quickConnectConfig {
+            quickConnectPasswordPrompt = config
+        } else {
+            applySearchAsTagFilterIfPossible()
+        }
+    }
+
     private func applySearchAsTagFilterIfPossible() {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return }
@@ -607,6 +916,19 @@ struct ConnectionManagerView: View {
     }
     
     // MARK: - Actions
+
+    #if os(macOS)
+    private func openLocalTerminal() {
+        openWindow(id: "workspace", value: MacWorkspaceLaunchRequest())
+    }
+    #endif
+
+    private func presentTerminalWindow(for session: TerminalSession) {
+        openWindow(id: "terminal", value: session.id)
+        #if os(visionOS)
+        dismissWindow(id: "main")
+        #endif
+    }
     
     private func connectToServer(
         _ server: ServerConfiguration,
@@ -635,8 +957,7 @@ struct ConnectionManagerView: View {
             }
 
             if session.state == .connected {
-                openWindow(id: "terminal", value: session.id)
-                dismissWindow(id: "main")
+                presentTerminalWindow(for: session)
                 return
             }
 
@@ -766,8 +1087,7 @@ struct ConnectionManagerView: View {
                 return
             }
             if session.state == .connected {
-                openWindow(id: "terminal", value: session.id)
-                dismissWindow(id: "main")
+                presentTerminalWindow(for: session)
                 clearPendingTrustPrompt()
             } else {
                 if case .error(let message) = session.state {
@@ -817,11 +1137,11 @@ struct ConnectionManagerView: View {
                         settingsManager: settingsManager
                     )
                     if launch.session.state == .connected {
-                        openWindow(id: "terminal", value: launch.session.id)
+                        presentTerminalWindow(for: launch.session)
                     } else if let challenge = launch.session.pendingHostKeyChallenge {
                         if interactiveHostKeyTrustIsAllowed {
                             // Each terminal owns its exact per-connection trust prompt.
-                            openWindow(id: "terminal", value: launch.session.id)
+                            presentTerminalWindow(for: launch.session)
                         } else {
                             let reason = challenge.reason == .changed
                                 ? "presented a changed host key"

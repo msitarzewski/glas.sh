@@ -3,7 +3,7 @@ import NIO
 import NIOSSH
 import Logging
 
-final class SFTPClientInboundHandler: ChannelInboundHandler {
+final class SFTPClientInboundHandler: ChannelInboundHandler, Sendable {
     typealias InboundIn = SFTPMessage
     
     let responses: SFTPResponses

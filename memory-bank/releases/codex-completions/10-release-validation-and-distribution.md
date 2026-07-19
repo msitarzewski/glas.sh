@@ -10,21 +10,22 @@ Turn the completed phases into a release candidate with reproducible QA, honest 
 - Final closure of every prior phase's acceptance criteria and evidence requirements.
 - Existing App Store and TestFlight gates from `memory-bank/release-checklist.md`.
 
-## Current status — Blocked (automated QA complete)
+## Current status — Blocked (implementation approved; distribution open)
 
 The code, automated suites, release build, static/security review, and simulator smoke checkpoint are approved. Distribution is still blocked by the explicit open exit criteria below.
 
 ## Current Baseline
 
 - Xcode 27.0 (27A5209h) builds successfully with the installed Metal Toolchain.
-- The full app test action passes 164/164 on both visionOS 26.4 and visionOS 27.0 arm64 simulators, with zero failures, skips, expected failures, or runtime warnings.
+- The full app test action passes 183/183 on both visionOS 26.4 and visionOS 27.0 arm64 simulators; native macOS passes 20/20.
+- NIOSSH passes 331/331; Citadel executes 44 tests with 39 passed and five expected environment-dependent skips.
 - GlasSecretStore passes 75/75 tests across 13 suites.
-- The generic visionOS Release build passes; the app executable is arm64 with minimum visionOS 26.0 and SDK 27.0.
+- The generic visionOS Release build passes; the app executable is arm64 with minimum visionOS 26.0 and SDK 27.0. The signed macOS Release is thin arm64 with hardened runtime and runtime 27.0.
 - `git diff --check` and the production TODO/FIXME/stub scan pass.
 - Independent post-fix audits found no current release blocker in glas.sh or GlasSecretStore. The sibling glassdb migration repair still needs its own current suite and cross-repository acceptance.
 - The final UUID-isolated Gitleaks scan found zero actionable production credentials. Artifacts are fully redacted, checksum-verified, read-only, and tree-invariant; raw findings are classified non-production generated dependencies, vendored fixtures, synthetic test envelopes, or documentation phrases.
 - Gitleaks evidence: `/private/tmp/codex-completions-gitleaks/20260717T230527Z-65126204-c18a-4acb-9430-acb4a17fdbea`; manifest SHA-256 `91847206a34d2f1ba70f8bacad02c90c8301bc63f5b277f12f60ccf880098d69`; source 6,639; history 21; actionable production credentials 0. A subsequent staged-diff scan also reported zero leaks.
-- Both installed simulator apps smoke-launched using the current `sh.glas.app` bundle identifier. Matching-Xcode-26 evidence and physical-device validation remain open.
+- Both installed simulator apps smoke-launched using `sh.glas.app`; the macOS Release launched as `sh.glas.mac`. Physical Vision Pro rendering, ANSI color, transparency extremes, independent opacity/blur behavior, and macOS chrome were reviewed during the implementation loop. Matching-Xcode-26, complete physical security/input/accessibility/performance evidence, archive/TestFlight, and App Store gates remain open.
 
 ## Evidence captured 2026-07-17
 

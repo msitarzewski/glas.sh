@@ -12,7 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-import Crypto
+@preconcurrency import Crypto
 import Foundation
 import NIOCore
 
@@ -23,7 +23,7 @@ import NIOCore
 /// this key to sign data in order to validate their identity as part of user auth.
 ///
 /// Users cannot do much with this key other than construct it, but NIO uses it internally.
-public struct NIOSSHPrivateKey {
+public struct NIOSSHPrivateKey: Sendable {
     /// The actual key structure used to perform the key operations.
     internal var backingKey: BackingKey
 
@@ -80,7 +80,7 @@ public struct NIOSSHPrivateKey {
 
 extension NIOSSHPrivateKey {
     /// The various key types that can be used with NIOSSH.
-    enum BackingKey {
+    enum BackingKey: Sendable {
         case ed25519(Curve25519.Signing.PrivateKey)
         case ecdsaP256(P256.Signing.PrivateKey)
         case ecdsaP384(P384.Signing.PrivateKey)

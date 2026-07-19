@@ -322,5 +322,7 @@ private extension SSHConnectionRole {
         .server(SSHServerConfiguration(hostKeys: hostKeys, userAuthDelegate: DenyAllServerAuthDelegate()))
     }
 
-    static let client = SSHConnectionRole.client(SSHClientConfiguration(userAuthDelegate: ExplodingAuthDelegate(), serverAuthDelegate: AcceptAllHostKeysDelegate()))
+    static var client: SSHConnectionRole {
+        SSHConnectionRole.client(SSHClientConfiguration(userAuthDelegate: ExplodingAuthDelegate(), serverAuthDelegate: AcceptAllHostKeysDelegate()))
+    }
 }

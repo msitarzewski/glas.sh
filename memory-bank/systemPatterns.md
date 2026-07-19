@@ -48,6 +48,7 @@
   - Never stack glass-on-glass.
 - All interactive targets must be >= 60pt for visionOS eye-tracking accuracy. Use `.frame(minWidth:minHeight:)` + `.contentShape()` to expand hit areas beyond visual size.
 - Scene management: disable restoration on ephemeral windows (terminal, html-preview); use `.defaultLaunchBehavior(.presented)` on primary window.
+- Native macOS scene commands are registered exactly once on the primary app scene. Terminal/workspace windows publish `FocusedValues`; the single `MacWorkspaceCommands` instance routes actions to the focused window and prevents duplicate application menus.
 - Hover effects: `.hoverEffect(.highlight)` for small controls; never `.hoverEffect(.lift)` on large compound views.
 
 ## Repo Layout Pattern

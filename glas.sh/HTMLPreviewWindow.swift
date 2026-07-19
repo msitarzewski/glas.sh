@@ -45,7 +45,7 @@ struct HTMLPreviewWindow: View {
                 }
             }
         }
-        .glassBackgroundEffect(in: .rect(cornerRadius: 28))
+        .terminalPlatformGlassBackground(cornerRadius: 28)
         .onAppear {
             loadURL()
             setupAutoReload()
@@ -122,8 +122,7 @@ struct HTMLPreviewWindow: View {
             Form {
                 Section("URL") {
                     TextField("http://localhost:8080", text: $editingURL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                        .terminalTextInputDefaults()
                 }
                 
                 Section("Settings") {
@@ -160,8 +159,9 @@ struct HTMLPreviewWindow: View {
         
         guard autoReload else { return }
         
+        let reload: @MainActor @Sendable () -> Void = { loadURL() }
         reloadTimer = Timer.scheduledTimer(withTimeInterval: context.reloadInterval, repeats: true) { _ in
-            loadURL()
+            Task { @MainActor in reload() }
         }
     }
     

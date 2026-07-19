@@ -49,7 +49,24 @@ defer {
 
 let bootstrap = ClientBootstrap(group: group)
     .channelInitializer { channel in
-        channel.pipeline.addHandlers([NIOSSHHandler(role: .client(.init(userAuthDelegate: InteractivePasswordPromptDelegate(username: parseResult.user, password: parseResult.password), serverAuthDelegate: AcceptAllHostKeysDelegate())), allocator: channel.allocator, inboundChildChannelInitializer: nil), ErrorHandler()])
+        channel.eventLoop.makeCompletedFuture {
+            let sync = channel.pipeline.syncOperations
+            let sshHandler = NIOSSHHandler(
+                role: .client(
+                    .init(
+                        userAuthDelegate: InteractivePasswordPromptDelegate(
+                            username: parseResult.user,
+                            password: parseResult.password
+                        ),
+                        serverAuthDelegate: AcceptAllHostKeysDelegate()
+                    )
+                ),
+                allocator: channel.allocator,
+                inboundChildChannelInitializer: nil
+            )
+            try sync.addHandler(sshHandler)
+            try sync.addHandler(ErrorHandler())
+        }
     }
     .channelOption(ChannelOptions.socket(SocketOptionLevel(SOL_SOCKET), SO_REUSEADDR), value: 1)
     .channelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), TCP_NODELAY), value: 1)
@@ -80,8 +97,15 @@ if let listen = parseResult.listen {
                 // encapsulate the data in SSH messages.
                 // When the glue handlers are in, we can create both channels.
                 let (ours, theirs) = GlueHandler.matchedPair()
-                return childChannel.pipeline.addHandlers([SSHWrapperHandler(), ours, ErrorHandler()]).flatMap {
-                    inboundChannel.pipeline.addHandlers([theirs, ErrorHandler()])
+                return childChannel.eventLoop.makeCompletedFuture {
+                    let childSync = childChannel.pipeline.syncOperations
+                    try childSync.addHandler(SSHWrapperHandler())
+                    try childSync.addHandler(ours)
+                    try childSync.addHandler(ErrorHandler())
+
+                    let inboundSync = inboundChannel.pipeline.syncOperations
+                    try inboundSync.addHandler(theirs)
+                    try inboundSync.addHandler(ErrorHandler())
                 }
             }
 
@@ -102,7 +126,13 @@ if let listen = parseResult.listen {
             guard channelType == .session else {
                 return channel.eventLoop.makeFailedFuture(SSHClientError.invalidChannelType)
             }
-            return childChannel.pipeline.addHandlers([ExampleExecHandler(command: parseResult.commandString, completePromise: exitStatusPromise), ErrorHandler()])
+            return childChannel.eventLoop.makeCompletedFuture {
+                let sync = childChannel.pipeline.syncOperations
+                try sync.addHandler(
+                    ExampleExecHandler(command: parseResult.commandString, completePromise: exitStatusPromise)
+                )
+                try sync.addHandler(ErrorHandler())
+            }
         }
         return promise.futureResult
     }.wait()

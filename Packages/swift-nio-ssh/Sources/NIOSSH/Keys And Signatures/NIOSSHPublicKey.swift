@@ -12,7 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-import Crypto
+@preconcurrency import Crypto
 import Foundation
 import NIOConcurrencyHelpers
 import NIOCore
@@ -25,7 +25,7 @@ import NIOFoundationCompat
 /// to validate users.
 ///
 /// This key is not capable of signing, only verifying.
-public struct NIOSSHPublicKey: Hashable {
+public struct NIOSSHPublicKey: Sendable, Hashable {
     /// The actual key structure used to perform the key operations.
     internal var backingKey: BackingKey
 
@@ -161,7 +161,7 @@ extension NIOSSHPublicKey {
 
 extension NIOSSHPublicKey {
     /// The various key types that can be used with NIOSSH.
-    enum BackingKey {
+    enum BackingKey: Sendable {
         case ed25519(Curve25519.Signing.PublicKey)
         case ecdsaP256(P256.Signing.PublicKey)
         case ecdsaP384(P384.Signing.PublicKey)
@@ -208,31 +208,31 @@ extension NIOSSHPublicKey {
     }
 
     static var customPublicKeyAlgorithms: [NIOSSHPublicKeyProtocol.Type] {
-        _CustomAlgorithms.publicKeyAlgorithmsLock.withLock {
-            _CustomAlgorithms.publicKeyAlgorithms
+        _CustomAlgorithms.storage.withLockedValue {
+            $0.publicKeyAlgorithms
         }
     }
 
     static var customSignatures: [NIOSSHSignatureProtocol.Type] {
-        _CustomAlgorithms.signaturesLock.withLock {
-            _CustomAlgorithms.signatures
+        _CustomAlgorithms.storage.withLockedValue {
+            $0.signatures
         }
     }
 }
 
 public enum NIOSSHAlgorithms {
     public static func register(keyExchangeAlgorithm type: NIOSSHKeyExchangeAlgorithmProtocol.Type) {
-        _CustomAlgorithms.keyExchangeAlgorithmsLock.withLockVoid {
-            if !_CustomAlgorithms.keyExchangeAlgorithms.contains(where: { ObjectIdentifier($0) == ObjectIdentifier(type) }) {
-                _CustomAlgorithms.keyExchangeAlgorithms.append(type)
+        _CustomAlgorithms.storage.withLockedValue {
+            if !$0.keyExchangeAlgorithms.contains(where: { ObjectIdentifier($0) == ObjectIdentifier(type) }) {
+                $0.keyExchangeAlgorithms.append(type)
             }
         }
     }
 
     public static func register(transportProtectionScheme type: NIOSSHTransportProtection.Type) {
-        _CustomAlgorithms.transportProtectionSchemesLock.withLockVoid {
-            if !_CustomAlgorithms.transportProtectionSchemes.contains(where: { ObjectIdentifier($0) == ObjectIdentifier(type) }) {
-                _CustomAlgorithms.transportProtectionSchemes.append(type)
+        _CustomAlgorithms.storage.withLockedValue {
+            if !$0.transportProtectionSchemes.contains(where: { ObjectIdentifier($0) == ObjectIdentifier(type) }) {
+                $0.transportProtectionSchemes.append(type)
             }
         }
     }
@@ -245,52 +245,43 @@ public enum NIOSSHAlgorithms {
         publicKey type: PublicKey.Type,
         signature: Signature.Type
     ) {
-        _CustomAlgorithms.publicKeyAlgorithmsLock.withLockVoid {
-            if !_CustomAlgorithms.publicKeyAlgorithms.contains(where: { ObjectIdentifier($0) == ObjectIdentifier(type) }) {
-                _CustomAlgorithms.publicKeyAlgorithms.append(type)
-                _CustomAlgorithms.signatures.append(signature)
+        _CustomAlgorithms.storage.withLockedValue {
+            if !$0.publicKeyAlgorithms.contains(where: { ObjectIdentifier($0) == ObjectIdentifier(type) }) {
+                $0.publicKeyAlgorithms.append(type)
+                $0.signatures.append(signature)
             }
         }
     }
 
     /// Used for our unit tests
     internal static func unregisterAlgorithms() {
-        _CustomAlgorithms.transportProtectionSchemesLock.withLockVoid {
-            _CustomAlgorithms.transportProtectionSchemes = []
-        }
-        _CustomAlgorithms.publicKeyAlgorithmsLock.withLockVoid {
-            _CustomAlgorithms.publicKeyAlgorithms = []
-        }
-        _CustomAlgorithms.signaturesLock.withLockVoid {
-            _CustomAlgorithms.signatures = []
-        }
-        _CustomAlgorithms.keyExchangeAlgorithmsLock.withLockVoid {
-            _CustomAlgorithms.keyExchangeAlgorithms = []
+        _CustomAlgorithms.storage.withLockedValue {
+            $0 = .init()
         }
     }
 }
 
 internal var customTransportProtectionSchemes: [NIOSSHTransportProtection.Type] {
-    _CustomAlgorithms.transportProtectionSchemesLock.withLock {
-        _CustomAlgorithms.transportProtectionSchemes
+    _CustomAlgorithms.storage.withLockedValue {
+        $0.transportProtectionSchemes
     }
 }
 
 internal var customKeyExchangeAlgorithms: [NIOSSHKeyExchangeAlgorithmProtocol.Type] {
-    _CustomAlgorithms.keyExchangeAlgorithmsLock.withLock {
-        _CustomAlgorithms.keyExchangeAlgorithms
+    _CustomAlgorithms.storage.withLockedValue {
+        $0.keyExchangeAlgorithms
     }
 }
 
 private enum _CustomAlgorithms {
-    static var transportProtectionSchemesLock = NIOLock()
-    static var transportProtectionSchemes = [NIOSSHTransportProtection.Type]()
-    static var keyExchangeAlgorithmsLock = NIOLock()
-    static var keyExchangeAlgorithms = [NIOSSHKeyExchangeAlgorithmProtocol.Type]()
-    static var publicKeyAlgorithmsLock = NIOLock()
-    static var publicKeyAlgorithms: [NIOSSHPublicKeyProtocol.Type] = []
-    static var signaturesLock = NIOLock()
-    static var signatures: [NIOSSHSignatureProtocol.Type] = []
+    struct Storage: Sendable {
+        var transportProtectionSchemes: [NIOSSHTransportProtection.Type] = []
+        var keyExchangeAlgorithms: [NIOSSHKeyExchangeAlgorithmProtocol.Type] = []
+        var publicKeyAlgorithms: [NIOSSHPublicKeyProtocol.Type] = []
+        var signatures: [NIOSSHSignatureProtocol.Type] = []
+    }
+
+    static let storage = NIOLockedValueBox(Storage())
 }
 
 extension NIOSSHPublicKey.BackingKey: Equatable {

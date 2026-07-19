@@ -10,6 +10,9 @@ import FoundationModels
 #endif
 import SwiftUI
 import os
+#if canImport(AppKit)
+import AppKit
+#endif
 
 struct CommandSuggestion {
     var command: String
@@ -439,7 +442,7 @@ struct AIAssistantView: View {
                 ContentUnavailableView(
                     "AI Not Available",
                     systemImage: "cpu",
-                    description: Text("Foundation Models requires visionOS 26 or later.")
+                    description: Text(foundationModelsRequirement)
                 )
                 #endif
             }
@@ -468,6 +471,14 @@ struct AIAssistantView: View {
         } message: {
             Text(confirmationMessage)
         }
+    }
+
+    private var foundationModelsRequirement: String {
+        #if os(macOS)
+        "Foundation Models requires macOS 26 or later and Apple Intelligence."
+        #else
+        "Foundation Models requires visionOS 26 or later and Apple Intelligence."
+        #endif
     }
 
     private var assistantContent: some View {
@@ -551,6 +562,9 @@ struct AIAssistantView: View {
                 Button {
                     #if canImport(UIKit)
                     UIPasteboard.general.string = composedCommand
+                    #elseif canImport(AppKit)
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(composedCommand, forType: .string)
                     #endif
                 } label: {
                     Label("Copy", systemImage: "doc.on.doc")
@@ -700,6 +714,9 @@ struct AIErrorCard: View {
                     Button {
                         #if canImport(UIKit)
                         UIPasteboard.general.string = composedFix
+                        #elseif canImport(AppKit)
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(composedFix, forType: .string)
                         #endif
                     } label: {
                         Label("Copy", systemImage: "doc.on.doc")

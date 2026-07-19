@@ -26,7 +26,7 @@ final class DataToBufferCodec: ChannelDuplexHandler {
     typealias OutboundOut = SSHChannelData
 
     func handlerAdded(context: ChannelHandlerContext) {
-        context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { error in
+        context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).assumeIsolated().whenFailure { error in
             context.fireErrorCaught(error)
         }
     }
@@ -35,7 +35,9 @@ final class DataToBufferCodec: ChannelDuplexHandler {
         let data = self.unwrapInboundIn(data)
 
         guard case .byteBuffer(let bytes) = data.data else {
-            fatalError("Unexpected read type")
+            context.fireErrorCaught(SSHServerError.invalidDataType)
+            context.close(promise: nil)
+            return
         }
 
         guard case .channel = data.type else {

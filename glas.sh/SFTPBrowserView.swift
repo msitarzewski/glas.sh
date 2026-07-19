@@ -13,7 +13,7 @@ import UniformTypeIdentifiers
 import CryptoKit
 import Darwin
 
-private enum SFTPTransferError: LocalizedError {
+nonisolated private enum SFTPTransferError: LocalizedError {
     case unsafeName
     case destinationEscapesFolder
     case cannotCreateTemporaryFile
@@ -60,18 +60,22 @@ private enum SFTPTransferError: LocalizedError {
     }
 }
 
-private enum SFTPLocalOpenError: Error {
+nonisolated private enum SFTPLocalOpenError: Error {
     case notFound
 }
 
-private enum SFTPLocalProtectionClass: Int32 {
+nonisolated private struct SFTPUploadWorkerFailure: Error, Sendable {
+    let message: String
+}
+
+nonisolated private enum SFTPLocalProtectionClass: Int32 {
     // Darwin content-protection classes A and B. Using F_SETPROTECTIONCLASS
     // applies the policy to the already-open inode without resolving a path.
     case complete = 1
     case completeUnlessOpen = 2
 }
 
-struct SFTPLocalFileIdentity: Equatable {
+nonisolated struct SFTPLocalFileIdentity: Equatable, Sendable {
     let device: UInt64
     let inode: UInt64
     let size: UInt64
@@ -89,12 +93,12 @@ struct SFTPLocalFileIdentity: Equatable {
     }
 }
 
-struct SFTPLocalDirectoryIdentity: Equatable {
+nonisolated struct SFTPLocalDirectoryIdentity: Equatable, Sendable {
     let device: UInt64
     let inode: UInt64
 }
 
-struct SFTPUploadResumeRecord: Codable {
+nonisolated struct SFTPUploadResumeRecord: Codable, Sendable {
     static let currentVersion = 1
 
     let version: Int
@@ -129,7 +133,7 @@ struct SFTPUploadResumeRecord: Codable {
     }
 }
 
-enum SFTPLocalResumeDecision: Equatable {
+nonisolated enum SFTPLocalResumeDecision: Equatable, Sendable {
     case create
     case resume(offset: UInt64)
     case replaceOversized
@@ -182,8 +186,7 @@ struct SFTPBrowserView: View {
             content
                 .navigationTitle(currentPath)
                 .searchable(text: $filterText, prompt: "Filter files...")
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
+                .terminalTextInputDefaults()
                 .onSubmit(of: .search) {
                     if !filterText.isEmpty {
                         Task { await remoteFind(filterText) }
@@ -1033,190 +1036,26 @@ struct SFTPBrowserView: View {
                         reservingIn: &reservedRemoteNames
                     )
                     let targetPath = remotePath(for: filename)
-                    guard client.supportsExtension("hardlink@openssh.com", version: "1") else {
-                        throw SFTPTransferError.atomicCommitUnavailable
-                    }
-                    let openedSource = try Self.openLocalSourceNoFollow(at: url)
-                    let localFile = openedSource.file
-                    let sourceIdentity = openedSource.identity
-                    defer { try? localFile.close() }
-                    guard sourceIdentity.size <= BoundedStorage.maximumUploadBytes else {
-                        throw BoundedStorageError.sizeLimitExceeded(
-                            limit: BoundedStorage.maximumUploadBytes
-                        )
-                    }
-                    let resumeIdentity = Self.uploadResumeIdentity(
-                        serverID: session?.server.id ?? sessionID,
-                        remoteDirectory: currentPath,
-                        finalName: filename,
-                        sourceName: sourceName,
-                        sourceSize: sourceIdentity.size,
-                        sourceModificationTime: sourceIdentity.modificationTime
-                    )
-                    let recordURL = try Self.uploadRecordURL(for: resumeIdentity)
-                    var record = try Self.loadUploadRecord(at: recordURL)
-                    if let existingRecord = record {
-                        guard existingRecord.matches(
-                            serverID: session?.server.id ?? sessionID,
-                            remoteDirectory: currentPath,
-                            finalName: filename,
-                            sourceName: sourceName,
-                            sourceSize: sourceIdentity.size,
-                            sourceModificationTime: sourceIdentity.modificationTime
-                        ) else {
-                            throw SFTPTransferError.invalidResumeMetadata
-                        }
-                        record?.updatedAt = Date()
-                    } else {
-                        record = SFTPUploadResumeRecord(
-                            version: SFTPUploadResumeRecord.currentVersion,
-                            createdAt: Date(),
-                            updatedAt: Date(),
-                            serverID: session?.server.id ?? sessionID,
-                            remoteDirectory: currentPath,
-                            finalName: filename,
-                            sourceName: sourceName,
-                            sourceSize: sourceIdentity.size,
-                            sourceModificationTime: sourceIdentity.modificationTime,
-                            partialName: ".glas-sh-upload-\(UUID().uuidString).partial"
-                        )
-                    }
-                    guard let record else {
-                        throw SFTPTransferError.cannotCreateTemporaryFile
-                    }
-                    try Self.saveUploadRecord(record, at: recordURL)
-                    let partialName = record.partialName
-                    let partialPath = remotePath(for: partialName)
                     operationInProgress = filename == sourceName
                         ? "Uploading \(filename)..."
                         : "Uploading as \(filename)..."
-
-                    // Stream only to an unpredictable hidden name. The completed,
-                    // verified inode is exposed under the requested final name by
-                    // OpenSSH hardlink, whose existing-target failure provides an
-                    // atomic no-clobber commit.
-                    let remoteFile: SFTPFile
-                    do {
-                        // A recorded partial is never trusted by pathname alone. Open it
-                        // for read/write only after LSTAT proves the name is not a symlink.
-                        let retainedAttributes = try await client.getLinkAttributes(at: partialPath)
-                        guard retainedAttributes.isRegularFile else {
-                            throw SFTPTransferError.remoteFileIsNotRegular
-                        }
-                        remoteFile = try await client.openFile(
-                            filePath: partialPath,
-                            flags: [.read, .write]
-                        )
-                    } catch let transferError as SFTPTransferError {
-                        throw transferError
-                    } catch {
-                        // Exclusive creation preserves no-clobber even if another actor
-                        // races to claim the unpredictable partial name.
-                        remoteFile = try await client.openFile(
-                            filePath: partialPath,
-                            flags: [.read, .write, .create, .forceCreate]
-                        )
+                    let cleanupWarning = try await Self.performUpload(
+                        client: client,
+                        sourceURL: url,
+                        serverID: session?.server.id ?? sessionID,
+                        remoteDirectory: currentPath,
+                        sourceName: sourceName,
+                        finalName: filename,
+                        targetPath: targetPath,
+                        maximumUploadBytes: BoundedStorage.maximumUploadBytes
+                    )
+                    if cleanupWarning {
+                        self.error = "Upload completed, but a tracked hidden cleanup file remains on the server."
                     }
-                    do {
-                        var offset: UInt64 = 0
-                        var localHasher = SHA256()
-                        let initialRemoteAttributes = try await remoteFile.readAttributes()
-                        guard initialRemoteAttributes.isRegularFile,
-                              let initialRemoteSize = initialRemoteAttributes.size else {
-                            throw SFTPTransferError.remoteFileIsNotRegular
-                        }
-                        guard initialRemoteSize <= sourceIdentity.size else {
-                            throw SFTPTransferError.invalidResumePartial
-                        }
-
-                        // Find EOF on the existing remote handle while proving it is an
-                        // exact prefix of the current local source. This is the resume gate.
-                        while true {
-                            try Task.checkCancellation()
-                            let chunk = try await remoteFile.read(from: offset, length: 262_144)
-                            let remoteData = Data(buffer: chunk)
-                            guard !remoteData.isEmpty else { break }
-                            guard let localData = try localFile.read(upToCount: remoteData.count),
-                                  Self.resumeChunksMatch(source: remoteData, retained: localData) else {
-                                throw SFTPTransferError.invalidResumePartial
-                            }
-                            localHasher.update(data: localData)
-                            offset += UInt64(localData.count)
-                        }
-                        guard offset == initialRemoteSize else {
-                            throw SFTPTransferError.remoteSourceChanged
-                        }
-
-                        while let data = try localFile.read(upToCount: 262_144), !data.isEmpty {
-                            try Task.checkCancellation()
-                            localHasher.update(data: data)
-                            var buffer = ByteBuffer()
-                            buffer.writeBytes(data)
-                            try await remoteFile.write(buffer, at: offset)
-                            offset += UInt64(data.count)
-                        }
-                        guard offset == sourceIdentity.size,
-                              Self.localFile(localFile, matches: sourceIdentity) else {
-                            throw SFTPTransferError.sourceChanged
-                        }
-                        if client.supportsExtension("fsync@openssh.com", version: "1") {
-                            try await remoteFile.synchronize()
-                        }
-                        let uploadedAttributes = try await remoteFile.readAttributes()
-                        guard uploadedAttributes.isRegularFile else {
-                            throw SFTPTransferError.remoteFileIsNotRegular
-                        }
-                        guard let remoteSize = uploadedAttributes.size else {
-                            throw SFTPTransferError.missingRemoteSize
-                        }
-                        if remoteSize != offset {
-                            throw SFTPTransferError.sizeMismatch(expected: offset, actual: remoteSize)
-                        }
-
-                        let localDigest = Data(localHasher.finalize())
-                        let remoteDigest = try await remoteSHA256(
-                            file: remoteFile,
-                            expectedSize: offset
-                        )
-                        guard localDigest == remoteDigest else {
-                            throw SFTPTransferError.checksumMismatch
-                        }
-
-                        let verifiedHandleAttributes = try await remoteFile.readAttributes()
-                        guard verifiedHandleAttributes.isRegularFile,
-                              verifiedHandleAttributes.size == uploadedAttributes.size,
-                              verifiedHandleAttributes.accessModificationTime?.modificationTime
-                                == uploadedAttributes.accessModificationTime?.modificationTime else {
-                            throw SFTPTransferError.remoteSourceChanged
-                        }
-                        let verifiedPathAttributes = try await client.getLinkAttributes(at: partialPath)
-                        guard verifiedPathAttributes.isRegularFile,
-                              verifiedPathAttributes.size == verifiedHandleAttributes.size,
-                              verifiedPathAttributes.accessModificationTime?.modificationTime
-                                == verifiedHandleAttributes.accessModificationTime?.modificationTime else {
-                            throw SFTPTransferError.remoteSourceChanged
-                        }
-                        try Self.checkCancellationBeforeCommit()
-                        try await client.hardLink(at: partialPath, to: targetPath)
-                        try await remoteFile.close()
-                        do {
-                            try await client.remove(at: partialPath)
-                            try FileManager.default.removeItem(at: recordURL)
-                        } catch {
-                            self.error = "Upload completed, but a tracked hidden cleanup file remains on the server."
-                        }
-                    } catch {
-                        try? await remoteFile.close()
-                        // Never delete by path after failure: another remote actor
-                        // can unlink and replace even an exclusively created path.
-                        // The mapping is retained so the hidden artifact stays tracked
-                        // and counts against the bounded recovery capacity.
-                        self.error = error is CancellationError
-                            ? "Upload cancelled. A hidden partial may remain and will be validated before any future resume; no final file was exposed."
-                            : "Upload of \(filename) failed: \(error.localizedDescription). A hidden partial may remain and will be validated before any future resume; no incomplete final file was exposed."
-                        operationInProgress = nil
-                        return
-                    }
+                } catch let failure as SFTPUploadWorkerFailure {
+                    self.error = failure.message
+                    operationInProgress = nil
+                    return
                 } catch {
                     self.error = error is CancellationError
                         ? "Upload cancelled. No partial file was kept."
@@ -1344,24 +1183,206 @@ struct SFTPBrowserView: View {
         isSearchingRemote = false
     }
 
-    private func remoteSHA256(
-        file: SFTPFile,
-        expectedSize: UInt64
-    ) async throws -> Data {
-        var hasher = SHA256()
-        var offset: UInt64 = 0
-        while true {
-            try Task.checkCancellation()
-            let chunk = try await file.read(from: offset, length: 262_144)
-            guard chunk.readableBytes > 0 else { break }
-            let data = Data(buffer: chunk)
-            hasher.update(data: data)
-            offset += UInt64(data.count)
+    @concurrent
+    private static func performUpload(
+        client: SFTPClient,
+        sourceURL: URL,
+        serverID: UUID,
+        remoteDirectory: String,
+        sourceName: String,
+        finalName: String,
+        targetPath: String,
+        maximumUploadBytes: UInt64
+    ) async throws -> Bool {
+        guard client.supportsExtension("hardlink@openssh.com", version: "1") else {
+            throw SFTPTransferError.atomicCommitUnavailable
         }
-        guard offset == expectedSize else {
-            throw SFTPTransferError.sizeMismatch(expected: expectedSize, actual: offset)
+
+        let openedSource = try openLocalSourceNoFollow(at: sourceURL)
+        let localFile = openedSource.file
+        let sourceIdentity = openedSource.identity
+        defer { try? localFile.close() }
+        guard sourceIdentity.size <= maximumUploadBytes else {
+            let formattedLimit = ByteCountFormatter.string(
+                fromByteCount: Int64(clamping: maximumUploadBytes),
+                countStyle: .file
+            )
+            throw SFTPUploadWorkerFailure(
+                message: "The transfer exceeded its \(formattedLimit) storage limit."
+            )
         }
-        return Data(hasher.finalize())
+
+        let resumeIdentity = uploadResumeIdentity(
+            serverID: serverID,
+            remoteDirectory: remoteDirectory,
+            finalName: finalName,
+            sourceName: sourceName,
+            sourceSize: sourceIdentity.size,
+            sourceModificationTime: sourceIdentity.modificationTime
+        )
+        let recordURL = try uploadRecordURL(for: resumeIdentity)
+        var record = try loadUploadRecord(at: recordURL)
+        if let existingRecord = record {
+            guard existingRecord.matches(
+                serverID: serverID,
+                remoteDirectory: remoteDirectory,
+                finalName: finalName,
+                sourceName: sourceName,
+                sourceSize: sourceIdentity.size,
+                sourceModificationTime: sourceIdentity.modificationTime
+            ) else {
+                throw SFTPTransferError.invalidResumeMetadata
+            }
+            record?.updatedAt = Date()
+        } else {
+            record = SFTPUploadResumeRecord(
+                version: SFTPUploadResumeRecord.currentVersion,
+                createdAt: Date(),
+                updatedAt: Date(),
+                serverID: serverID,
+                remoteDirectory: remoteDirectory,
+                finalName: finalName,
+                sourceName: sourceName,
+                sourceSize: sourceIdentity.size,
+                sourceModificationTime: sourceIdentity.modificationTime,
+                partialName: ".glas-sh-upload-\(UUID().uuidString).partial"
+            )
+        }
+        guard let record else {
+            throw SFTPTransferError.cannotCreateTemporaryFile
+        }
+        try saveUploadRecord(record, at: recordURL)
+        let partialPath = remoteDirectory.hasSuffix("/")
+            ? remoteDirectory + record.partialName
+            : remoteDirectory + "/" + record.partialName
+
+        // Stream only to an unpredictable hidden name. The completed, verified
+        // inode is exposed by OpenSSH hardlink, preserving atomic no-clobber.
+        let remoteFile: SFTPFile
+        do {
+            let retainedAttributes = try await client.getLinkAttributes(at: partialPath)
+            guard retainedAttributes.isRegularFile else {
+                throw SFTPTransferError.remoteFileIsNotRegular
+            }
+            remoteFile = try await client.openFile(
+                filePath: partialPath,
+                flags: [.read, .write]
+            )
+        } catch let transferError as SFTPTransferError {
+            throw transferError
+        } catch {
+            remoteFile = try await client.openFile(
+                filePath: partialPath,
+                flags: [.read, .write, .create, .forceCreate]
+            )
+        }
+
+        do {
+            var offset: UInt64 = 0
+            var localHasher = SHA256()
+            let initialRemoteAttributes = try await remoteFile.readAttributes()
+            guard initialRemoteAttributes.isRegularFile,
+                  let initialRemoteSize = initialRemoteAttributes.size else {
+                throw SFTPTransferError.remoteFileIsNotRegular
+            }
+            guard initialRemoteSize <= sourceIdentity.size else {
+                throw SFTPTransferError.invalidResumePartial
+            }
+
+            while true {
+                try Task.checkCancellation()
+                let chunk = try await remoteFile.read(from: offset, length: 262_144)
+                let remoteData = Data(buffer: chunk)
+                guard !remoteData.isEmpty else { break }
+                guard let localData = try localFile.read(upToCount: remoteData.count),
+                      resumeChunksMatch(source: remoteData, retained: localData) else {
+                    throw SFTPTransferError.invalidResumePartial
+                }
+                localHasher.update(data: localData)
+                offset += UInt64(localData.count)
+            }
+            guard offset == initialRemoteSize else {
+                throw SFTPTransferError.remoteSourceChanged
+            }
+
+            while let data = try localFile.read(upToCount: 262_144), !data.isEmpty {
+                try Task.checkCancellation()
+                localHasher.update(data: data)
+                var buffer = ByteBuffer()
+                buffer.writeBytes(data)
+                try await remoteFile.write(buffer, at: offset)
+                offset += UInt64(data.count)
+            }
+            guard offset == sourceIdentity.size,
+                  Self.localFile(localFile, matches: sourceIdentity) else {
+                throw SFTPTransferError.sourceChanged
+            }
+            if client.supportsExtension("fsync@openssh.com", version: "1") {
+                try await remoteFile.synchronize()
+            }
+
+            let uploadedAttributes = try await remoteFile.readAttributes()
+            guard uploadedAttributes.isRegularFile else {
+                throw SFTPTransferError.remoteFileIsNotRegular
+            }
+            guard let remoteSize = uploadedAttributes.size else {
+                throw SFTPTransferError.missingRemoteSize
+            }
+            guard remoteSize == offset else {
+                throw SFTPTransferError.sizeMismatch(expected: offset, actual: remoteSize)
+            }
+
+            let localDigest = Data(localHasher.finalize())
+            var remoteHasher = SHA256()
+            var remoteOffset: UInt64 = 0
+            while true {
+                try Task.checkCancellation()
+                let chunk = try await remoteFile.read(from: remoteOffset, length: 262_144)
+                guard chunk.readableBytes > 0 else { break }
+                let data = Data(buffer: chunk)
+                remoteHasher.update(data: data)
+                remoteOffset += UInt64(data.count)
+            }
+            guard remoteOffset == offset else {
+                throw SFTPTransferError.sizeMismatch(expected: offset, actual: remoteOffset)
+            }
+            let remoteDigest = Data(remoteHasher.finalize())
+            guard localDigest == remoteDigest else {
+                throw SFTPTransferError.checksumMismatch
+            }
+
+            let verifiedHandleAttributes = try await remoteFile.readAttributes()
+            guard verifiedHandleAttributes.isRegularFile,
+                  verifiedHandleAttributes.size == uploadedAttributes.size,
+                  verifiedHandleAttributes.accessModificationTime?.modificationTime
+                    == uploadedAttributes.accessModificationTime?.modificationTime else {
+                throw SFTPTransferError.remoteSourceChanged
+            }
+            let verifiedPathAttributes = try await client.getLinkAttributes(at: partialPath)
+            guard verifiedPathAttributes.isRegularFile,
+                  verifiedPathAttributes.size == verifiedHandleAttributes.size,
+                  verifiedPathAttributes.accessModificationTime?.modificationTime
+                    == verifiedHandleAttributes.accessModificationTime?.modificationTime else {
+                throw SFTPTransferError.remoteSourceChanged
+            }
+
+            try checkCancellationBeforeCommit()
+            try await client.hardLink(at: partialPath, to: targetPath)
+            try await remoteFile.close()
+            do {
+                try await client.remove(at: partialPath)
+                try FileManager.default.removeItem(at: recordURL)
+                return false
+            } catch {
+                return true
+            }
+        } catch {
+            try? await remoteFile.close()
+            let message = error is CancellationError
+                ? "Upload cancelled. A hidden partial may remain and will be validated before any future resume; no final file was exposed."
+                : "Upload of \(finalName) failed: \(error.localizedDescription). A hidden partial may remain and will be validated before any future resume; no incomplete final file was exposed."
+            throw SFTPUploadWorkerFailure(message: message)
+        }
     }
 
     private func navigateToSearchResult(_ path: String) {
@@ -1375,14 +1396,14 @@ struct SFTPBrowserView: View {
 
     // MARK: - Helpers
 
-    private static let uploadMetadataMaximumRecordCount = 128
-    private static let uploadMetadataMaximumRecordBytes = 64 * 1024
+    nonisolated private static let uploadMetadataMaximumRecordCount = 128
+    nonisolated private static let uploadMetadataMaximumRecordBytes = 64 * 1024
 
-    static func checkCancellationBeforeCommit() throws {
+    nonisolated static func checkCancellationBeforeCommit() throws {
         try Task.checkCancellation()
     }
 
-    private static func transferIdentityDigest(_ components: [String]) -> String {
+    nonisolated private static func transferIdentityDigest(_ components: [String]) -> String {
         let framed = components.map { "\($0.utf8.count):\($0)" }.joined(separator: "|")
         return SHA256.hash(data: Data(framed.utf8)).map { String(format: "%02x", $0) }.joined()
     }
@@ -1402,7 +1423,7 @@ struct SFTPBrowserView: View {
         ])
     }
 
-    static func uploadResumeIdentity(
+    nonisolated static func uploadResumeIdentity(
         serverID: UUID,
         remoteDirectory: String,
         finalName: String,
@@ -1434,11 +1455,11 @@ struct SFTPBrowserView: View {
         return size <= expectedSize ? .resume(offset: size) : .replaceOversized
     }
 
-    static func resumeChunksMatch(source: Data, retained: Data) -> Bool {
+    nonisolated static func resumeChunksMatch(source: Data, retained: Data) -> Bool {
         !source.isEmpty && source.count == retained.count && source == retained
     }
 
-    static func localFileIdentity(for file: FileHandle) throws -> SFTPLocalFileIdentity {
+    nonisolated static func localFileIdentity(for file: FileHandle) throws -> SFTPLocalFileIdentity {
         var metadata = stat()
         guard Darwin.fstat(file.fileDescriptor, &metadata) == 0,
               (metadata.st_mode & S_IFMT) == S_IFREG,
@@ -1456,7 +1477,7 @@ struct SFTPBrowserView: View {
         )
     }
 
-    static func localDirectoryIdentity(for directory: FileHandle) throws -> SFTPLocalDirectoryIdentity {
+    nonisolated static func localDirectoryIdentity(for directory: FileHandle) throws -> SFTPLocalDirectoryIdentity {
         var metadata = stat()
         guard Darwin.fstat(directory.fileDescriptor, &metadata) == 0,
               (metadata.st_mode & S_IFMT) == S_IFDIR else {
@@ -1536,7 +1557,7 @@ struct SFTPBrowserView: View {
         throw SFTPTransferError.cannotCreateTemporaryFile
     }
 
-    private static func openRegularFileNoFollow(
+    nonisolated private static func openRegularFileNoFollow(
         at url: URL,
         flags: Int32,
         createExclusively: Bool = false
@@ -1562,7 +1583,7 @@ struct SFTPBrowserView: View {
         }
     }
 
-    private static func openRegularFileNoFollow(
+    nonisolated private static func openRegularFileNoFollow(
         in directory: FileHandle,
         name: String,
         flags: Int32,
@@ -1596,7 +1617,7 @@ struct SFTPBrowserView: View {
         }
     }
 
-    static func openLocalSourceNoFollow(
+    nonisolated static func openLocalSourceNoFollow(
         at url: URL
     ) throws -> (file: FileHandle, identity: SFTPLocalFileIdentity) {
         do {
@@ -1606,7 +1627,7 @@ struct SFTPBrowserView: View {
         }
     }
 
-    static func localFile(
+    nonisolated static func localFile(
         _ file: FileHandle,
         matches identity: SFTPLocalFileIdentity
     ) -> Bool {
@@ -1726,7 +1747,7 @@ struct SFTPBrowserView: View {
         return capacity
     }
 
-    private static func localFileSize(at url: URL) throws -> UInt64 {
+    nonisolated private static func localFileSize(at url: URL) throws -> UInt64 {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         guard attributes[.type] as? FileAttributeType == .typeRegular,
               let size = (attributes[.size] as? NSNumber)?.uint64Value else {
@@ -1750,7 +1771,7 @@ struct SFTPBrowserView: View {
         return Data(hasher.finalize())
     }
 
-    private static func uploadMetadataDirectory() throws -> URL {
+    nonisolated private static func uploadMetadataDirectory() throws -> URL {
         let base = try FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -1766,7 +1787,7 @@ struct SFTPBrowserView: View {
         return directory
     }
 
-    static func canReserveUploadMetadataRecord(
+    nonisolated static func canReserveUploadMetadataRecord(
         existingRecordNames: Set<String>,
         requestedName: String,
         maximumCount: Int = uploadMetadataMaximumRecordCount
@@ -1775,7 +1796,7 @@ struct SFTPBrowserView: View {
             || existingRecordNames.count < maximumCount
     }
 
-    private static func uploadRecordURL(for identity: String) throws -> URL {
+    nonisolated private static func uploadRecordURL(for identity: String) throws -> URL {
         let directory = try uploadMetadataDirectory()
         let recordURL = directory.appendingPathComponent(identity).appendingPathExtension("json")
         let existingNames = try Set(FileManager.default.contentsOfDirectory(
@@ -1798,7 +1819,7 @@ struct SFTPBrowserView: View {
         return recordURL
     }
 
-    private static func loadUploadRecord(at url: URL) throws -> SFTPUploadResumeRecord? {
+    nonisolated private static func loadUploadRecord(at url: URL) throws -> SFTPUploadResumeRecord? {
         do {
             let size = try localFileSize(at: url)
             guard size <= UInt64(uploadMetadataMaximumRecordBytes),
@@ -1823,7 +1844,7 @@ struct SFTPBrowserView: View {
         }
     }
 
-    private static func saveUploadRecord(_ record: SFTPUploadResumeRecord, at url: URL) throws {
+    nonisolated private static func saveUploadRecord(_ record: SFTPUploadResumeRecord, at url: URL) throws {
         let data = try JSONEncoder().encode(record)
         guard data.count <= uploadMetadataMaximumRecordBytes else {
             throw SFTPTransferError.cannotCreateTemporaryFile
@@ -1835,7 +1856,7 @@ struct SFTPBrowserView: View {
         )
     }
 
-    static func isSafeBasename(_ name: String) -> Bool {
+    nonisolated static func isSafeBasename(_ name: String) -> Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               trimmed == name,
