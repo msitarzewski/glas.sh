@@ -12,6 +12,8 @@ This release changes how users browse, organize, inspect, and launch connections
 
 The release delivers one shared transient projection, native visionOS/macOS/iPadOS/iOS shells, authoritative terminal/workgroup routing, iPhone/iPad target support, duplicate-navigation cleanup, and regression coverage. Xcode 27 beta UI-runner finalization and physical Vision Pro developer-disk-image launch capture remain documented tooling limitations; the approval explicitly accepts them without representing either as a passing automated check.
 
+Publication: PR [#29](https://github.com/msitarzewski/glas.sh/pull/29).
+
 ## Product invariants
 
 - visionOS remains the reference experience.

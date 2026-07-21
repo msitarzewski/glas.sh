@@ -51,6 +51,7 @@ Complete the Connection Library release: one deterministic projection over exist
 
 ## Validation Artifacts
 
+- PR [#29](https://github.com/msitarzewski/glas.sh/pull/29)
 - `/tmp/glas-connection-library-final-iphone-tests.xcresult`
 - `/tmp/glas-connection-library-final-vision-tests.xcresult`
 - `/tmp/glas-connection-library-final-vision264-tests.xcresult`
