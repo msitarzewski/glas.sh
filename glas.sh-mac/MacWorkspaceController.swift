@@ -17,7 +17,14 @@ final class MacWorkspaceController {
     var pendingSSHAxis: MacWorkspaceSplitAxis?
 
     private let defaults: UserDefaults
+    private let startupCommandBroker: MacStartupCommandBroker
+    private var startupTicketIDsByPaneID: [UUID: UUID] = [:]
     private var lifecycleGeneration: UInt64 = 0
+
+    let workgroupID: UUID?
+    let workgroupName: String?
+    let workgroupColor: ServerColorTag?
+    let tabLabel: String?
 
     init(
         workspaceID: UUID,
@@ -25,11 +32,44 @@ final class MacWorkspaceController {
         defaults: UserDefaults = .standard
     ) {
         self.defaults = defaults
+        self.startupCommandBroker = .shared
+        self.workgroupID = nil
+        self.workgroupName = nil
+        self.workgroupColor = nil
+        self.tabLabel = nil
         self.state = Self.load(
             workspaceID: workspaceID,
             startsEmptyIfUnrestored: startsEmptyIfUnrestored,
+            initialPaneIntent: nil,
+            defaults: defaults
+        ).state
+    }
+
+    init(
+        request: MacWorkspaceLaunchRequest,
+        startupCommandBroker: MacStartupCommandBroker = .shared,
+        defaults: UserDefaults = .standard
+    ) {
+        self.defaults = defaults
+        self.startupCommandBroker = startupCommandBroker
+        self.workgroupID = request.workgroupID
+        self.workgroupName = request.workgroupName
+        self.workgroupColor = request.workgroupColor
+        self.tabLabel = request.tabLabel
+        let loaded = Self.load(
+            workspaceID: request.workspaceID,
+            startsEmptyIfUnrestored: request.startsEmpty,
+            initialPaneIntent: request.initialPaneIntent,
             defaults: defaults
         )
+        self.state = loaded.state
+        if !loaded.hadRestorationData,
+           let paneID = loaded.state.focusedPaneID,
+           let ticketID = request.startupTicketID {
+            startupTicketIDsByPaneID[paneID] = ticketID
+        } else if let ticketID = request.startupTicketID {
+            startupCommandBroker.discard(ticketID)
+        }
     }
 
     var workspaceID: UUID { state.id }
@@ -40,6 +80,14 @@ final class MacWorkspaceController {
     }
 
     var isEmpty: Bool { state.root == nil }
+    var windowTitle: String {
+        switch (workgroupName, tabLabel) {
+        case let (.some(workgroup), .some(tab)): "\(workgroup) · \(tab)"
+        case let (.some(workgroup), .none): workgroup
+        case let (.none, .some(tab)): tab
+        case (.none, .none): "Terminal"
+        }
+    }
     var canAddPane: Bool {
         (state.root?.paneIDs.count ?? 0) < MacWorkspaceRestorationState.maximumPaneCount
     }
@@ -118,6 +166,7 @@ final class MacWorkspaceController {
         }
         loadingPaneIDs.remove(paneID)
         errorsByPaneID.removeValue(forKey: paneID)
+        discardStartupCommand(for: paneID)
         state.root = root.removingPane(id: paneID)
         state.focusedPaneID = state.root?.paneIDs.first
         persist()
@@ -166,10 +215,12 @@ final class MacWorkspaceController {
         loadingPaneIDs.insert(pane.id)
         defer { loadingPaneIDs.remove(pane.id) }
 
+        let startupCommand = claimStartupCommand(for: pane.id)?.command
         do {
             let launch = try await sessionManager.createAuthorizedSessionByServerID(
                 serverID,
-                settingsManager: settingsManager
+                settingsManager: settingsManager,
+                startupCommand: startupCommand
             )
             guard !isClosed,
                   generation == lifecycleGeneration,
@@ -201,9 +252,27 @@ final class MacWorkspaceController {
         let sessions = Array(sessionsByPaneID.values)
         sessionsByPaneID.removeAll()
         loadingPaneIDs.removeAll()
+        for ticketID in startupTicketIDsByPaneID.values {
+            startupCommandBroker.discard(ticketID)
+        }
+        startupTicketIDsByPaneID.removeAll()
         for session in sessions {
             sessionManager.closeSession(session)
         }
+    }
+
+    func claimStartupCommand(for paneID: UUID) -> TerminalStartupCommandTicket? {
+        guard !isClosed,
+              state.root?.pane(id: paneID) != nil,
+              let ticketID = startupTicketIDsByPaneID.removeValue(forKey: paneID) else {
+            return nil
+        }
+        return startupCommandBroker.claim(ticketID)
+    }
+
+    private func discardStartupCommand(for paneID: UUID) {
+        guard let ticketID = startupTicketIDsByPaneID.removeValue(forKey: paneID) else { return }
+        startupCommandBroker.discard(ticketID)
     }
 
     private func persist() {
@@ -224,28 +293,48 @@ final class MacWorkspaceController {
         }
     }
 
+    private struct LoadResult {
+        let state: MacWorkspaceRestorationState
+        let hadRestorationData: Bool
+    }
+
     private static func load(
         workspaceID: UUID,
         startsEmptyIfUnrestored: Bool,
+        initialPaneIntent: MacWorkspacePaneIntent?,
         defaults: UserDefaults
-    ) -> MacWorkspaceRestorationState {
+    ) -> LoadResult {
         let key = defaultsKey(for: workspaceID)
         guard let data = defaults.data(forKey: key) else {
-            return startsEmptyIfUnrestored
-                ? MacWorkspaceRestorationState.empty(id: workspaceID)
-                : MacWorkspaceRestorationState(id: workspaceID)
+            let state: MacWorkspaceRestorationState
+            if startsEmptyIfUnrestored {
+                state = .empty(id: workspaceID)
+            } else {
+                state = MacWorkspaceRestorationState(
+                    id: workspaceID,
+                    initialIntent: initialPaneIntent ?? .local
+                )
+            }
+            return LoadResult(state: state, hadRestorationData: false)
         }
         guard data.count <= maximumEncodedBytes else {
-            return MacWorkspaceRestorationState(id: workspaceID)
+            return LoadResult(
+                state: MacWorkspaceRestorationState(id: workspaceID),
+                hadRestorationData: true
+            )
         }
         do {
-            return try JSONDecoder()
+            let state = try JSONDecoder()
                 .decode(MacWorkspaceRestorationState.self, from: data)
                 .validated(for: workspaceID)
+            return LoadResult(state: state, hadRestorationData: true)
         } catch {
             // Keep malformed or future-version data untouched for diagnosis,
             // but never execute a launch request that failed validation.
-            return MacWorkspaceRestorationState(id: workspaceID)
+            return LoadResult(
+                state: MacWorkspaceRestorationState(id: workspaceID),
+                hadRestorationData: true
+            )
         }
     }
 

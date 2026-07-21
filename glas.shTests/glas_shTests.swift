@@ -797,6 +797,19 @@ struct glas_shTests {
         #endif
     }
 
+    @Test func terminalSettingsExposeEveryHistoricalSection() {
+        #expect(TerminalSettingsModalTab.allCases == [
+            .terminal,
+            .overrides,
+            .portForwarding,
+        ])
+        #expect(TerminalSettingsModalTab.allCases.map(\.title) == [
+            "Terminal",
+            "Overrides",
+            "Port Forwarding",
+        ])
+    }
+
     @Test @MainActor func disabledICloudSyncDoesNotObserveOrWrite() {
         let suiteName = "sh.glas.test.icloud-disabled.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -3084,7 +3097,7 @@ struct glas_shTests {
 
         #expect(roundTripped.serverIDs == [server.id, server.id])
         #expect(plan.targets.count == 2)
-        #expect(plan.targets.allSatisfy { $0.server.id == server.id })
+        #expect(plan.targets.allSatisfy { $0.server?.id == server.id })
         #expect(plan.failures.isEmpty)
     }
 
@@ -3104,10 +3117,74 @@ struct glas_shTests {
         let plan = LayoutRestorationPlan(preset: preset, availableServers: [availableServer])
 
         #expect(plan.targets.count == 1)
-        #expect(plan.targets.first?.server.id == availableServer.id)
+        #expect(plan.targets.first?.server?.id == availableServer.id)
         #expect(plan.failures.count == 1)
         #expect(plan.failures.first?.contains("Session 1") == true)
         #expect(plan.failures.first?.contains("no longer exists") == true)
+    }
+
+    @Test func workgroupRoundTripsColorLocalAndSSHCommandRecipes() throws {
+        let serverID = UUID()
+        let preset = LayoutPreset(
+            name: "  Production  ",
+            colorTag: .purple,
+            sessionIntents: [
+                .init(kind: .local, label: "Editor", startupCommand: "cd ~/src && nvim"),
+                .init(serverID: serverID, label: "Logs", startupCommand: "journalctl -f"),
+            ]
+        )
+
+        let decoded = try JSONDecoder().decode(
+            LayoutPreset.self,
+            from: JSONEncoder().encode(preset)
+        )
+
+        #expect(decoded.name == "Production")
+        #expect(decoded.colorTag == .purple)
+        #expect(decoded.sessionIntents.map(\.kind) == [.local, .ssh])
+        #expect(decoded.sessionIntents.map(\.startupCommand) == [
+            "cd ~/src && nvim",
+            "journalctl -f",
+        ])
+        #expect(decoded.isValidForPersistence)
+    }
+
+    @Test func workgroupMigratesVersionTwoSSHIntentWithSafeDefaults() throws {
+        let layoutID = UUID()
+        let serverID = UUID()
+        let record: [String: Any] = [
+            "id": layoutID.uuidString,
+            "name": "Old Layout",
+            "schemaVersion": 2,
+            "sessionIntents": [[
+                "schemaVersion": 1,
+                "serverID": serverID.uuidString,
+                "restoration": "freshAuthorizedSession",
+            ]],
+            "createdAt": 123.0,
+        ]
+        let decoded = try JSONDecoder().decode(
+            LayoutPreset.self,
+            from: JSONSerialization.data(withJSONObject: record)
+        )
+
+        #expect(decoded.needsMigration)
+        let migrated = decoded.migratedToCurrentSchema()
+        #expect(migrated.colorTag == .blue)
+        #expect(migrated.sessionIntents.first?.kind == .ssh)
+        #expect(migrated.sessionIntents.first?.serverID == serverID)
+        #expect(migrated.sessionIntents.first?.startupCommand == nil)
+        #expect(migrated.isValidForPersistence)
+    }
+
+    @Test func workgroupRejectsUnsafeOrMultilineStartupCommands() {
+        #expect(TerminalStartupCommandTicket(command: "") == nil)
+        #expect(TerminalStartupCommandTicket(command: "first\nsecond") == nil)
+        #expect(TerminalStartupCommandTicket(command: "bad\0command") == nil)
+        #expect(TerminalStartupCommandTicket(command: String(
+            repeating: "x",
+            count: TerminalStartupCommandTicket.maximumCommandBytes + 1
+        )) == nil)
     }
 
     // MARK: - Error Classification Tests
@@ -5591,6 +5668,93 @@ struct glas_shTests {
         await session.waitUntilTerminalWritesComplete()
 
         #expect(session.output.contains { $0.text.hasPrefix("Error:") })
+    }
+
+    @Test @MainActor func terminalStartupCommandDispatchesOnlyOnFirstConnectedTransition() async {
+        let probe = TerminalWriteProbe()
+        let session = TerminalSession(
+            server: ServerConfiguration(
+                name: "Test",
+                host: "example.com",
+                port: 22,
+                username: "user"
+            ),
+            terminalWriteSink: { data in try await probe.receive(data) }
+        )
+
+        #expect(session.installStartupCommand("htop"))
+        #expect(session.hasPendingStartupCommand)
+        session.state = .connected
+        await session.waitUntilTerminalWritesComplete()
+        session.state = .reconnecting
+        session.state = .connected
+        await session.waitUntilTerminalWritesComplete()
+
+        #expect(probe.writes == [Data("htop\n".utf8)])
+        #expect(!session.hasPendingStartupCommand)
+    }
+
+    @Test @MainActor func terminalStartupCommandFailureNeverReplaysOnReconnect() async {
+        var writeCount = 0
+        let session = TerminalSession(
+            server: ServerConfiguration(
+                name: "Test",
+                host: "example.com",
+                port: 22,
+                username: "user"
+            ),
+            terminalWriteSink: { _ in
+                writeCount += 1
+                throw TerminalWriteFailure()
+            }
+        )
+
+        #expect(session.installStartupCommand("deploy"))
+        session.state = .connected
+        await session.waitUntilTerminalWritesComplete()
+        session.state = .reconnecting
+        session.state = .connected
+        await session.waitUntilTerminalWritesComplete()
+
+        #expect(writeCount == 1)
+        #expect(!session.hasPendingStartupCommand)
+    }
+
+    @Test @MainActor func runtimeWorkgroupsKeepWindowsAndSessionsIsolated() {
+        let manager = SessionManager(loadImmediately: false)
+        let first = TerminalSession(server: ServerConfiguration(
+            name: "First", host: "first.example.com", port: 22, username: "user"
+        ))
+        let second = TerminalSession(server: ServerConfiguration(
+            name: "Second", host: "second.example.com", port: 22, username: "user"
+        ))
+        let third = TerminalSession(server: ServerConfiguration(
+            name: "Third", host: "third.example.com", port: 22, username: "user"
+        ))
+        manager.registerSession(first)
+        manager.registerSession(second)
+        manager.registerSession(third)
+        let firstGroup = manager.createWorkgroup(name: "One", colorTag: .red)
+        let secondGroup = manager.createWorkgroup(name: "Two", colorTag: .cyan)
+
+        #expect(manager.appendSession(first, toWorkgroup: firstGroup))
+        #expect(manager.appendSession(second, toWorkgroup: secondGroup))
+        #expect(manager.appendSession(third, toWorkgroup: secondGroup))
+        #expect(!manager.appendSession(first, toWorkgroup: secondGroup))
+        #expect(manager.workgroup(for: secondGroup)?.selectedSessionID == third.id)
+
+        manager.removeSessionFromWorkgroup(third)
+
+        #expect(manager.workgroup(for: secondGroup)?.sessionIDs == [second.id])
+        #expect(manager.workgroup(for: secondGroup)?.selectedSessionID == second.id)
+        #expect(manager.session(for: third.id) == nil)
+
+        manager.closeWorkgroup(firstGroup)
+
+        #expect(manager.workgroup(for: firstGroup) == nil)
+        #expect(manager.session(for: first.id) == nil)
+        #expect(manager.workgroup(for: secondGroup)?.sessionIDs == [second.id])
+        #expect(manager.session(for: second.id) === second)
     }
 
     @Test @MainActor func terminalSessionCoalescesRapidRemotePTYResizes() async {

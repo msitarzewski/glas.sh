@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		4C157833300D73440083F5D4 /* RealityKitContent in Frameworks */ = {isa = PBXBuildFile; productRef = 4C2451552E71897700F37CC4 /* RealityKitContent */; };
 		4C2451562E71897700F37CC4 /* RealityKitContent in Frameworks */ = {isa = PBXBuildFile; productRef = 4C2451552E71897700F37CC4 /* RealityKitContent */; };
 		AA000001000000000000000D /* glasWidgets.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = AA000001000000000000000E /* glasWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		BB0000010000000000000001 /* RealityKitContent in Frameworks */ = {isa = PBXBuildFile; productRef = 4C2451552E71897700F37CC4 /* RealityKitContent */; };
@@ -60,7 +61,7 @@
 		4C2451542E71897700F37CC4 /* RealityKitContent */ = {isa = PBXFileReference; lastKnownFileType = wrapper; path = RealityKitContent; sourceTree = "<group>"; };
 		4C2451622E71897900F37CC4 /* glas.shTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = glas.shTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA000001000000000000000E /* glasWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = glasWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-		BB0000010000000000000010 /* glas.sh Mac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "glas.sh Mac.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB0000010000000000000010 /* glas.sh.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = glas.sh.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		CC0000010000000000000002 /* glas.sh-macTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "glas.sh-macTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -71,6 +72,13 @@
 				Info.plist,
 			);
 			target = 4C24514F2E71897700F37CC4 /* glas.sh */;
+		};
+		AA00000100000000000000EE /* Exceptions for "glasWidgets" folder in "glasWidgets" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = AA00000100000000000000A3 /* glasWidgets */;
 		};
 		BB0000010000000000000020 /* Exceptions for "glas.sh" folder in "glas.sh Mac" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
@@ -84,6 +92,7 @@
 		BB0000010000000000000021 /* Exceptions for "glas.sh-mac" folder in "glas.sh Mac" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				AppIcon.icon,
 				Info.plist,
 			);
 			target = BB0000010000000000000040 /* glas.sh Mac */;
@@ -100,19 +109,6 @@
 			path = glas.sh;
 			sourceTree = "<group>";
 		};
-		BB0000010000000000000022 /* glas.sh-mac */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				BB0000010000000000000021 /* Exceptions for "glas.sh-mac" folder in "glas.sh Mac" target */,
-			);
-			path = "glas.sh-mac";
-			sourceTree = "<group>";
-		};
-		CC0000010000000000000003 /* glas.sh-macTests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "glas.sh-macTests";
-			sourceTree = "<group>";
-		};
 		4C2451652E71897900F37CC4 /* glas.shTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = glas.shTests;
@@ -126,17 +122,20 @@
 			path = glasWidgets;
 			sourceTree = "<group>";
 		};
-/* End PBXFileSystemSynchronizedRootGroup section */
-
-/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section (glasWidgets) */
-		AA00000100000000000000EE /* Exceptions for "glasWidgets" folder in "glasWidgets" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Info.plist,
+		BB0000010000000000000022 /* glas.sh-mac */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				BB0000010000000000000021 /* Exceptions for "glas.sh-mac" folder in "glas.sh Mac" target */,
 			);
-			target = AA00000100000000000000A3 /* glasWidgets */;
+			path = "glas.sh-mac";
+			sourceTree = "<group>";
 		};
-/* End PBXFileSystemSynchronizedBuildFileExceptionSet section (glasWidgets) */
+		CC0000010000000000000003 /* glas.sh-macTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "glas.sh-macTests";
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		4C24514D2E71897700F37CC4 /* Frameworks */ = {
@@ -153,6 +152,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4C157833300D73440083F5D4 /* RealityKitContent in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -203,7 +203,7 @@
 				4C2451502E71897700F37CC4 /* glas.sh.app */,
 				4C2451622E71897900F37CC4 /* glas.shTests.xctest */,
 				AA000001000000000000000E /* glasWidgets.appex */,
-				BB0000010000000000000010 /* glas.sh Mac.app */,
+				BB0000010000000000000010 /* glas.sh.app */,
 				CC0000010000000000000002 /* glas.sh-macTests.xctest */,
 			);
 			name = Products;
@@ -316,7 +316,7 @@
 				D1A2B3C4E5F6789000AABB02 /* GlasSecretStore */,
 			);
 			productName = "glas.sh Mac";
-			productReference = BB0000010000000000000010 /* glas.sh Mac.app */;
+			productReference = BB0000010000000000000010 /* glas.sh.app */;
 			productType = "com.apple.product-type.application";
 		};
 		CC0000010000000000000005 /* glas.sh-macTests */ = {
@@ -557,8 +557,8 @@
 		4C24516C2E71897900F37CC4 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ARCHS = arm64;
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
@@ -622,8 +622,8 @@
 		4C24516D2E71897900F37CC4 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ARCHS = arm64;
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
@@ -801,7 +801,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.mac;
-				PRODUCT_NAME = "glas.sh";
+				PRODUCT_NAME = glas.sh;
 				SDKROOT = macosx;
 				SUPPORTED_PLATFORMS = macosx;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -833,7 +833,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.mac;
-				PRODUCT_NAME = "glas.sh";
+				PRODUCT_NAME = glas.sh;
 				SDKROOT = macosx;
 				SUPPORTED_PLATFORMS = macosx;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;

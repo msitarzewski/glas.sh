@@ -62,6 +62,30 @@ struct SSHKeyKeychainStoreTests {
         #expect(material.passphrase == nil)
     }
 
+    @Test("Retrieve legacy raw private key and separate passphrase")
+    func retrieveLegacyRawKeyAndPassphrase() throws {
+        defer { cleanupKeychain() }
+        let privateKey = Data("legacy-openssh-rsa-private-key".utf8)
+        let passphrase = Data("legacy-passphrase".utf8)
+        try KeychainOperations.saveData(
+            privateKey,
+            account: keyID.uuidString,
+            service: config.sshKeysPrivateService,
+            config: config
+        )
+        try KeychainOperations.saveData(
+            passphrase,
+            account: keyID.uuidString,
+            service: config.sshKeysPassphraseService,
+            config: config
+        )
+
+        let material = try SSHKeyKeychainStore.retrieve(for: keyID, config: config)
+
+        #expect(material.privateKey.toData() == privateKey)
+        #expect(material.passphrase?.toData() == passphrase)
+    }
+
     @Test("Re-save with nil passphrase clears stale passphrase")
     func clearStalePassphrase() throws {
         defer { cleanupKeychain() }

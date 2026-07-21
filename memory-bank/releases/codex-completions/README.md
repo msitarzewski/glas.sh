@@ -59,6 +59,14 @@ Distribution remains blocked on the open ledger items, especially matching-Xcode
 - The macOS Release is a signed thin arm64 binary with hardened runtime, runtime 27.0, bundle identifier `sh.glas.mac`, and a packaged `AppIcon.icns`.
 - Final `git diff --check`, production marker scan, and isolated tracked/untracked Gitleaks scans pass.
 
+## Approved terminal-settings recovery — 2026-07-20
+
+- Restored reliable access to the existing `Terminal`, `Overrides`, and `Port Forwarding` sections by placing their segmented selector in persistent sheet content rather than the principal toolbar.
+- Per-session tint, opacity, blur, material, theme, cursor, and forwarding behavior continues through the existing settings/session models; no parallel appearance store was introduced.
+- Regression coverage enumerates all three historical destinations and labels on macOS and visionOS.
+- macOS tests passed 27/27; the complete visionOS suite passed serially; macOS and visionOS Release builds passed; diff, production-marker, and isolated Gitleaks scans were clean.
+- Task evidence: `memory-bank/tasks/2026-07/200726_terminal-settings-section-recovery.md`.
+
 ## Status vocabulary
 
 | Status | Meaning |

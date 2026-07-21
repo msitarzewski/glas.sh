@@ -28,20 +28,24 @@ struct glas_shApp: App {
         .restorationBehavior(.disabled)
         .handlesExternalEvents(matching: ["main"])
         
-        // Main terminal windows (can open multiple)
-        WindowGroup(id: "terminal", for: UUID.self) { $sessionID in
-            if let sessionID = sessionID,
-               let session = sessionManager.session(for: sessionID) {
-                TerminalWindowView(session: session)
-                    .environment(sessionManager)
-                    .environment(settingsManager)
-                    .trackWindowPresence(key: "terminal-\(sessionID.uuidString)", recovery: windowRecoveryManager)
-            } else {
-                SessionNotFoundView(sessionID: sessionID)
+        // Terminal workgroup windows (each value identifies one runtime tab group).
+        WindowGroup(id: "terminal", for: UUID.self) { $workgroupID in
+            if let workgroupID {
+                VisionTerminalWorkgroupView(workgroupID: workgroupID)
                     .environment(sessionManager)
                     .environment(settingsManager)
                     .trackWindowPresence(
-                        key: sessionID.map { "terminal-\($0.uuidString)" } ?? "terminal-missing",
+                        key: "terminal-workgroup-\(workgroupID.uuidString)",
+                        recovery: windowRecoveryManager
+                    )
+            } else {
+                ContentUnavailableView(
+                    "Terminal Workgroup Not Found",
+                    systemImage: "rectangle.stack.badge.minus",
+                    description: Text("Open a terminal from Connections to begin.")
+                )
+                    .trackWindowPresence(
+                        key: "terminal-workgroup-missing",
                         recovery: windowRecoveryManager
                     )
             }
@@ -118,6 +122,7 @@ struct glas_shApp: App {
         }
         .windowStyle(.plain)
         .defaultSize(width: 700, height: 600)
+        .restorationBehavior(.disabled)
 
         #if os(visionOS)
         // Immersive focus environment
@@ -310,7 +315,7 @@ struct MainBootstrapView: View {
                 return
             }
             if session.state == .connected {
-                openWindow(id: "terminal", value: session.id)
+                presentTerminalWorkgroup(for: session)
             } else {
                 if case .error(let message) = session.state {
                     deepLinkFailureMessage = message
@@ -359,7 +364,7 @@ struct MainBootstrapView: View {
                     settingsManager: settingsManager
                 )
                 if launch.session.state == .connected {
-                    openWindow(id: "terminal", value: launch.session.id)
+                    presentTerminalWorkgroup(for: launch.session)
                 } else if let challenge = launch.session.pendingHostKeyChallenge {
                     pendingDeepLinkTrustSession = launch.session
                     pendingDeepLinkTrustChallenge = challenge
@@ -371,6 +376,20 @@ struct MainBootstrapView: View {
                 deepLinkFailureMessage = error.localizedDescription
             }
         }
+    }
+
+    private func presentTerminalWorkgroup(for session: TerminalSession) {
+        let workgroupID = sessionManager.createWorkgroup(
+            name: session.server.name,
+            colorTag: session.server.colorTag
+        )
+        guard sessionManager.appendSession(session, toWorkgroup: workgroupID) else {
+            sessionManager.discardWorkgroupIfEmpty(workgroupID)
+            sessionManager.closeSession(session)
+            deepLinkFailureMessage = "The terminal could not be added to its workgroup."
+            return
+        }
+        openWindow(id: "terminal", value: workgroupID)
     }
 
     private static func sameDeepLinkSecurityIdentity(
