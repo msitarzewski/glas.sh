@@ -1485,7 +1485,7 @@ class SettingsManager {
         }
     }
 
-    // MARK: - Layout Presets
+    // MARK: - Workgroup Presets
 
     func loadLayoutPresets() {
         guard let data = settingsDefaults.data(forKey: UserDefaultsKeys.layoutPresets) else {
@@ -1494,11 +1494,13 @@ class SettingsManager {
         }
         do {
             let decoded = try JSONDecoder().decode([LayoutPreset].self, from: data)
-            let requiresMigration = decoded.contains(where: \.needsMigration)
-            layoutPresets = decoded.map { $0.migratedToCurrentSchema() }
-            if requiresMigration {
-                // Rewrite legacy serverID-only records once as canonical,
-                // versioned session intentions. Migration is idempotent.
+            let normalized = Self.validWorkgroupPresets(decoded)
+            let requiresRewrite = decoded.contains(where: \.needsMigration)
+                || normalized != decoded
+            layoutPresets = normalized
+            if requiresRewrite {
+                // Rewrite legacy or invalid records once as canonical, bounded,
+                // versioned workgroup recipes. Migration is idempotent.
                 saveLayoutPresets()
             }
         } catch {
@@ -1509,6 +1511,7 @@ class SettingsManager {
 
     func saveLayoutPresets() {
         do {
+            layoutPresets = Self.validWorkgroupPresets(layoutPresets)
             let data = try JSONEncoder().encode(layoutPresets)
             settingsDefaults.set(data, forKey: UserDefaultsKeys.layoutPresets)
         } catch {
@@ -1517,7 +1520,20 @@ class SettingsManager {
     }
 
     func addLayoutPreset(_ preset: LayoutPreset) {
-        layoutPresets.append(preset)
+        upsertLayoutPreset(preset)
+    }
+
+    func upsertLayoutPreset(_ preset: LayoutPreset) {
+        let normalized = preset.migratedToCurrentSchema()
+        guard normalized.isValidForPersistence else {
+            Logger.settings.error("Refusing to persist an invalid workgroup preset")
+            return
+        }
+        if let index = layoutPresets.firstIndex(where: { $0.id == normalized.id }) {
+            layoutPresets[index] = normalized
+        } else {
+            layoutPresets.append(normalized)
+        }
         saveLayoutPresets()
     }
 
@@ -1531,6 +1547,17 @@ class SettingsManager {
             layoutPresets[index].lastUsed = Date()
             saveLayoutPresets()
         }
+    }
+
+    private static func validWorkgroupPresets(_ candidates: [LayoutPreset]) -> [LayoutPreset] {
+        var seenIDs = Set<UUID>()
+        let newestUnique: [LayoutPreset] = candidates.reversed().compactMap { candidate in
+            let normalized = candidate.migratedToCurrentSchema()
+            guard normalized.isValidForPersistence,
+                  seenIDs.insert(normalized.id).inserted else { return nil }
+            return normalized
+        }
+        return Array(newestUnique.reversed())
     }
 }
 

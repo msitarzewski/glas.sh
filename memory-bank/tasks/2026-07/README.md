@@ -19,3 +19,9 @@
 - Verified 20/20 macOS tests, 183/183 on each visionOS 26.4 and 27.0 simulator, 331/331 NIOSSH tests, all 39 runnable Citadel tests with five expected environment skips, and 75/75 GlasSecretStore tests.
 - Produced a signed arm64 macOS Release with hardened runtime; final diff/stub/secret checks passed.
 - See: [170726_codex-completions-release.md](./170726_codex-completions-release.md)
+
+### 2026-07-20: terminal settings section recovery
+- Restored the visible `Terminal`, `Overrides`, and `Port Forwarding` section control inside the Terminal Settings sheet.
+- Reused the existing theme, per-session transparency/blur/tint, and forwarding views without introducing duplicate settings state.
+- Verified 27/27 macOS tests, the complete serial visionOS suite, both Release builds, and clean diff/stub/secret scans.
+- See: [200726_terminal-settings-section-recovery.md](./200726_terminal-settings-section-recovery.md)

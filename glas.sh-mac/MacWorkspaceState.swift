@@ -265,12 +265,37 @@ struct MacWorkspaceRestorationState: Identifiable, Codable, Hashable, Sendable {
 }
 
 struct MacWorkspaceLaunchRequest: Codable, Hashable, Sendable {
+    static let maximumDisplayTextLength = 80
+
     let workspaceID: UUID
     let startsEmpty: Bool
+    let initialPaneIntent: MacWorkspacePaneIntent?
+    let workgroupID: UUID?
+    let workgroupName: String?
+    let workgroupColor: ServerColorTag?
+    let tabLabel: String?
+    /// An opaque lookup key for runtime-only command data. The command itself
+    /// is deliberately absent from this Codable launch request.
+    let startupTicketID: UUID?
 
-    init(workspaceID: UUID = UUID(), startsEmpty: Bool = false) {
+    init(
+        workspaceID: UUID = UUID(),
+        startsEmpty: Bool = false,
+        initialPaneIntent: MacWorkspacePaneIntent? = nil,
+        workgroupID: UUID? = nil,
+        workgroupName: String? = nil,
+        workgroupColor: ServerColorTag? = nil,
+        tabLabel: String? = nil,
+        startupTicketID: UUID? = nil
+    ) {
         self.workspaceID = workspaceID
         self.startsEmpty = startsEmpty
+        self.initialPaneIntent = initialPaneIntent
+        self.workgroupID = workgroupID
+        self.workgroupName = Self.normalizedDisplayText(workgroupName)
+        self.workgroupColor = workgroupColor
+        self.tabLabel = Self.normalizedDisplayText(tabLabel)
+        self.startupTicketID = startupTicketID
     }
 
     init(from decoder: Decoder) throws {
@@ -279,6 +304,109 @@ struct MacWorkspaceLaunchRequest: Codable, Hashable, Sendable {
         // Requests restored from builds predating the launcher retain their
         // original initial-local-terminal behavior.
         startsEmpty = try container.decodeIfPresent(Bool.self, forKey: .startsEmpty) ?? false
+        initialPaneIntent = try container.decodeIfPresent(
+            MacWorkspacePaneIntent.self,
+            forKey: .initialPaneIntent
+        )
+        workgroupID = try container.decodeIfPresent(UUID.self, forKey: .workgroupID)
+        workgroupName = Self.normalizedDisplayText(
+            try container.decodeIfPresent(String.self, forKey: .workgroupName)
+        )
+        workgroupColor = try container.decodeIfPresent(ServerColorTag.self, forKey: .workgroupColor)
+        tabLabel = Self.normalizedDisplayText(
+            try container.decodeIfPresent(String.self, forKey: .tabLabel)
+        )
+        startupTicketID = try container.decodeIfPresent(UUID.self, forKey: .startupTicketID)
+    }
+
+    private static func normalizedDisplayText(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty, !normalized.utf8.contains(0) else { return nil }
+        return String(normalized.prefix(maximumDisplayTextLength))
+    }
+}
+
+struct MacWorkgroupLaunchItem: Hashable, Sendable {
+    let intent: MacWorkspacePaneIntent
+    let label: String
+    let startupCommand: String?
+
+    init(intent: MacWorkspacePaneIntent, label: String, startupCommand: String? = nil) {
+        self.intent = intent
+        self.label = label
+        self.startupCommand = TerminalStartupCommandTicket(command: startupCommand)?.command
+    }
+}
+
+/// Runtime-only command rendezvous for macOS window launches. Main-actor
+/// isolation makes issuing and claiming atomic, and the bounded FIFO prevents
+/// abandoned WindowGroup requests from accumulating indefinitely.
+@MainActor
+final class MacStartupCommandBroker {
+    static let shared = MacStartupCommandBroker()
+    static let defaultCapacity = 64
+
+    private let capacity: Int
+    private var ticketsByID: [UUID: TerminalStartupCommandTicket] = [:]
+    private var insertionOrder: [UUID] = []
+
+    init(capacity: Int = defaultCapacity) {
+        self.capacity = max(1, capacity)
+    }
+
+    var pendingCount: Int { ticketsByID.count }
+
+    func issue(command: String?) -> UUID? {
+        guard let ticket = TerminalStartupCommandTicket(command: command) else { return nil }
+        while ticketsByID.count >= capacity, let oldest = insertionOrder.first {
+            insertionOrder.removeFirst()
+            ticketsByID.removeValue(forKey: oldest)
+        }
+        ticketsByID[ticket.id] = ticket
+        insertionOrder.append(ticket.id)
+        return ticket.id
+    }
+
+    func claim(_ id: UUID) -> TerminalStartupCommandTicket? {
+        insertionOrder.removeAll { $0 == id }
+        return ticketsByID.removeValue(forKey: id)
+    }
+
+    func discard(_ id: UUID) {
+        _ = claim(id)
+    }
+}
+
+/// Builds one native-tab macOS terminal window from an ordered workgroup.
+/// Callers remain responsible for filtering unavailable servers before launch.
+@MainActor
+enum MacWorkgroupLauncher {
+    @discardableResult
+    static func launch(
+        workgroupID: UUID,
+        name: String,
+        color: ServerColorTag,
+        items: [MacWorkgroupLaunchItem],
+        broker: MacStartupCommandBroker = .shared,
+        openWindow: (MacWorkspaceLaunchRequest) -> Void
+    ) -> [MacWorkspaceLaunchRequest] {
+        let boundedItems = Array(items.prefix(MacWorkspaceRestorationState.maximumPaneCount))
+        let requests = boundedItems.map { item in
+            MacWorkspaceLaunchRequest(
+                initialPaneIntent: item.intent,
+                workgroupID: workgroupID,
+                workgroupName: name,
+                workgroupColor: color,
+                tabLabel: item.label,
+                startupTicketID: broker.issue(command: item.startupCommand)
+            )
+        }
+        MacWorkspaceWindowRegistry.shared.prepareTabBatch(
+            workspaceIDs: requests.map(\.workspaceID)
+        )
+        requests.forEach(openWindow)
+        return requests
     }
 }
 

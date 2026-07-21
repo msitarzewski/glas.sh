@@ -24,3 +24,17 @@
 {"timestamp":"2026-07-19T21:40:09Z","session_id":"codex-macos-27-terminal","event":"state_transition","from":"APPROVAL","to":"APPLY"}
 {"timestamp":"2026-07-19T21:40:10Z","session_id":"codex-macos-27-terminal","event":"state_transition","from":"APPLY","to":"DOCS"}
 {"timestamp":"2026-07-19T21:40:11Z","session_id":"codex-macos-27-terminal","event":"qa_evidence_final","mac_tests":"20/20","app_tests_visionos_26_4":"183/183","app_tests_visionos_27_0":"183/183","nio_ssh_tests":"331/331","citadel_tests":"39 passed; 5 environment skips","secret_store_tests":"75/75","mac_release":"signed arm64 hardened runtime","stub_scan":"clean","gitleaks":"0 findings"}
+{"timestamp":"2026-07-20T11:47:44Z","session_id":"codex-workgroups","mode":"deep","mb_version":"2024-10"}
+{"timestamp":"2026-07-20T11:47:44Z","session_id":"codex-workgroups","event":"state_transition","from":"PLAN","to":"BUILD","branch":"agent/macos-27-terminal"}
+{"timestamp":"2026-07-20T12:24:12Z","session_id":"codex-local-exit-lifecycle","mode":"fast","mb_version":"2024-10"}
+{"timestamp":"2026-07-20T12:24:12Z","session_id":"codex-local-exit-lifecycle","event":"state_transition","from":"PLAN","to":"BUILD","branch":"agent/macos-27-terminal"}
+{"timestamp":"2026-07-20T13:33:02Z","session_id":"codex-terminal-settings-navigation","mode":"fast","mb_version":"2024-10"}
+{"timestamp":"2026-07-20T13:33:02Z","session_id":"codex-terminal-settings-navigation","event":"state_transition","from":"PLAN","to":"BUILD","branch":"agent/macos-27-terminal"}
+{"timestamp":"2026-07-20T13:44:34Z","session_id":"codex-terminal-settings-navigation","event":"state_transition","from":"BUILD","to":"DIFF"}
+{"timestamp":"2026-07-20T13:44:34Z","session_id":"codex-terminal-settings-navigation","event":"state_transition","from":"DIFF","to":"QA"}
+{"timestamp":"2026-07-20T13:44:34Z","session_id":"codex-terminal-settings-navigation","event":"qa_evidence","mac_tests":"27/27","visionos_settings_navigation_test":"passed","visionos_full_suite_serial":"passed","mac_release":"passed","visionos_release":"passed","diff_check":"clean","stub_scan":"clean","gitleaks":"0 findings","visual_capture":"blocked by ScreenCaptureKit -3811"}
+{"timestamp":"2026-07-20T13:44:34Z","session_id":"codex-terminal-settings-navigation","event":"state_transition","from":"QA","to":"APPROVAL"}
+{"timestamp":"2026-07-20T16:49:16Z","session_id":"codex-terminal-settings-navigation","event":"approval_received","state":"APPROVAL"}
+{"timestamp":"2026-07-20T16:49:16Z","session_id":"codex-terminal-settings-navigation","event":"state_transition","from":"APPROVAL","to":"APPLY"}
+{"timestamp":"2026-07-20T16:49:16Z","session_id":"codex-terminal-settings-navigation","event":"state_transition","from":"APPLY","to":"DOCS"}
+{"timestamp":"2026-07-20T16:49:16Z","session_id":"codex-terminal-settings-navigation","event":"documentation_complete","task":"memory-bank/tasks/2026-07/200726_terminal-settings-section-recovery.md"}

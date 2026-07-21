@@ -2,20 +2,14 @@ import AppKit
 import SwiftUI
 
 struct MacWorkspaceSceneRoot: View {
-    @State private var workspaceID: UUID
-    private let startsEmptyIfUnrestored: Bool
+    private let request: MacWorkspaceLaunchRequest
 
     init(request: MacWorkspaceLaunchRequest?) {
-        let request = request ?? MacWorkspaceLaunchRequest(startsEmpty: true)
-        _workspaceID = State(initialValue: request.workspaceID)
-        startsEmptyIfUnrestored = request.startsEmpty
+        self.request = request ?? MacWorkspaceLaunchRequest(startsEmpty: true)
     }
 
     var body: some View {
-        MacWorkspaceView(
-            workspaceID: workspaceID,
-            startsEmptyIfUnrestored: startsEmptyIfUnrestored
-        )
+        MacWorkspaceView(request: request)
     }
 }
 
@@ -29,11 +23,8 @@ struct MacWorkspaceView: View {
     @Environment(SettingsManager.self) private var settingsManager
     @Environment(\.openWindow) private var openWindow
 
-    init(workspaceID: UUID, startsEmptyIfUnrestored: Bool = false) {
-        _controller = State(initialValue: MacWorkspaceController(
-            workspaceID: workspaceID,
-            startsEmptyIfUnrestored: startsEmptyIfUnrestored
-        ))
+    init(request: MacWorkspaceLaunchRequest) {
+        _controller = State(initialValue: MacWorkspaceController(request: request))
     }
 
     var body: some View {
@@ -44,6 +35,7 @@ struct MacWorkspaceView: View {
                 MacTerminalWindowReader(
                     tabbingIdentifier: "sh.glas.workspace",
                     onWindow: { window in
+                        window.title = controller.windowTitle
                         MacWorkspaceWindowRegistry.shared.register(
                             window,
                             workspaceID: controller.workspaceID
@@ -59,7 +51,7 @@ struct MacWorkspaceView: View {
                     }
                 )
             }
-            .navigationTitle("Terminal")
+            .navigationTitle(controller.windowTitle)
             .toolbar { workspaceToolbar }
             .focusedSceneValue(\.macWorkspaceActions, focusedActions)
             .focusedSceneValue(\.macNewWorkspaceTabAction, newWorkspaceTabAction)
@@ -153,6 +145,7 @@ struct MacWorkspaceView: View {
                 isFocused: isFocused,
                 showsPaneChrome: showsPaneChrome,
                 findRequestNonce: findNonce(for: pane.id),
+                claimStartupCommand: { controller.claimStartupCommand(for: pane.id) },
                 onFocus: { controller.focus(pane.id) },
                 onNewTerminalTab: { newWorkspaceTabAction() },
                 onDisconnect: {
@@ -286,10 +279,20 @@ struct MacWorkspaceView: View {
     @ToolbarContentBuilder
     private var workspaceToolbar: some ToolbarContent {
         ToolbarItem(placement: .navigation) {
-            Image(systemName: "apple.terminal")
-                .imageScale(.small)
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
+            HStack(spacing: 6) {
+                if let color = controller.workgroupColor?.color {
+                    Capsule(style: .continuous)
+                        .fill(color)
+                        .frame(width: 3, height: 18)
+                    Circle()
+                        .fill(color)
+                        .frame(width: 8, height: 8)
+                }
+                Image(systemName: "apple.terminal")
+                    .imageScale(.small)
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityLabel(controller.windowTitle)
         }
         .sharedBackgroundVisibility(.hidden)
         ToolbarItemGroup {
@@ -455,13 +458,20 @@ private struct MacWorkspaceLayout {
 final class MacWorkspaceWindowRegistry {
     static let shared = MacWorkspaceWindowRegistry()
     private static let maximumPendingTabs = 32
+    private static let maximumPendingBatches = 32
 
     private var windows: [UUID: WeakWindow] = [:]
     private var pendingTabs: [UUID: WeakWindow] = [:]
+    private var pendingBatches: [UUID: PendingBatch] = [:]
+    private var batchIDByWorkspaceID: [UUID: UUID] = [:]
     var pendingTabCount: Int { pendingTabs.count }
+    var pendingBatchCount: Int { pendingBatches.count }
 
     func register(_ window: NSWindow, workspaceID: UUID) {
         windows[workspaceID] = WeakWindow(window)
+        if let batchID = batchIDByWorkspaceID[workspaceID] {
+            assembleBatchIfReady(batchID)
+        }
         guard let source = pendingTabs.removeValue(forKey: workspaceID)?.value,
               source !== window,
               source.isVisible else { return }
@@ -488,8 +498,37 @@ final class MacWorkspaceWindowRegistry {
         pendingTabs[destinationWorkspaceID] = WeakWindow(sourceWindow)
     }
 
+    func prepareTabBatch(workspaceIDs: [UUID]) {
+        var seen = Set<UUID>()
+        let orderedIDs = workspaceIDs.filter { seen.insert($0).inserted }
+        guard orderedIDs.count > 1,
+              orderedIDs.count <= MacWorkspaceRestorationState.maximumPaneCount else { return }
+
+        for workspaceID in orderedIDs {
+            if let existingBatchID = batchIDByWorkspaceID[workspaceID] {
+                cancelBatch(existingBatchID)
+            }
+        }
+        if pendingBatches.count >= Self.maximumPendingBatches,
+           let oldestBatchID = pendingBatches.keys.sorted(by: {
+               $0.uuidString < $1.uuidString
+           }).first {
+            cancelBatch(oldestBatchID)
+        }
+
+        let batchID = UUID()
+        pendingBatches[batchID] = PendingBatch(orderedWorkspaceIDs: orderedIDs)
+        for workspaceID in orderedIDs {
+            batchIDByWorkspaceID[workspaceID] = batchID
+        }
+        assembleBatchIfReady(batchID)
+    }
+
     func unregister(_ workspaceID: UUID) {
         let closingWindow = windows.removeValue(forKey: workspaceID)?.value
+        if let batchID = batchIDByWorkspaceID[workspaceID] {
+            cancelBatch(batchID)
+        }
         pendingTabs.removeValue(forKey: workspaceID)
         pendingTabs = pendingTabs.filter { _, source in
             guard let sourceWindow = source.value else { return false }
@@ -499,6 +538,33 @@ final class MacWorkspaceWindowRegistry {
 
     func close(_ workspaceID: UUID) {
         windows[workspaceID]?.value?.performClose(nil)
+    }
+
+    private func assembleBatchIfReady(_ batchID: UUID) {
+        guard let batch = pendingBatches[batchID] else { return }
+        let orderedWindows = batch.orderedWorkspaceIDs.compactMap { windows[$0]?.value }
+        guard orderedWindows.count == batch.orderedWorkspaceIDs.count,
+              let firstWindow = orderedWindows.first else { return }
+
+        cancelBatch(batchID)
+        // AppKit inserts `.above` immediately after the receiver. Reverse
+        // assembly therefore preserves the workgroup's saved tab order.
+        for window in orderedWindows.dropFirst().reversed() where window !== firstWindow {
+            firstWindow.addTabbedWindow(window, ordered: .above)
+        }
+        firstWindow.makeKeyAndOrderFront(nil)
+    }
+
+    private func cancelBatch(_ batchID: UUID) {
+        guard let batch = pendingBatches.removeValue(forKey: batchID) else { return }
+        for workspaceID in batch.orderedWorkspaceIDs
+        where batchIDByWorkspaceID[workspaceID] == batchID {
+            batchIDByWorkspaceID.removeValue(forKey: workspaceID)
+        }
+    }
+
+    private struct PendingBatch {
+        let orderedWorkspaceIDs: [UUID]
     }
 
     private final class WeakWindow {

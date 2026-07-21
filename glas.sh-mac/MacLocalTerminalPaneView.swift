@@ -7,6 +7,7 @@ struct MacLocalTerminalPaneView: View {
     let isFocused: Bool
     let showsPaneChrome: Bool
     let findRequestNonce: UInt64
+    let claimStartupCommand: () -> TerminalStartupCommandTicket?
     let onFocus: () -> Void
     let onNewTerminalTab: () -> Void
     let onDisconnect: () -> Void
@@ -56,9 +57,16 @@ struct MacLocalTerminalPaneView: View {
                 onBell: {
                     if settingsManager.bellEnabled { NSSound.beep() }
                 },
-                onProcessTerminated: { _ in
+                onProcessReady: {
+                    guard let ticket = claimStartupCommand() else { return }
+                    _ = processState.sendCommand(ticket.command)
+                },
+                onProcessTerminated: { exitCode in
                     if recorder.isRecording { _ = recorder.stop() }
                     MacSecureKeyboardEntry.shared.disable(for: workspaceID)
+                    if MacLocalTerminalExitPolicy.shouldClose(exitCode: exitCode) {
+                        onDisconnect()
+                    }
                 }
             )
             .padding(.horizontal, 8)
@@ -607,6 +615,12 @@ struct MacLocalTerminalPaneView: View {
             get: { hostModel.pendingExternalLink != nil },
             set: { if !$0 { _ = hostModel.resolvePendingExternalLink(approved: false) } }
         )
+    }
+}
+
+enum MacLocalTerminalExitPolicy {
+    static func shouldClose(exitCode: Int32?) -> Bool {
+        exitCode == 0
     }
 }
 

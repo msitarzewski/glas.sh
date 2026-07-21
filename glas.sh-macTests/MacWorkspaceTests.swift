@@ -1,6 +1,9 @@
 import AppKit
 import Darwin
 import Foundation
+import NIOCore
+import NIOPosix
+import NIOSSH
 import RealityKitContent
 import SwiftUI
 import Testing
@@ -8,6 +11,9 @@ import Testing
 
 @Suite(.serialized)
 struct MacWorkspaceTests {
+    private static let hostKeyValidationFixture =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJfkNV4OS33ImTXvorZr72q4v5XhVEQKfvqsxOEJ/XaR"
+
     @Test func restorationStateRoundTripsEveryPaneIntentAndSplitProperty() throws {
         let workspaceID = UUID()
         let serverID = UUID()
@@ -59,6 +65,174 @@ struct MacWorkspaceTests {
         #expect(!legacyRequest.startsEmpty)
     }
 
+    @Test @MainActor func workgroupLaunchRequestCarriesOnlyDisplayMetadataAndOpaqueTicket() throws {
+        let broker = MacStartupCommandBroker(capacity: 4)
+        let secretCommand = "printf launch-secret-7f36"
+        let ticketID = try #require(broker.issue(command: secretCommand))
+        let workgroupID = UUID()
+        let request = MacWorkspaceLaunchRequest(
+            initialPaneIntent: .local,
+            workgroupID: workgroupID,
+            workgroupName: "Production",
+            workgroupColor: .cyan,
+            tabLabel: "Metrics",
+            startupTicketID: ticketID
+        )
+
+        let encoded = try JSONEncoder().encode(request)
+        let encodedText = try #require(String(data: encoded, encoding: .utf8))
+        #expect(!encodedText.contains(secretCommand))
+        #expect(encodedText.contains(ticketID.uuidString))
+
+        let decoded = try JSONDecoder().decode(MacWorkspaceLaunchRequest.self, from: encoded)
+        #expect(decoded == request)
+        #expect(decoded.workgroupID == workgroupID)
+        #expect(decoded.workgroupName == "Production")
+        #expect(decoded.workgroupColor == .cyan)
+        #expect(decoded.tabLabel == "Metrics")
+        #expect(decoded.initialPaneIntent == .local)
+    }
+
+    @Test @MainActor func startupCommandBrokerIsBoundedAndClaimsExactlyOnce() throws {
+        let broker = MacStartupCommandBroker(capacity: 2)
+        let first = try #require(broker.issue(command: "echo first"))
+        let second = try #require(broker.issue(command: "echo second"))
+        let third = try #require(broker.issue(command: "echo third"))
+
+        #expect(broker.pendingCount == 2)
+        #expect(broker.claim(first) == nil)
+        #expect(broker.claim(second)?.command == "echo second")
+        #expect(broker.claim(second) == nil)
+        #expect(broker.claim(third)?.command == "echo third")
+        #expect(broker.pendingCount == 0)
+    }
+
+    @Test @MainActor func restoredWorkspaceNeverReplaysStartupTicket() throws {
+        let fixture = try WorkspaceDefaultsFixture()
+        defer { fixture.cleanup() }
+        let original = MacWorkspaceController(
+            workspaceID: fixture.workspaceID,
+            defaults: fixture.defaults
+        )
+        original.focus(try #require(original.focusedPaneID))
+
+        let broker = MacStartupCommandBroker()
+        let ticketID = try #require(broker.issue(command: "echo must-not-replay"))
+        let restored = MacWorkspaceController(
+            request: MacWorkspaceLaunchRequest(
+                workspaceID: fixture.workspaceID,
+                initialPaneIntent: .local,
+                startupTicketID: ticketID
+            ),
+            startupCommandBroker: broker,
+            defaults: fixture.defaults
+        )
+
+        #expect(restored.claimStartupCommand(for: try #require(restored.focusedPaneID)) == nil)
+        #expect(broker.pendingCount == 0)
+    }
+
+    @Test @MainActor func workgroupLauncherCreatesAClaimableSingleUseRequest() throws {
+        let broker = MacStartupCommandBroker()
+        var opened: [MacWorkspaceLaunchRequest] = []
+        let requests = MacWorkgroupLauncher.launch(
+            workgroupID: UUID(),
+            name: "Operations",
+            color: .orange,
+            items: [MacWorkgroupLaunchItem(
+                intent: .local,
+                label: "Local",
+                startupCommand: "uptime"
+            )],
+            broker: broker,
+            openWindow: { opened.append($0) }
+        )
+
+        #expect(requests == opened)
+        let request = try #require(requests.first)
+        #expect(request.workgroupName == "Operations")
+        #expect(request.tabLabel == "Local")
+        #expect(request.workgroupColor == .orange)
+        #expect(broker.claim(try #require(request.startupTicketID))?.command == "uptime")
+        #expect(broker.pendingCount == 0)
+    }
+
+    @Test func hostKeyValidatorRunsOnNIOEventLoopWithoutActorIsolationTrap() async throws {
+        let hostKey = try NIOSSHPublicKey(openSSHPublicKey: Self.hostKeyValidationFixture)
+        var wireBuffer = ByteBufferAllocator().buffer(capacity: 128)
+        _ = hostKey.write(to: &wireBuffer)
+        let trustedKeyBase64 = Data(wireBuffer.readableBytesView).base64EncodedString()
+        let eventLoop = MultiThreadedEventLoopGroup.singleton.next()
+
+        let trustedBox = HostKeyChallengeBox()
+        let trustedValidator = PromptingHostKeyValidator(
+            host: "trusted.example.com",
+            port: 22,
+            trustedKeyBase64Set: [trustedKeyBase64],
+            verificationMode: .ask,
+            challengeBox: trustedBox
+        )
+        let trustedPromise = eventLoop.makePromise(of: Void.self)
+        eventLoop.execute {
+            trustedValidator.validateHostKey(
+                hostKey: hostKey,
+                validationCompletePromise: trustedPromise
+            )
+        }
+        try await trustedPromise.futureResult.get()
+        #expect(trustedBox.take() == nil)
+
+        let unknownBox = HostKeyChallengeBox()
+        let unknownValidator = PromptingHostKeyValidator(
+            host: "unknown.example.com",
+            port: 2222,
+            trustedKeyBase64Set: [],
+            verificationMode: .ask,
+            challengeBox: unknownBox
+        )
+        let unknownPromise = eventLoop.makePromise(of: Void.self)
+        eventLoop.execute {
+            unknownValidator.validateHostKey(
+                hostKey: hostKey,
+                validationCompletePromise: unknownPromise
+            )
+        }
+        do {
+            try await unknownPromise.futureResult.get()
+            Issue.record("An unknown host key must require an explicit trust decision")
+        } catch let error as HostKeyTrustRequiredError {
+            #expect(error.challenge.host == "unknown.example.com")
+            #expect(error.challenge.port == 2222)
+            #expect(error.challenge.algorithm == "ssh-ed25519")
+            #expect(error.challenge.reason == .unknown)
+        }
+        #expect(unknownBox.take()?.reason == .unknown)
+
+        let changedBox = HostKeyChallengeBox()
+        let changedValidator = PromptingHostKeyValidator(
+            host: "changed.example.com",
+            port: 22,
+            trustedKeyBase64Set: ["different-key"],
+            verificationMode: .strict,
+            challengeBox: changedBox
+        )
+        let changedPromise = eventLoop.makePromise(of: Void.self)
+        eventLoop.execute {
+            changedValidator.validateHostKey(
+                hostKey: hostKey,
+                validationCompletePromise: changedPromise
+            )
+        }
+        do {
+            try await changedPromise.futureResult.get()
+            Issue.record("A changed host key must fail strict verification")
+        } catch let error as HostKeyTrustRequiredError {
+            #expect(error.challenge.reason == .changed)
+            #expect(error.challenge.keyDataBase64 == trustedKeyBase64)
+        }
+        #expect(changedBox.take()?.reason == .changed)
+    }
+
     @Test @MainActor func workspaceWindowRegistryRemovesOrphanedPendingTabs() {
         let registry = MacWorkspaceWindowRegistry()
         let sourceID = UUID()
@@ -74,6 +248,27 @@ struct MacWorkspaceTests {
 
         registry.unregister(sourceID)
         #expect(registry.pendingTabCount == 0)
+    }
+
+    @Test @MainActor func workspaceWindowRegistryAssemblesBatchInSavedOrder() {
+        let registry = MacWorkspaceWindowRegistry()
+        let workspaceIDs = [UUID(), UUID(), UUID()]
+        let windows = ["One", "Two", "Three"].map { title in
+            let window = NSWindow()
+            window.title = title
+            window.isReleasedWhenClosed = false
+            return window
+        }
+        defer { windows.forEach { $0.close() } }
+
+        registry.prepareTabBatch(workspaceIDs: workspaceIDs)
+        #expect(registry.pendingBatchCount == 1)
+        registry.register(windows[2], workspaceID: workspaceIDs[2])
+        registry.register(windows[0], workspaceID: workspaceIDs[0])
+        registry.register(windows[1], workspaceID: workspaceIDs[1])
+
+        #expect(registry.pendingBatchCount == 0)
+        #expect(windows[0].tabbedWindows?.map(\.title) == ["One", "Two", "Three"])
     }
 
     @Test @MainActor func appleTerminalThemeImporterUsesOnlyAllowlistedVisualFields() throws {
@@ -608,6 +803,13 @@ struct MacWorkspaceTests {
         )
     }
 
+    @Test func localTerminalExitPolicyClosesOnlyAfterCleanShellExit() {
+        #expect(MacLocalTerminalExitPolicy.shouldClose(exitCode: 0))
+        #expect(!MacLocalTerminalExitPolicy.shouldClose(exitCode: 1))
+        #expect(!MacLocalTerminalExitPolicy.shouldClose(exitCode: 143))
+        #expect(!MacLocalTerminalExitPolicy.shouldClose(exitCode: nil))
+    }
+
     @Test @MainActor func localPTYTeardownKillsAndReapsSignalIgnoringShell() async throws {
         let pidFile = FileManager.default.temporaryDirectory
             .appending(path: "glas-local-pty-\(UUID().uuidString).pid")
@@ -697,6 +899,7 @@ struct MacWorkspaceTests {
         let model = SwiftTermHostModel()
         let processState = SwiftTermLocalProcessState()
         var terminationCount = 0
+        var readyCount = 0
         let terminal = SwiftTermLocalProcessHostView(
             model: model,
             processState: processState,
@@ -712,6 +915,7 @@ struct MacWorkspaceTests {
                 blinkingCursor: false,
                 scrollbackLines: 100
             ),
+            onProcessReady: { readyCount += 1 },
             onProcessTerminated: { _ in terminationCount += 1 }
         )
         var hostingView: NSHostingView<SwiftTermLocalProcessHostView>? = NSHostingView(
@@ -729,10 +933,12 @@ struct MacWorkspaceTests {
         #expect(await waitForCondition(seconds: 3) {
             terminationCount == 1 && processState.exitCode == 7
         })
+        #expect(readyCount == 1)
         #expect(processState.restart(configuration))
         #expect(await waitForCondition(seconds: 3) {
             terminationCount == 2 && processState.exitCode == 7
         })
+        #expect(readyCount == 2)
 
         window.contentView = nil
         hostingView = nil

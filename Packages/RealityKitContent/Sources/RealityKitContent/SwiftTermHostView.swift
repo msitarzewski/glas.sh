@@ -2074,6 +2074,7 @@ private final class MacLocalProcessEngine: TerminalEngine, SwiftTermLocalProcess
     private weak var processState: SwiftTermLocalProcessState?
     private let onOutputData: (Data) -> Void
     private let onInputData: (Data) -> Void
+    private let onProcessReady: () -> Void
     private let onProcessTerminated: (Int32?) -> Void
     private let onRendererDiagnostics: (SwiftTermRendererDiagnostics) -> Void
     private let onOSC52Decision: (SwiftTermOSC52Decision) -> Void
@@ -2091,6 +2092,7 @@ private final class MacLocalProcessEngine: TerminalEngine, SwiftTermLocalProcess
         onTitleChanged: @escaping (String) -> Void,
         onCurrentDirectoryChanged: @escaping (String?) -> Void,
         onBell: @escaping () -> Void,
+        onProcessReady: @escaping () -> Void,
         onProcessTerminated: @escaping (Int32?) -> Void,
         onRendererDiagnostics: @escaping (SwiftTermRendererDiagnostics) -> Void,
         onOSC52Decision: @escaping (SwiftTermOSC52Decision) -> Void
@@ -2110,6 +2112,7 @@ private final class MacLocalProcessEngine: TerminalEngine, SwiftTermLocalProcess
         self.processState = processState
         self.onOutputData = onOutputData
         self.onInputData = onInputData
+        self.onProcessReady = onProcessReady
         self.onProcessTerminated = onProcessTerminated
         self.onRendererDiagnostics = onRendererDiagnostics
         self.onOSC52Decision = onOSC52Decision
@@ -2180,6 +2183,7 @@ private final class MacLocalProcessEngine: TerminalEngine, SwiftTermLocalProcess
             )
         }
         updatePTYSize()
+        onProcessReady()
     }
 
     func receive(_ data: Data) {
@@ -2472,6 +2476,7 @@ public struct SwiftTermLocalProcessHostView: NSViewRepresentable {
     let onTitleChanged: (String) -> Void
     let onCurrentDirectoryChanged: (String?) -> Void
     let onBell: () -> Void
+    let onProcessReady: () -> Void
     let onProcessTerminated: (Int32?) -> Void
 
     public init(
@@ -2486,6 +2491,7 @@ public struct SwiftTermLocalProcessHostView: NSViewRepresentable {
         onTitleChanged: @escaping (String) -> Void = { _ in },
         onCurrentDirectoryChanged: @escaping (String?) -> Void = { _ in },
         onBell: @escaping () -> Void = {},
+        onProcessReady: @escaping () -> Void = {},
         onProcessTerminated: @escaping (Int32?) -> Void = { _ in }
     ) {
         self.model = model
@@ -2499,6 +2505,7 @@ public struct SwiftTermLocalProcessHostView: NSViewRepresentable {
         self.onTitleChanged = onTitleChanged
         self.onCurrentDirectoryChanged = onCurrentDirectoryChanged
         self.onBell = onBell
+        self.onProcessReady = onProcessReady
         self.onProcessTerminated = onProcessTerminated
     }
 
@@ -2519,6 +2526,7 @@ public struct SwiftTermLocalProcessHostView: NSViewRepresentable {
             onTitleChanged: onTitleChanged,
             onCurrentDirectoryChanged: onCurrentDirectoryChanged,
             onBell: onBell,
+            onProcessReady: onProcessReady,
             onProcessTerminated: onProcessTerminated,
             onRendererDiagnostics: { [weak model] diagnostics in
                 model?.updateRendererDiagnostics(diagnostics)

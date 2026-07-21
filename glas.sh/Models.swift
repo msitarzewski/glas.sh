@@ -150,7 +150,7 @@ struct ServerConfiguration: Identifiable, Codable, Hashable {
     }
 }
 
-enum ServerColorTag: String, Codable, CaseIterable {
+enum ServerColorTag: String, Codable, CaseIterable, Hashable, Sendable {
     case blue, purple, pink, red, orange, yellow, green, cyan, gray
     
     var color: Color {
@@ -219,7 +219,7 @@ nonisolated final class HostKeyChallengeBox: Sendable {
     }
 }
 
-final class PromptingHostKeyValidator: NIOSSHClientServerAuthenticationDelegate, Sendable {
+nonisolated final class PromptingHostKeyValidator: NIOSSHClientServerAuthenticationDelegate, Sendable {
     private let host: String
     private let port: Int
     private let trustedKeyBase64Set: Set<String>
@@ -320,6 +320,29 @@ enum TerminalSessionLifecycleTransition: CaseIterable, Sendable {
     case terminalError
 }
 
+/// A single explicit launch-time command. Tickets are intentionally runtime
+/// only: command text never enters live workspace restoration, credentials, or
+/// connection-preparation data, and a claimed ticket is never retried after an
+/// uncertain transport write.
+struct TerminalStartupCommandTicket: Identifiable, Equatable, Sendable {
+    static let maximumCommandBytes = SwiftTermPastePolicy.directPasteMaximumBytes
+
+    let id: UUID
+    let command: String
+
+    init?(id: UUID = UUID(), command: String?) {
+        guard let command else { return nil }
+        let normalized = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty,
+              !normalized.utf8.contains(0),
+              !normalized.contains("\n"),
+              !normalized.contains("\r"),
+              normalized.utf8.count <= Self.maximumCommandBytes else { return nil }
+        self.id = id
+        self.command = normalized
+    }
+}
+
 @MainActor
 @Observable
 class TerminalSession: Identifiable, Hashable {
@@ -335,7 +358,13 @@ class TerminalSession: Identifiable, Hashable {
     let id: UUID
     var server: ServerConfiguration
     
-    var state: SessionState = .disconnected
+    var state: SessionState = .disconnected {
+        didSet {
+            if oldValue != .connected, state == .connected {
+                dispatchStartupCommandIfNeeded()
+            }
+        }
+    }
     var output: [TerminalLine] = []
     var terminalInputNonce: UInt64 = 0
     var closeWindowNonce: UInt64 = 0
@@ -377,6 +406,7 @@ class TerminalSession: Identifiable, Hashable {
     private var lifecycleHook: LifecycleHook?
     private var lifecycleCleanupPerformed = false
     private var lifecycleCleanupTask: Task<Void, Never>?
+    private var startupCommandTicket: TerminalStartupCommandTicket?
 
     init(
         server: ServerConfiguration,
@@ -407,6 +437,18 @@ class TerminalSession: Identifiable, Hashable {
     func installLifecycleHook(_ hook: @escaping LifecycleHook) {
         lifecycleHook = hook
     }
+
+    /// Arms one launch-time command before the initial connection attempt.
+    /// Reconnect never replenishes a claimed ticket.
+    @discardableResult
+    func installStartupCommand(_ command: String?) -> Bool {
+        guard startupCommandTicket == nil,
+              let ticket = TerminalStartupCommandTicket(command: command) else { return false }
+        startupCommandTicket = ticket
+        return true
+    }
+
+    var hasPendingStartupCommand: Bool { startupCommandTicket != nil }
 
     /// Runs once for each attached SSH connection. Repeated terminal errors,
     /// reconnect signals, and close requests for the same transport are harmless.
@@ -654,6 +696,16 @@ class TerminalSession: Identifiable, Hashable {
         let data = Data((command + "\n").utf8)
         // Generated commands, suggested fixes, and snippets share the exact
         // same consented input-recording path as keyboard bytes.
+        recorder?.recordInput(data)
+        enqueueTerminalWrite(data, presentsFailure: true)
+    }
+
+    private func dispatchStartupCommandIfNeeded() {
+        guard state == .connected, let ticket = startupCommandTicket else { return }
+        // Claim before enqueueing. If the remote receives only part of a write,
+        // automatically retrying could execute a destructive command twice.
+        startupCommandTicket = nil
+        let data = Data((ticket.command + "\n").utf8)
         recorder?.recordInput(data)
         enqueueTerminalWrite(data, presentsFailure: true)
     }
@@ -1662,6 +1714,9 @@ class SSHConnection {
     private var jumpClients: [SSHClient] = []
     private var ttyWriter: TTYStdinWriter?
     private var ttyTask: Task<Void, Never>?
+    private var ttyReadyContinuation: CheckedContinuation<Void, Error>?
+    private var ttyReadyResolved = false
+    private var ttyReadyFailure: Error?
     private var keepAliveTask: Task<Void, Never>?
     private var missedKeepAlives: Int = 0
     private var terminalRows: Int = 40
@@ -1973,9 +2028,14 @@ class SSHConnection {
             throw SSHError.connectionFailed
         }
 
+        ttyReadyResolved = false
+        ttyReadyFailure = nil
+        ttyReadyContinuation = nil
         ttyTask = Task { [weak self] in
             await self?.runInteractiveTTY(client: client, server: server)
         }
+
+        try await awaitTTYReady()
 
         startKeepAliveTimer(
             client: client,
@@ -2020,6 +2080,7 @@ class SSHConnection {
                 perform: { @Sendable [weak self] inbound, outbound in
                     await MainActor.run {
                         self?.ttyWriter = outbound
+                        self?.resolveTTYReady()
                     }
 
                     for try await output in inbound {
@@ -2040,15 +2101,22 @@ class SSHConnection {
                 }
             )
             await MainActor.run {
+                self.failTTYReady(SSHError.notConnected)
                 self.session?.handleCleanRemoteExit()
             }
         } catch let channelError as ChannelError where channelError == .inputClosed || channelError == .outputClosed || channelError == .eof || channelError == .alreadyClosed {
             await MainActor.run {
+                self.failTTYReady(channelError)
                 self.session?.handleCleanRemoteExit()
             }
         } catch is CancellationError {
-            // Task cancelled during disconnect.
+            await MainActor.run {
+                self.failTTYReady(CancellationError())
+            }
         } catch {
+            await MainActor.run {
+                self.failTTYReady(error)
+            }
             if Self.isChannelClosedError(error) {
                 await MainActor.run {
                     self.session?.handleCleanRemoteExit()
@@ -2144,6 +2212,7 @@ class SSHConnection {
 
     /// Disconnect from SSH server
     func disconnect() async {
+        failTTYReady(CancellationError())
         keepAliveTask?.cancel()
         keepAliveTask = nil
         ttyTask?.cancel()
@@ -2158,6 +2227,42 @@ class SSHConnection {
         client = nil
         jumpClients.removeAll(keepingCapacity: false)
         await closeClientsInOrder(clientsToClose, context: "disconnect")
+    }
+
+    private func awaitTTYReady() async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                if ttyWriter != nil {
+                    continuation.resume()
+                } else if ttyReadyResolved {
+                    continuation.resume(throwing: ttyReadyFailure ?? SSHError.notConnected)
+                } else {
+                    ttyReadyContinuation = continuation
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.failTTYReady(CancellationError())
+            }
+        }
+    }
+
+    private func resolveTTYReady() {
+        guard !ttyReadyResolved else { return }
+        ttyReadyResolved = true
+        ttyReadyFailure = nil
+        let continuation = ttyReadyContinuation
+        ttyReadyContinuation = nil
+        continuation?.resume()
+    }
+
+    private func failTTYReady(_ error: Error) {
+        guard !ttyReadyResolved else { return }
+        ttyReadyResolved = true
+        ttyReadyFailure = error
+        let continuation = ttyReadyContinuation
+        ttyReadyContinuation = nil
+        continuation?.resume(throwing: error)
     }
 
     private func closeClients(_ clients: [SSHClient], context: String) async {
@@ -2432,11 +2537,30 @@ enum SSHError: LocalizedError {
 
 // MARK: - Layout Presets
 
+/// Runtime-only membership for one spatial visionOS terminal window. Live
+/// sessions remain authoritative in SessionManager; this value stores only
+/// identity, presentation metadata, ordering, and selection.
+struct TerminalWorkgroup: Identifiable, Equatable, Sendable {
+    let id: UUID
+    var name: String
+    var colorTag: ServerColorTag
+    var sessionIDs: [UUID]
+    var selectedSessionID: UUID?
+}
+
 struct LayoutPreset: Identifiable, Codable, Hashable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
+    static let maximumNameLength = 80
+    static let maximumSessionCount = 32
 
     struct SessionIntent: Codable, Hashable {
-        static let currentSchemaVersion = 1
+        static let currentSchemaVersion = 2
+        static let maximumLabelLength = 80
+
+        enum Kind: String, Codable, Hashable, Sendable {
+            case local
+            case ssh
+        }
 
         enum Restoration: Hashable, Codable {
             case freshAuthorizedSession
@@ -2465,37 +2589,131 @@ struct LayoutPreset: Identifiable, Codable, Hashable {
         }
 
         var schemaVersion: Int
-        var serverID: UUID
+        var kind: Kind
+        var serverID: UUID?
         var restoration: Restoration
+        var label: String?
+        var startupCommand: String?
 
         init(
             schemaVersion: Int = SessionIntent.currentSchemaVersion,
             serverID: UUID,
-            restoration: Restoration = .freshAuthorizedSession
+            restoration: Restoration = .freshAuthorizedSession,
+            label: String? = nil,
+            startupCommand: String? = nil
         ) {
             self.schemaVersion = schemaVersion
+            self.kind = .ssh
             self.serverID = serverID
             self.restoration = restoration
+            self.label = Self.normalizedLabel(label)
+            self.startupCommand = Self.normalizedCommand(startupCommand)
+        }
+
+        init(
+            schemaVersion: Int = SessionIntent.currentSchemaVersion,
+            kind: Kind,
+            serverID: UUID? = nil,
+            restoration: Restoration = .freshAuthorizedSession,
+            label: String? = nil,
+            startupCommand: String? = nil
+        ) {
+            self.schemaVersion = schemaVersion
+            self.kind = kind
+            self.serverID = serverID
+            self.restoration = restoration
+            self.label = Self.normalizedLabel(label)
+            self.startupCommand = Self.normalizedCommand(startupCommand)
         }
 
         var isSupported: Bool {
             schemaVersion == Self.currentSchemaVersion
                 && restoration == .freshAuthorizedSession
+                && ((kind == .local && serverID == nil) || (kind == .ssh && serverID != nil))
+                && label == Self.normalizedLabel(label)
+                && startupCommand == Self.normalizedCommand(startupCommand)
+        }
+
+        var needsMigration: Bool { schemaVersion < Self.currentSchemaVersion }
+
+        func migratedToCurrentSchema() -> Self {
+            guard needsMigration else { return self }
+            var migrated = self
+            migrated.schemaVersion = Self.currentSchemaVersion
+            migrated.label = Self.normalizedLabel(label)
+            migrated.startupCommand = Self.normalizedCommand(startupCommand)
+            return migrated
+        }
+
+        private static func normalizedLabel(_ value: String?) -> String? {
+            guard let value else { return nil }
+            let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty,
+                  !normalized.utf8.contains(0),
+                  normalized.count <= maximumLabelLength else { return nil }
+            return normalized
+        }
+
+        private static func normalizedCommand(_ value: String?) -> String? {
+            TerminalStartupCommandTicket(command: value)?.command
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case schemaVersion
+            case kind
+            case serverID
+            case restoration
+            case label
+            case startupCommand
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+            kind = try container.decodeIfPresent(Kind.self, forKey: .kind) ?? .ssh
+            serverID = try container.decodeIfPresent(UUID.self, forKey: .serverID)
+            restoration = try container.decodeIfPresent(Restoration.self, forKey: .restoration)
+                ?? .freshAuthorizedSession
+            label = Self.normalizedLabel(try container.decodeIfPresent(String.self, forKey: .label))
+            startupCommand = Self.normalizedCommand(
+                try container.decodeIfPresent(String.self, forKey: .startupCommand)
+            )
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(schemaVersion, forKey: .schemaVersion)
+            try container.encode(kind, forKey: .kind)
+            try container.encodeIfPresent(serverID, forKey: .serverID)
+            try container.encode(restoration, forKey: .restoration)
+            try container.encodeIfPresent(label, forKey: .label)
+            try container.encodeIfPresent(startupCommand, forKey: .startupCommand)
         }
     }
 
     let id: UUID
     var name: String
+    var colorTag: ServerColorTag
     private(set) var schemaVersion: Int
     var sessionIntents: [SessionIntent]
     let createdAt: Date
     var lastUsed: Date?
 
-    init(id: UUID = UUID(), name: String, serverIDs: [UUID], createdAt: Date = Date(), lastUsed: Date? = nil) {
+    init(
+        id: UUID = UUID(),
+        name: String,
+        colorTag: ServerColorTag = .blue,
+        serverIDs: [UUID],
+        createdAt: Date = Date(),
+        lastUsed: Date? = nil
+    ) {
         self.id = id
-        self.name = name
+        self.name = Self.normalizedName(name)
+        self.colorTag = colorTag
         self.schemaVersion = Self.currentSchemaVersion
-        self.sessionIntents = serverIDs.map { SessionIntent(serverID: $0) }
+        self.sessionIntents = serverIDs.prefix(Self.maximumSessionCount).map {
+            SessionIntent(serverID: $0)
+        }
         self.createdAt = createdAt
         self.lastUsed = lastUsed
     }
@@ -2503,14 +2721,16 @@ struct LayoutPreset: Identifiable, Codable, Hashable {
     init(
         id: UUID = UUID(),
         name: String,
+        colorTag: ServerColorTag = .blue,
         sessionIntents: [SessionIntent],
         createdAt: Date = Date(),
         lastUsed: Date? = nil
     ) {
         self.id = id
-        self.name = name
+        self.name = Self.normalizedName(name)
+        self.colorTag = colorTag
         self.schemaVersion = Self.currentSchemaVersion
-        self.sessionIntents = sessionIntents
+        self.sessionIntents = Array(sessionIntents.prefix(Self.maximumSessionCount))
         self.createdAt = createdAt
         self.lastUsed = lastUsed
     }
@@ -2518,23 +2738,43 @@ struct LayoutPreset: Identifiable, Codable, Hashable {
     /// Compatibility view used by callers that only need endpoint identities.
     /// Repeated IDs are intentional: each entry represents a separate session.
     var serverIDs: [UUID] {
-        sessionIntents.map(\.serverID)
+        sessionIntents.compactMap(\.serverID)
     }
 
     var needsMigration: Bool {
         schemaVersion < Self.currentSchemaVersion
+            || sessionIntents.contains(where: \.needsMigration)
+    }
+
+    var isValidForPersistence: Bool {
+        name == Self.normalizedName(name)
+            && !sessionIntents.isEmpty
+            && sessionIntents.count <= Self.maximumSessionCount
+            && sessionIntents.allSatisfy(\.isSupported)
     }
 
     func migratedToCurrentSchema() -> LayoutPreset {
         guard needsMigration else { return self }
         var migrated = self
         migrated.schemaVersion = Self.currentSchemaVersion
+        migrated.name = Self.normalizedName(name)
+        migrated.sessionIntents = Array(
+            sessionIntents.map { $0.migratedToCurrentSchema() }
+                .prefix(Self.maximumSessionCount)
+        )
         return migrated
+    }
+
+    private static func normalizedName(_ value: String) -> String {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return "Workgroup" }
+        return String(normalized.prefix(maximumNameLength))
     }
 
     private enum CodingKeys: String, CodingKey {
         case id
         case name
+        case colorTag
         case schemaVersion
         case sessionIntents
         case serverIDs
@@ -2545,7 +2785,8 @@ struct LayoutPreset: Identifiable, Codable, Hashable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
-        name = try container.decode(String.self, forKey: .name)
+        name = Self.normalizedName(try container.decode(String.self, forKey: .name))
+        colorTag = try container.decodeIfPresent(ServerColorTag.self, forKey: .colorTag) ?? .blue
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         lastUsed = try container.decodeIfPresent(Date.self, forKey: .lastUsed)
 
@@ -2564,6 +2805,7 @@ struct LayoutPreset: Identifiable, Codable, Hashable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(name, forKey: .name)
+        try container.encode(colorTag, forKey: .colorTag)
         try container.encode(schemaVersion, forKey: .schemaVersion)
         try container.encode(sessionIntents, forKey: .sessionIntents)
         try container.encode(createdAt, forKey: .createdAt)

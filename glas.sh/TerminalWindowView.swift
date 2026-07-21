@@ -43,14 +43,17 @@ enum TerminalNewTerminalRoute: Equatable {
 
 struct TerminalWindowView: View {
     @Bindable var session: TerminalSession
-    /// Standalone terminal windows own their session. A macOS split workspace
-    /// retains ownership so view identity and tab moves cannot disconnect SSH.
+    /// Standalone terminal windows own their session. An app-level workspace or
+    /// workgroup retains ownership so view identity and tab moves cannot disconnect SSH.
     var ownsSessionLifecycle = true
+    /// A visionOS workgroup presents one shared identity ornament for all tabs.
+    /// Standalone terminal windows keep the per-connection ornament.
+    var showsConnectionOrnament = true
     /// Workspace command routing increments this value to present the existing
     /// terminal search UI without duplicating search state outside this view.
     var externalSearchRequestNonce: UInt64 = 0
-    /// Embedded Mac workspaces provide their own tab launcher. Standalone SSH
-    /// windows attach a fresh launcher tab to their exact hosting window.
+    /// Embedded workspaces provide their own tab launcher. Standalone windows
+    /// use their platform's default terminal-launch route.
     var onNewTerminalTab: (() -> Void)? = nil
     /// Embedded workspaces retain their own window and pane topology when an
     /// SSH session ends. The owner removes the live session and presents retry
@@ -236,9 +239,10 @@ struct TerminalWindowView: View {
             }
     }
 
+    @ViewBuilder
     private var terminalSurface: some View {
         #if os(visionOS)
-        VStack(spacing: 0) {
+        let surface = VStack(spacing: 0) {
             terminalContent
                 .padding(10)
         }
@@ -252,13 +256,23 @@ struct TerminalWindowView: View {
         .padding(.horizontal, 22)
         .padding(.top, 34)
         .padding(.bottom, 26)
-        .ornament(attachmentAnchor: .scene(.top)) {
-            connectionLabel
-                .glassBackgroundEffect(in: .capsule)
-        }
-        .ornament(attachmentAnchor: .scene(.bottom)) {
-            bottomStatusBar
-                .glassBackgroundEffect(in: .capsule)
+
+        if showsConnectionOrnament {
+            surface
+                .ornament(attachmentAnchor: .scene(.top)) {
+                    connectionLabel
+                        .glassBackgroundEffect(in: .capsule)
+                }
+                .ornament(attachmentAnchor: .scene(.bottom)) {
+                    bottomStatusBar
+                        .glassBackgroundEffect(in: .capsule)
+                }
+        } else {
+            surface
+                .ornament(attachmentAnchor: .scene(.bottom)) {
+                    bottomStatusBar
+                        .glassBackgroundEffect(in: .capsule)
+                }
         }
         #else
         VStack(spacing: 0) {
@@ -813,12 +827,12 @@ struct TerminalWindowView: View {
                     settingsManager: settingsManager
                 )
                 if launch.session.state == .connected {
-                    openWindow(id: "terminal", value: launch.session.id)
+                    presentDuplicatedTerminal(launch.session)
                 } else if let challenge = launch.session.pendingHostKeyChallenge {
                     if interactiveHostKeyTrustIsAllowed {
                         // The new window owns the exact trust prompt and reconnect
                         // lifecycle for its per-connection challenge.
-                        openWindow(id: "terminal", value: launch.session.id)
+                        presentDuplicatedTerminal(launch.session)
                     } else {
                         notificationManager.post(
                             icon: "lock.shield",
@@ -847,6 +861,29 @@ struct TerminalWindowView: View {
                 )
             }
         }
+    }
+
+    private func presentDuplicatedTerminal(_ duplicatedSession: TerminalSession) {
+        #if os(visionOS)
+        let workgroupID = sessionManager.createWorkgroup(
+            name: duplicatedSession.server.name,
+            colorTag: duplicatedSession.server.colorTag
+        )
+        guard sessionManager.appendSession(duplicatedSession, toWorkgroup: workgroupID) else {
+            sessionManager.discardWorkgroupIfEmpty(workgroupID)
+            sessionManager.closeSession(duplicatedSession)
+            notificationManager.post(
+                icon: "exclamationmark.triangle",
+                title: "Duplicate Failed",
+                message: "The duplicate terminal could not be added to a workgroup.",
+                style: .error
+            )
+            return
+        }
+        openWindow(id: "terminal", value: workgroupID)
+        #else
+        openWindow(id: "terminal", value: duplicatedSession.id)
+        #endif
     }
 
     private var hostTrustBinding: Binding<Bool> {
@@ -939,6 +976,10 @@ struct TerminalWindowView: View {
     }
 
     private func openNewTerminalFromFooter() {
+        if let onNewTerminalTab {
+            onNewTerminalTab()
+            return
+        }
         TerminalNewTerminalRoute.platformDefault.perform(
             openConnections: { openWindow(id: "main") },
             openMacTab: {
@@ -947,6 +988,12 @@ struct TerminalWindowView: View {
                 #endif
             }
         )
+    }
+
+    private var newTerminalAccessibilityLabel: String {
+        onNewTerminalTab == nil
+            ? TerminalNewTerminalRoute.platformDefault.accessibilityLabel
+            : "New Terminal Tab"
     }
 
     // MARK: - Bottom Status
@@ -1060,8 +1107,8 @@ struct TerminalWindowView: View {
                 Image(systemName: "plus")
             }
             .buttonStyle(.borderless)
-            .accessibilityLabel(TerminalNewTerminalRoute.platformDefault.accessibilityLabel)
-            .help(TerminalNewTerminalRoute.platformDefault.accessibilityLabel)
+            .accessibilityLabel(newTerminalAccessibilityLabel)
+            .help(newTerminalAccessibilityLabel)
 
             Menu {
                 Button {
@@ -1276,35 +1323,40 @@ struct TerminalWindowView: View {
 
     private var terminalSettingsModal: some View {
         NavigationStack {
-            Group {
-                switch terminalSettingsTab {
-                case .terminal:
-                    TerminalSettingsView()
-                        .environment(settingsManager)
-                case .overrides:
-                    TerminalOverridesSettingsView(session: session)
-                        .environment(settingsManager)
-                case .portForwarding:
-                    TerminalPortForwardingSettingsView(session: session)
+            VStack(spacing: 0) {
+                Picker("Settings Section", selection: $terminalSettingsTab) {
+                    ForEach(TerminalSettingsModalTab.allCases, id: \.self) { tab in
+                        Text(tab.title).tag(tab)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 420)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .accessibilityIdentifier("terminal-settings-section-picker")
+
+                Divider()
+
+                Group {
+                    switch terminalSettingsTab {
+                    case .terminal:
+                        TerminalSettingsView()
+                            .environment(settingsManager)
+                    case .overrides:
+                        TerminalOverridesSettingsView(session: session)
+                            .environment(settingsManager)
+                    case .portForwarding:
+                        TerminalPortForwardingSettingsView(session: session)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .navigationTitle("Terminal Settings")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") {
                         showingTerminalSettings = false
                     }
-                }
-
-                ToolbarItem(placement: .principal) {
-                    Picker("Settings Tab", selection: $terminalSettingsTab) {
-                        Text("Terminal").tag(TerminalSettingsModalTab.terminal)
-                        Text("Overrides").tag(TerminalSettingsModalTab.overrides)
-                        Text("Port Forwarding").tag(TerminalSettingsModalTab.portForwarding)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: 360)
                 }
             }
         }
@@ -1380,10 +1432,18 @@ private struct TerminalPasteReviewSheet: View {
 }
 
 
-private enum TerminalSettingsModalTab: Hashable {
+enum TerminalSettingsModalTab: String, CaseIterable, Hashable {
     case terminal
     case overrides
     case portForwarding
+
+    var title: String {
+        switch self {
+        case .terminal: "Terminal"
+        case .overrides: "Overrides"
+        case .portForwarding: "Port Forwarding"
+        }
+    }
 }
 
 struct TerminalOverridesSettingsView: View {

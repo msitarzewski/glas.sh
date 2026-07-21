@@ -29,6 +29,7 @@ class SessionManager {
     }
 
     var sessions: [TerminalSession] = []
+    private(set) var workgroups: [TerminalWorkgroup] = []
     let portForwardManager: PortForwardManager
     private let stopSessionForwards: (UUID) -> Void
     private let retrievePassword: (ServerConfiguration) throws -> String
@@ -143,7 +144,8 @@ class SessionManager {
 
     func createAuthorizedSession(
         for server: ServerConfiguration,
-        settingsManager: SettingsManager
+        settingsManager: SettingsManager,
+        startupCommand: String? = nil
     ) async throws -> AuthorizedSessionLaunch {
         guard let currentServer = serverManager.server(for: server.id) else {
             throw SessionOpenError.savedServerNotFound
@@ -152,7 +154,8 @@ class SessionManager {
             for: currentServer,
             origin: .savedProfile(currentServer.id),
             settingsManager: settingsManager,
-            providedPassword: nil
+            providedPassword: nil,
+            startupCommand: startupCommand
         )
     }
 
@@ -168,7 +171,8 @@ class SessionManager {
             for: server,
             origin: .transient(server),
             settingsManager: settingsManager,
-            providedPassword: providedPassword
+            providedPassword: providedPassword,
+            startupCommand: nil
         )
     }
 
@@ -176,8 +180,13 @@ class SessionManager {
         for server: ServerConfiguration,
         origin: SessionOrigin,
         settingsManager: SettingsManager,
-        providedPassword: String?
+        providedPassword: String?,
+        startupCommand: String?
     ) async throws -> AuthorizedSessionLaunch {
+        if startupCommand != nil,
+           TerminalStartupCommandTicket(command: startupCommand) == nil {
+            throw SessionOpenError.invalidStartupCommand
+        }
         let prepared: ConnectionPreparationResult
         switch origin {
         case .savedProfile:
@@ -193,7 +202,8 @@ class SessionManager {
                 guard case .transient = origin else { return nil }
                 return providedPassword
             }(),
-            settingsManager: settingsManager
+            settingsManager: settingsManager,
+            startupCommand: startupCommand
         )
         if case .error = session.state, session.pendingHostKeyChallenge == nil {
             unregister(session)
@@ -203,12 +213,17 @@ class SessionManager {
 
     func createAuthorizedSessionByServerID(
         _ serverID: UUID,
-        settingsManager: SettingsManager
+        settingsManager: SettingsManager,
+        startupCommand: String? = nil
     ) async throws -> AuthorizedSessionLaunch {
         guard let server = serverManager.server(for: serverID) else {
             throw SessionOpenError.savedServerNotFound
         }
-        return try await createAuthorizedSession(for: server, settingsManager: settingsManager)
+        return try await createAuthorizedSession(
+            for: server,
+            settingsManager: settingsManager,
+            startupCommand: startupCommand
+        )
     }
 
     func duplicateAuthorizedSession(
@@ -328,9 +343,13 @@ class SessionManager {
         prepared: ConnectionPreparationResult,
         origin: SessionOrigin,
         transientPassword: String?,
-        settingsManager: SettingsManager
+        settingsManager: SettingsManager,
+        startupCommand: String?
     ) async -> TerminalSession {
         let session = TerminalSession(server: server)
+        if let startupCommand {
+            _ = session.installStartupCommand(startupCommand)
+        }
         session.jumpHostChain = prepared.jumpHostChain
         session.connectionPreparation = prepared.authentication
 
@@ -352,6 +371,65 @@ class SessionManager {
 
     func session(for id: UUID) -> TerminalSession? {
         sessions.first { $0.id == id }
+    }
+
+    func workgroup(for id: UUID) -> TerminalWorkgroup? {
+        workgroups.first { $0.id == id }
+    }
+
+    @discardableResult
+    func createWorkgroup(
+        id: UUID = UUID(),
+        name: String,
+        colorTag: ServerColorTag
+    ) -> UUID {
+        guard workgroups.contains(where: { $0.id == id }) == false else { return id }
+        workgroups.append(TerminalWorkgroup(
+            id: id,
+            name: name,
+            colorTag: colorTag,
+            sessionIDs: [],
+            selectedSessionID: nil
+        ))
+        return id
+    }
+
+    @discardableResult
+    func appendSession(_ session: TerminalSession, toWorkgroup workgroupID: UUID) -> Bool {
+        guard sessions.contains(where: { $0.id == session.id }),
+              workgroups.allSatisfy({ !$0.sessionIDs.contains(session.id) }),
+              let index = workgroups.firstIndex(where: { $0.id == workgroupID }),
+              workgroups[index].sessionIDs.count < LayoutPreset.maximumSessionCount else {
+            return false
+        }
+        workgroups[index].sessionIDs.append(session.id)
+        workgroups[index].selectedSessionID = session.id
+        return true
+    }
+
+    func selectSession(_ sessionID: UUID, inWorkgroup workgroupID: UUID) {
+        guard let index = workgroups.firstIndex(where: { $0.id == workgroupID }),
+              workgroups[index].sessionIDs.contains(sessionID) else { return }
+        workgroups[index].selectedSessionID = sessionID
+    }
+
+    func removeSessionFromWorkgroup(_ session: TerminalSession, close: Bool = true) {
+        removeSessionFromWorkgroups(session.id)
+        if close { closeSession(session) }
+    }
+
+    func closeWorkgroup(_ workgroupID: UUID) {
+        guard let index = workgroups.firstIndex(where: { $0.id == workgroupID }) else { return }
+        let sessionIDs = workgroups.remove(at: index).sessionIDs
+        for sessionID in sessionIDs {
+            if let session = session(for: sessionID) {
+                closeSession(session)
+            }
+        }
+    }
+
+    func discardWorkgroupIfEmpty(_ workgroupID: UUID) {
+        workgroups.removeAll { $0.id == workgroupID && $0.sessionIDs.isEmpty }
     }
 
     func registerSession(_ session: TerminalSession) {
@@ -394,6 +472,7 @@ class SessionManager {
 
     private func unregister(_ session: TerminalSession) {
         sessions.removeAll { $0.id == session.id }
+        removeSessionFromWorkgroups(session.id)
         sessionOrigins.removeValue(forKey: session.id)
         transientPasswords.removeValue(forKey: session.id)
         session.connectionPreparation = nil
@@ -414,6 +493,7 @@ class SessionManager {
     func closeAllSessions() {
         let closingSessions = sessions
         sessions.removeAll()
+        workgroups.removeAll()
         sessionOrigins.removeAll(keepingCapacity: false)
         transientPasswords.removeAll(keepingCapacity: false)
         for session in closingSessions {
@@ -421,6 +501,24 @@ class SessionManager {
             session.disconnect()
             session.connectionPreparation = nil
             scheduleForwardPurgeAfterCleanup(for: session)
+        }
+    }
+
+    private func removeSessionFromWorkgroups(_ sessionID: UUID) {
+        for index in workgroups.indices.reversed() {
+            guard let removedIndex = workgroups[index].sessionIDs.firstIndex(of: sessionID) else {
+                continue
+            }
+            workgroups[index].sessionIDs.remove(at: removedIndex)
+            if workgroups[index].selectedSessionID == sessionID {
+                let remaining = workgroups[index].sessionIDs
+                workgroups[index].selectedSessionID = remaining.isEmpty
+                    ? nil
+                    : remaining[min(removedIndex, remaining.count - 1)]
+            }
+            if workgroups[index].sessionIDs.isEmpty {
+                workgroups.remove(at: index)
+            }
         }
     }
 
@@ -502,6 +600,7 @@ enum SessionOpenError: LocalizedError {
     case sessionNotRegistered
     case transientServerIDCollision
     case invalidTransientCredentialEncoding
+    case invalidStartupCommand
 
     var errorDescription: String? {
         switch self {
@@ -531,6 +630,8 @@ enum SessionOpenError: LocalizedError {
             return "The temporary connection conflicts with a saved server identifier. Start Quick Connect again."
         case .invalidTransientCredentialEncoding:
             return "The temporary connection credential is invalid. Start Quick Connect again."
+        case .invalidStartupCommand:
+            return "The startup command must be one non-empty line no larger than 4 KB."
         }
     }
 }
