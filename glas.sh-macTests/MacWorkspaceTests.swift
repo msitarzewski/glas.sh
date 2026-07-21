@@ -63,6 +63,8 @@ struct MacWorkspaceTests {
         )
         #expect(legacyRequest.workspaceID == workspaceID)
         #expect(!legacyRequest.startsEmpty)
+        #expect(legacyRequest.startupTicketID == nil)
+        #expect(legacyRequest.liveSessionTicketID == nil)
     }
 
     @Test @MainActor func workgroupLaunchRequestCarriesOnlyDisplayMetadataAndOpaqueTicket() throws {
@@ -104,6 +106,140 @@ struct MacWorkspaceTests {
         #expect(broker.claim(second)?.command == "echo second")
         #expect(broker.claim(second) == nil)
         #expect(broker.claim(third)?.command == "echo third")
+        #expect(broker.pendingCount == 0)
+    }
+
+    @Test @MainActor func abandonedStartupCommandTicketExpires() async throws {
+        let broker = MacStartupCommandBroker(
+            capacity: 1,
+            expiration: .milliseconds(10)
+        )
+        let ticketID = try #require(broker.issue(command: "echo expiring"))
+
+        try await Task.sleep(for: .milliseconds(30))
+
+        #expect(broker.claim(ticketID) == nil)
+        #expect(broker.pendingCount == 0)
+    }
+
+    @Test @MainActor func liveSessionBrokerIsBoundedAndClaimsExactlyOnce() throws {
+        let broker = MacLiveSessionBroker(capacity: 1)
+        let first = TerminalSession(
+            server: ServerConfiguration(name: "First", host: "first.test", username: "tester")
+        )
+        let second = TerminalSession(
+            server: ServerConfiguration(name: "Second", host: "second.test", username: "tester")
+        )
+        var discardedSessionIDs: [UUID] = []
+        let firstTicketID = broker.issue(session: first) {
+            discardedSessionIDs.append(first.id)
+        }
+        let secondTicketID = broker.issue(session: second) {
+            discardedSessionIDs.append(second.id)
+        }
+
+        #expect(discardedSessionIDs == [first.id])
+        #expect(broker.pendingCount == 1)
+        #expect(broker.claim(firstTicketID) == nil)
+        #expect(broker.claim(secondTicketID)?.session === second)
+        #expect(broker.claim(secondTicketID) == nil)
+        #expect(broker.pendingCount == 0)
+    }
+
+    @Test @MainActor func abandonedLiveSessionTicketExpiresAndRunsCleanup() async throws {
+        let broker = MacLiveSessionBroker(
+            capacity: 1,
+            expiration: .milliseconds(10)
+        )
+        let session = TerminalSession(
+            server: ServerConfiguration(
+                name: "Expiring",
+                host: "expiring.test",
+                username: "tester"
+            )
+        )
+        var discarded = false
+        _ = broker.issue(session: session) {
+            discarded = true
+        }
+
+        try await Task.sleep(for: .milliseconds(30))
+
+        #expect(discarded)
+        #expect(broker.pendingCount == 0)
+    }
+
+    @Test @MainActor func workspaceClaimsPreparedLiveSessionWithoutReconnecting() throws {
+        let fixture = try WorkspaceDefaultsFixture()
+        defer { fixture.cleanup() }
+        let broker = MacLiveSessionBroker()
+        let sessionManager = SessionManager(loadImmediately: false)
+        let session = TerminalSession(
+            server: ServerConfiguration(
+                name: "Transient",
+                host: "transient.test",
+                username: "tester"
+            )
+        )
+        let request = MacLiveSessionWorkspaceRouter.launchRequest(
+            for: session,
+            sessionManager: sessionManager,
+            broker: broker
+        )
+        let controller = MacWorkspaceController(
+            request: request,
+            liveSessionBroker: broker,
+            defaults: fixture.defaults
+        )
+        let paneID = try #require(controller.focusedPaneID)
+
+        #expect(
+            request.initialPaneIntent
+                == MacWorkspacePaneIntent.ssh(serverID: session.server.id)
+        )
+        #expect(request.liveSessionTicketID != nil)
+        let encodedRequest = try JSONEncoder().encode(request)
+        let encodedText = try #require(String(data: encodedRequest, encoding: .utf8))
+        #expect(!encodedText.contains("transient.test"))
+        #expect(!encodedText.contains("tester"))
+        #expect(controller.session(for: paneID) === session)
+        #expect(controller.error(for: paneID) == nil)
+        #expect(broker.pendingCount == 0)
+    }
+
+    @Test @MainActor func restoredWorkspaceDiscardsPreparedLiveSessionTicket() throws {
+        let fixture = try WorkspaceDefaultsFixture()
+        defer { fixture.cleanup() }
+        let original = MacWorkspaceController(
+            workspaceID: fixture.workspaceID,
+            defaults: fixture.defaults
+        )
+        original.focus(try #require(original.focusedPaneID))
+
+        let broker = MacLiveSessionBroker()
+        let session = TerminalSession(
+            server: ServerConfiguration(
+                name: "Restored",
+                host: "restored.test",
+                username: "tester"
+            )
+        )
+        var discarded = false
+        let ticketID = broker.issue(session: session) {
+            discarded = true
+        }
+        let restored = MacWorkspaceController(
+            request: MacWorkspaceLaunchRequest(
+                workspaceID: fixture.workspaceID,
+                initialPaneIntent: .ssh(serverID: session.server.id),
+                liveSessionTicketID: ticketID
+            ),
+            liveSessionBroker: broker,
+            defaults: fixture.defaults
+        )
+
+        #expect(restored.sessionsByPaneID.isEmpty)
+        #expect(discarded)
         #expect(broker.pendingCount == 0)
     }
 

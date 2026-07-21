@@ -39,6 +39,16 @@
                ReferencedContainer = "container:glas.sh.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "DD0000010000000000000005"
+               BuildableName = "glas.shUITests.xctest"
+               ReferencedContainer = "container:glas.sh.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

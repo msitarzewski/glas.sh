@@ -2,12 +2,12 @@
 //  VisionTerminalWorkgroupView.swift
 //  glas.sh
 //
-//  Window-scoped visionOS terminal tabs backed by SessionManager workgroups.
+//  Platform terminal tabs backed by SessionManager workgroups.
 //
 
 import SwiftUI
 
-#if os(visionOS)
+#if os(visionOS) || os(iOS)
 struct VisionTerminalWorkgroupView: View {
     let workgroupID: UUID
 
@@ -15,6 +15,9 @@ struct VisionTerminalWorkgroupView: View {
     @Environment(SettingsManager.self) private var settingsManager
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
+    #if os(iOS)
+    @Environment(IOSAppRouter.self) private var iOSRouter
+    #endif
 
     @State private var selectedSessionID: UUID?
     @State private var showingSavedHostPicker = false
@@ -57,8 +60,16 @@ struct VisionTerminalWorkgroupView: View {
             sessionManager.selectSession(newSelection, inWorkgroup: workgroupID)
         }
         .onDisappear {
+            #if os(visionOS)
             closeWorkgroupOnce()
+            #endif
         }
+        .focusedSceneValue(
+            \.platformNewTerminalAction,
+            PlatformNewTerminalAction(title: "New Terminal Tab") {
+                showingSavedHostPicker = true
+            }
+        )
     }
 
     private var liveSelectedSessionID: UUID? {
@@ -87,7 +98,7 @@ struct VisionTerminalWorkgroupView: View {
                     } actions: {
                         Button("Open Connections", systemImage: "sidebar.left") {
                             showingSavedHostPicker = false
-                            openWindow(id: "main")
+                            showConnections()
                         }
                     }
                 } else {
@@ -147,17 +158,17 @@ struct VisionTerminalWorkgroupView: View {
             Text("This terminal window no longer has any live sessions.")
         } actions: {
             Button("Open Connections", systemImage: "sidebar.left") {
-                openWindow(id: "main")
-                dismiss()
+                showConnections()
             }
         }
     }
 
+    @ViewBuilder
     private func terminalTabs(
         workgroup: TerminalWorkgroup,
         sessions: [TerminalSession]
     ) -> some View {
-        TabView(selection: $selectedSessionID) {
+        let tabs = TabView(selection: $selectedSessionID) {
             ForEach(sessions) { session in
                 TerminalWindowView(
                     session: session,
@@ -181,10 +192,34 @@ struct VisionTerminalWorkgroupView: View {
                 }
             }
         }
+
+        #if os(visionOS)
+        tabs
         .ornament(attachmentAnchor: .scene(.top)) {
             workgroupLabel(workgroup: workgroup, sessions: sessions)
                 .glassBackgroundEffect(in: .capsule)
         }
+        #else
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Button {
+                    showConnections()
+                } label: {
+                    Image(systemName: "sidebar.left")
+                }
+                .accessibilityLabel("Connections")
+
+                workgroupLabel(workgroup: workgroup, sessions: sessions)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.regularMaterial)
+
+            Divider()
+            tabs
+        }
+        #endif
     }
 
     private func workgroupLabel(
@@ -273,10 +308,23 @@ struct VisionTerminalWorkgroupView: View {
         sessionManager.removeSessionFromWorkgroup(session)
         if closesLastSession {
             closeWorkgroupOnce()
+            #if os(visionOS)
             dismiss()
+            #else
+            iOSRouter.showConnections()
+            #endif
         } else {
             synchronizeSelection()
         }
+    }
+
+    private func showConnections() {
+        #if os(visionOS)
+        openWindow(id: "main")
+        dismiss()
+        #else
+        iOSRouter.showConnections()
+        #endif
     }
 
     private func closeWorkgroupOnce() {

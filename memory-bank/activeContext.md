@@ -1,19 +1,17 @@
 # Active Context
 
 ## Current Focus
-- The approved terminal workgroup, lifecycle, and settings checkpoint was merged through PR #28 on 2026-07-20. The new working branch is `agent/connection-library` at the merged baseline.
-- The current implementation focus is the cross-platform Connection Library release defined in `memory-bank/releases/connection-library/README.md`: one shared projection over existing profiles, tags, favorites, recents, workgroups, and optional Network data, presented with native shells on visionOS, macOS, iPadOS, and iOS.
-- The release must replace displaced connection-navigation code rather than coexist with it. No second persisted connection, collection, workgroup, or session-opening model is authorized.
+- The cross-platform Connection Library release was implementation/QA approved on 2026-07-21. Its complete dashboard and accepted Apple beta-tooling limitations are recorded in `memory-bank/releases/connection-library/README.md` and Phase 06.
+- One deterministic transient projection now serves native visionOS ornament navigation, Apple Silicon macOS/iPadOS three-column shells, and compact iPhone drill-down without a second persisted connection, collection, workgroup, or session-opening model.
+- The current publishing branch is `agent/connection-library`; documentation, PR validation, and merge are the active handoff.
 - The current checkpoint is not an App Store go decision. Physical-device, matching-toolchain, conformance, cross-repository, and distribution gates remain open.
 - Working branch: `agent/connection-library`.
 
 ## What's Next
-- **Build the Connection Library release in dependency order.**
-  - Implement and test the transient shared Library projection.
-  - Refactor the existing connection hub around scope, results, and detail regions.
-  - Apply the approved ornament/three-column/adaptive-stack hierarchy per platform.
-  - Route launches through existing session/workgroup authorities, then remove displaced branches and helpers.
-  - Enable and validate iPhone/iPad 26+ through the existing primary architecture where SDK evidence permits.
+- **Publish the approved Connection Library release.**
+  - Commit the approved source and documentation on `agent/connection-library`.
+  - Push, open the pull request, run required GitHub checks, and merge after the branch protections pass.
+  - Retain the Xcode 27 UI-runner and physical CoreDevice launch-capture limitations as explicit evidence boundaries.
 - **Close the remaining codex-completions release gates.**
   - Finish physical IME/dictation, hardware-keyboard/accessibility, representative TUI, terminal conformance, and performance evidence.
   - Finish recording export/device policy and cross-repository glassdb acceptance.
@@ -24,10 +22,11 @@
   - Output-only recording default, protected/bounded storage, fail-closed deletion, redacted diagnostics, SFTP no-clobber transfer, and deterministic AI confirmation.
   - SharePlay and unused AI summaries removed, HTML Preview Debug-only, unsupported SSH Agent/inert settings absent, and forwarding backed by the shared manager.
 - **Current automated evidence.**
-  - 183/183 app tests pass on both visionOS 26.4 and visionOS 27.0 arm64 simulators; native macOS tests pass 20/20.
+  - Connection Library candidate: 211/211 app tests pass on iOS 27; 208/208 pass on both visionOS 26.4 and visionOS 27.0 arm64 simulators; native Apple Silicon macOS tests pass 32/32.
   - NIOSSH passes 331/331; Citadel executes 44 tests with 39 passed and five expected environment-dependent skips.
-  - GlasSecretStore passes 75/75 tests across 13 suites.
-  - The generic Release app is arm64 with minimum visionOS 26.0 and SDK 27.0; simulator installation and smoke launch pass on both runtimes.
+  - GlasSecretStore passes 76 tests across 13 suites.
+  - Exact-current-tree Release builds pass for Apple Silicon macOS, generic iOS, and generic visionOS; direct Mac/iPhone/iPad application smokes pass.
+  - Physical Vision Pro signed build/install pass. Xcode UI-runner finalization and CoreDevice launch/render capture remain explicitly approved tooling limitations, not claimed passes.
   - Independent post-fix audits, `git diff --check`, and the production stub scan pass. The sibling glassdb repair still needs its own current suite and cross-repository acceptance.
   - The final UUID-isolated Gitleaks scan reports zero actionable production credentials; classified raw findings are non-production generated dependencies, vendored fixtures, synthetic tests, or documentation phrases.
 - Resume provisioning, TestFlight, and App Store submission only after the Functional release gates in `release-checklist.md` pass.

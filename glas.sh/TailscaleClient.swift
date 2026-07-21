@@ -33,30 +33,26 @@ private struct TailscaleAPIDevice: Decodable {
     let os: String
     let user: String
 
-    // Optional fields
-    let authorized: Bool?
+    // Optional fields used by the app. Other API fields, including machine and
+    // node keys, are deliberately not decoded into retained model objects.
     let lastSeen: String?     // ISO 8601
-    let created: String?
-    let clientVersion: String?
     let tags: [String]?
-    let keyExpiryDisabled: Bool?
-    let blocksIncomingConnections: Bool?
-    let isExternal: Bool?
-    let updateAvailable: Bool?
-    let machineKey: String?
-    let nodeKey: String?
-    let tailnetLockError: String?
-    let tailnetLockKey: String?
 
-    var ipv4Address: String? {
-        addresses.first { $0.contains(".") && !$0.contains(":") }?
-            .components(separatedBy: "/").first  // Strip /32 if present
-    }
 }
 
 // MARK: - App Model
 
 struct TailscaleDevice: Identifiable, Hashable {
+    static let maximumIDLength = 256
+    static let maximumHostnameLength = 253
+    static let maximumDisplayNameLength = 512
+    static let maximumOSLength = 64
+    static let maximumUserLength = 256
+    static let maximumAddressCount = 32
+    static let maximumAddressLength = 64
+    static let maximumTagCount = 64
+    static let maximumTagLength = 128
+
     let id: String
     let hostname: String
     let displayName: String
@@ -64,8 +60,132 @@ struct TailscaleDevice: Identifiable, Hashable {
     let os: String
     let lastSeen: Date?
     let user: String
+    let tags: [String]
 
     var sshAddress: String { ipAddress }
+
+    init?(
+        id: String,
+        hostname: String,
+        displayName: String,
+        addresses: [String],
+        os: String,
+        lastSeen: Date?,
+        user: String,
+        rawTags: [String]
+    ) {
+        guard let id = Self.validatedField(id, maximumLength: Self.maximumIDLength),
+              let hostname = Self.validatedField(
+                hostname,
+                maximumLength: Self.maximumHostnameLength
+              ),
+              let displayName = Self.validatedField(
+                displayName,
+                maximumLength: Self.maximumDisplayNameLength
+              ),
+              let os = Self.validatedField(os, maximumLength: Self.maximumOSLength),
+              let user = Self.validatedOptionalField(
+                user,
+                maximumLength: Self.maximumUserLength
+              ),
+              addresses.count <= Self.maximumAddressCount,
+              rawTags.count <= Self.maximumTagCount,
+              let ipAddress = addresses.compactMap(Self.normalizedIPv4Address(from:)).first else {
+            return nil
+        }
+
+        var seenTags = Set<String>()
+        var tags: [String] = []
+        for rawTag in rawTags {
+            guard let tag = Self.normalizedTag(rawTag) else { return nil }
+            if seenTags.insert(tag).inserted {
+                tags.append(tag)
+            }
+        }
+
+        self.id = id
+        self.hostname = hostname
+        self.displayName = displayName
+        self.ipAddress = ipAddress
+        self.os = os
+        self.lastSeen = lastSeen
+        self.user = user
+        self.tags = tags
+    }
+
+    static func normalizedIPv4Address(from rawAddress: String) -> String? {
+        guard !rawAddress.isEmpty,
+              rawAddress.count <= maximumAddressLength,
+              !rawAddress.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            return nil
+        }
+        let addressAndPrefix = rawAddress.split(
+            separator: "/",
+            maxSplits: 1,
+            omittingEmptySubsequences: false
+        )
+        guard addressAndPrefix.count == 1
+                || (addressAndPrefix.count == 2 && addressAndPrefix[1] == "32") else {
+            return nil
+        }
+        let octets = addressAndPrefix[0].split(
+            separator: ".",
+            omittingEmptySubsequences: false
+        )
+        guard octets.count == 4 else { return nil }
+
+        var canonicalOctets: [String] = []
+        canonicalOctets.reserveCapacity(4)
+        for octet in octets {
+            guard !octet.isEmpty,
+                  octet.allSatisfy(\.isNumber),
+                  let value = Int(octet),
+                  (0...255).contains(value) else {
+                return nil
+            }
+            canonicalOctets.append(String(value))
+        }
+        return canonicalOctets.joined(separator: ".")
+    }
+
+    static func normalizedTag(_ rawTag: String) -> String? {
+        var tag = rawTag.trimmingCharacters(in: .whitespacesAndNewlines)
+        if tag.lowercased(with: Locale(identifier: "en_US_POSIX")).hasPrefix("tag:") {
+            tag.removeFirst(4)
+            tag = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard !tag.isEmpty,
+              tag.count <= maximumTagLength,
+              !tag.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            return nil
+        }
+        return tag.lowercased(with: Locale(identifier: "en_US_POSIX"))
+    }
+
+    private static func validatedField(
+        _ value: String,
+        maximumLength: Int
+    ) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              trimmed.count <= maximumLength,
+              !trimmed.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private static func validatedOptionalField(
+        _ value: String,
+        maximumLength: Int
+    ) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count <= maximumLength,
+              !trimmed.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            return nil
+        }
+        return trimmed
+    }
 }
 
 enum TailscaleAuthMethod: String, Codable {
@@ -73,12 +193,18 @@ enum TailscaleAuthMethod: String, Codable {
     case oauthClient
 }
 
+enum TailscaleCredentialPresence: Equatable, Sendable {
+    case configured
+    case absent
+    case unavailable
+}
+
 struct TailscaleOAuthTokenCache {
     private var token: SecureBytes?
     private var credentialIdentity: Data?
     private var expiresAt: Date?
 
-    static let expirySkew: TimeInterval = 30
+    nonisolated static let expirySkew: TimeInterval = 30
 
     mutating func token(
         for credentials: (clientID: String, clientSecret: String),
@@ -103,7 +229,10 @@ struct TailscaleOAuthTokenCache {
         for credentials: (clientID: String, clientSecret: String),
         now: Date = Date()
     ) -> Bool {
-        guard !token.isEmpty, expiresIn > Self.expirySkew else {
+        guard TailscaleClient.oauthExchangeFieldsAreValid(
+            accessToken: token,
+            expiresIn: expiresIn
+        ) else {
             clear()
             return false
         }
@@ -151,12 +280,40 @@ private struct TailscaleOAuthTokenResponse: Decodable {
 @MainActor
 @Observable
 class TailscaleClient {
+    static let maximumInventoryResponseBytes = 4 * 1024 * 1024
+    static let maximumInventoryDeviceCount = 10_000
+    nonisolated static let maximumOAuthResponseBytes = 64 * 1024
+    nonisolated static let maximumOAuthAccessTokenBytes = 16 * 1024
+    nonisolated static let maximumOAuthTokenLifetime: TimeInterval = 365 * 24 * 60 * 60
+
+    static func inventoryResponseByteCountIsAllowed(_ count: Int) -> Bool {
+        count >= 0 && count <= maximumInventoryResponseBytes
+    }
+
+    static func inventoryDeviceCountIsAllowed(_ count: Int) -> Bool {
+        count >= 0 && count <= maximumInventoryDeviceCount
+    }
+
+    nonisolated static func oauthExchangeFieldsAreValid(
+        accessToken: String,
+        expiresIn: TimeInterval
+    ) -> Bool {
+        let tokenBytes = accessToken.utf8
+        return !tokenBytes.isEmpty
+            && tokenBytes.count <= maximumOAuthAccessTokenBytes
+            && !accessToken.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+            && expiresIn.isFinite
+            && expiresIn > TailscaleOAuthTokenCache.expirySkew
+            && expiresIn <= maximumOAuthTokenLifetime
+    }
+
     var devices: [TailscaleDevice] = []
     var isLoading = false
     var errorMessage: String?
 
     private var oauthTokenCache = TailscaleOAuthTokenCache()
     private var oauthInFlightExchange: TailscaleOAuthInFlightExchange?
+    private var inventoryGeneration: UInt64 = 0
     private let session = URLSession.shared
 
     static func credentialsAreConfigured(
@@ -181,23 +338,51 @@ class TailscaleClient {
     }
 
     static func hasConfiguredCredentials(defaults: UserDefaults = .standard) -> Bool {
+        credentialPresence(defaults: defaults) == .configured
+    }
+
+    static func credentialPresence(
+        defaults: UserDefaults = .standard,
+        apiKeyProvider: () throws -> String = {
+            try KeychainManager.retrieveTailscaleAPIKey()
+        },
+        oauthCredentialsProvider: () throws -> (clientID: String, clientSecret: String) = {
+            try KeychainManager.retrieveTailscaleOAuthCredentials()
+        }
+    ) -> TailscaleCredentialPresence {
         let authMethod = TailscaleAuthMethod(
             rawValue: defaults.string(forKey: UserDefaultsKeys.tailscaleAuthMethod) ?? "apiKey"
         ) ?? .apiKey
 
         switch authMethod {
         case .apiKey:
-            return credentialsAreConfigured(
-                authMethod: authMethod,
-                apiKey: try? KeychainManager.retrieveTailscaleAPIKey()
-            )
+            do {
+                let apiKey = try apiKeyProvider()
+                return credentialsAreConfigured(authMethod: authMethod, apiKey: apiKey)
+                    ? .configured
+                    : .absent
+            } catch SecretStoreError.notFound {
+                Logger.tailscale.debug("Tailscale API credential is not configured")
+                return .absent
+            } catch {
+                Logger.tailscale.error("Unable to determine whether the Tailscale API credential is configured")
+                return .unavailable
+            }
         case .oauthClient:
-            let credentials = try? KeychainManager.retrieveTailscaleOAuthCredentials()
-            return credentialsAreConfigured(
-                authMethod: authMethod,
-                oauthClientID: credentials?.clientID,
-                oauthClientSecret: credentials?.clientSecret
-            )
+            do {
+                let credentials = try oauthCredentialsProvider()
+                return credentialsAreConfigured(
+                    authMethod: authMethod,
+                    oauthClientID: credentials.clientID,
+                    oauthClientSecret: credentials.clientSecret
+                ) ? .configured : .absent
+            } catch SecretStoreError.notFound {
+                Logger.tailscale.debug("Tailscale OAuth credentials are not configured")
+                return .absent
+            } catch {
+                Logger.tailscale.error("Unable to determine whether Tailscale OAuth credentials are configured")
+                return .unavailable
+            }
         }
     }
 
@@ -302,16 +487,26 @@ class TailscaleClient {
             ("client_secret", credentials.clientSecret),
         ])
 
-        let (data, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
+        let (bytes, response) = try await session.bytes(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw TailscaleError.invalidResponse
+        }
+        let data = try await boundedData(
+            from: bytes,
+            expectedContentLength: httpResponse.expectedContentLength,
+            maximumBytes: maximumOAuthResponseBytes
+        )
+        guard httpResponse.statusCode == 200 else {
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
             Logger.tailscale.error("OAuth token exchange failed: status=\(statusCode), bytes=\(data.count)")
             throw TailscaleError.authenticationFailed
         }
 
         let responseBody = try JSONDecoder().decode(TailscaleOAuthTokenResponse.self, from: data)
-        guard !responseBody.access_token.isEmpty else {
+        guard oauthExchangeFieldsAreValid(
+            accessToken: responseBody.access_token,
+            expiresIn: responseBody.expires_in
+        ) else {
             throw TailscaleError.authenticationFailed
         }
         return TailscaleOAuthExchangeResult(
@@ -320,13 +515,16 @@ class TailscaleClient {
         )
     }
 
-    private func authorizedData(for url: URL) async throws -> (Data, HTTPURLResponse) {
+    private func authorizedData(
+        for url: URL,
+        maximumResponseBytes: Int = maximumInventoryResponseBytes
+    ) async throws -> (Data, HTTPURLResponse) {
         for attempt in 0..<2 {
             let token = try await resolveToken()
             var request = URLRequest(url: url)
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
-            let (data, response) = try await session.data(for: request)
+            let (bytes, response) = try await session.bytes(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw TailscaleError.invalidResponse
             }
@@ -335,20 +533,66 @@ class TailscaleClient {
                 if attempt == 0 {
                     continue
                 }
-                Logger.tailscale.error("Tailscale request authentication failed after credential refresh: status=\(httpResponse.statusCode), bytes=\(data.count)")
+                Logger.tailscale.error("Tailscale request authentication failed after credential refresh: status=\(httpResponse.statusCode)")
                 throw TailscaleError.authenticationFailed
             }
+            let data = try await Self.boundedData(
+                from: bytes,
+                expectedContentLength: httpResponse.expectedContentLength,
+                maximumBytes: maximumResponseBytes
+            )
             return (data, httpResponse)
         }
         throw TailscaleError.authenticationFailed
     }
 
+    nonisolated static func boundedData<Bytes: AsyncSequence>(
+        from bytes: Bytes,
+        expectedContentLength: Int64,
+        maximumBytes: Int
+    ) async throws -> Data where Bytes.Element == UInt8 {
+        guard maximumBytes >= 0,
+              expectedContentLength < 0
+                || expectedContentLength <= Int64(maximumBytes) else {
+            throw TailscaleError.invalidResponse
+        }
+
+        var data = Data()
+        if expectedContentLength > 0 {
+            data.reserveCapacity(Int(expectedContentLength))
+        }
+        for try await byte in bytes {
+            guard data.count < maximumBytes else {
+                throw TailscaleError.invalidResponse
+            }
+            data.append(byte)
+        }
+        return data
+    }
+
     // MARK: - Fetch Devices
 
     func fetchDevices(tailnet: String) async throws {
+        let requestGeneration = beginInventoryRequest()
+        try await fetchDevices(tailnet: tailnet, requestGeneration: requestGeneration)
+    }
+
+    private func beginInventoryRequest() -> UInt64 {
+        inventoryGeneration &+= 1
+        return inventoryGeneration
+    }
+
+    private func fetchDevices(
+        tailnet: String,
+        requestGeneration: UInt64
+    ) async throws {
         isLoading = true
         errorMessage = nil
-        defer { isLoading = false }
+        defer {
+            if inventoryGeneration == requestGeneration {
+                isLoading = false
+            }
+        }
 
         let effectiveTailnet = tailnet.isEmpty ? "-" : tailnet
         let pathComponentCharacters = CharacterSet.alphanumerics
@@ -358,6 +602,10 @@ class TailscaleClient {
 
         Logger.tailscale.info("Fetching Tailscale device inventory")
         let (data, httpResponse) = try await authorizedData(for: url)
+
+        guard Self.inventoryResponseByteCountIsAllowed(data.count) else {
+            throw TailscaleError.invalidResponse
+        }
 
         Logger.tailscale.info("Response: HTTP \(httpResponse.statusCode), \(data.count) bytes")
 
@@ -371,8 +619,11 @@ class TailscaleClient {
         do {
             apiResponse = try decoder.decode(TailscaleAPIResponse.self, from: data)
         } catch {
-            Logger.tailscale.error("Tailscale response decode failed: bytes=\(data.count), error=\(String(describing: error), privacy: .public)")
+            Logger.tailscale.error("Tailscale response decode failed: bytes=\(data.count)")
             throw error
+        }
+        guard Self.inventoryDeviceCountIsAllowed(apiResponse.devices.count) else {
+            throw TailscaleError.invalidResponse
         }
 
         let dateFormatter = ISO8601DateFormatter()
@@ -381,35 +632,46 @@ class TailscaleClient {
         fallbackFormatter.formatOptions = [.withInternetDateTime]
 
         // Filter out iOS/iPadOS/Android — they don't run SSH servers
-        let nonMobileOS = Set(["iOS", "iPadOS", "android"])
+        let nonMobileOS = Set(["ios", "ipados", "android"])
 
-        devices = apiResponse.devices.compactMap { d in
-            guard !nonMobileOS.contains(d.os) else {
-                Logger.tailscale.debug("Skipping mobile Tailscale device")
-                return nil
-            }
-            guard let ip = d.ipv4Address else {
-                Logger.tailscale.debug("Skipping Tailscale device without IPv4")
-                return nil
-            }
-
+        let loadedDevices: [TailscaleDevice] = apiResponse.devices.compactMap { d -> TailscaleDevice? in
             let lastSeenDate: Date?
             if let ls = d.lastSeen {
+                guard ls.count <= 64,
+                      !ls.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+                    Logger.tailscale.debug("Skipping Tailscale device with invalid timestamp metadata")
+                    return nil
+                }
                 lastSeenDate = dateFormatter.date(from: ls) ?? fallbackFormatter.date(from: ls)
             } else {
                 lastSeenDate = nil
             }
 
-            return TailscaleDevice(
+            guard let device = TailscaleDevice(
                 id: d.id,
                 hostname: d.hostname,
                 displayName: d.name,
-                ipAddress: ip,
+                addresses: d.addresses,
                 os: d.os,
                 lastSeen: lastSeenDate,
-                user: d.user
-            )
+                user: d.user,
+                rawTags: d.tags ?? []
+            ) else {
+                Logger.tailscale.debug("Skipping invalid Tailscale device metadata")
+                return nil
+            }
+            guard !nonMobileOS.contains(device.os.lowercased()) else {
+                Logger.tailscale.debug("Skipping mobile Tailscale device")
+                return nil
+            }
+            return device
         }
+
+        try Task.checkCancellation()
+        guard inventoryGeneration == requestGeneration else {
+            throw CancellationError()
+        }
+        devices = loadedDevices
 
         Logger.tailscale.info("Loaded \(self.devices.count) devices with IPv4 (of \(apiResponse.devices.count) total)")
     }
@@ -428,17 +690,23 @@ class TailscaleClient {
     // MARK: - Convenience
 
     func loadDevices(tailnet: String) async {
-        isLoading = true
-        errorMessage = nil
-
+        let requestGeneration = beginInventoryRequest()
         do {
-            try await fetchDevices(tailnet: tailnet)
+            try await fetchDevices(
+                tailnet: tailnet,
+                requestGeneration: requestGeneration
+            )
+        } catch is CancellationError {
+            return
         } catch is DecodingError {
+            guard inventoryGeneration == requestGeneration else { return }
             errorMessage = "Failed to decode API response."
             Logger.tailscale.error("Tailscale response decoding failed")
         } catch let error as TailscaleError {
+            guard inventoryGeneration == requestGeneration else { return }
             errorMessage = error.localizedDescription
         } catch {
+            guard inventoryGeneration == requestGeneration else { return }
             let authMethod = TailscaleAuthMethod(rawValue:
                 UserDefaults.standard.string(forKey: UserDefaultsKeys.tailscaleAuthMethod) ?? "apiKey"
             ) ?? .apiKey
@@ -450,7 +718,13 @@ class TailscaleClient {
             }
             Logger.tailscale.error("Tailscale device load failed")
         }
+    }
 
+    func invalidateCredentialState() {
+        inventoryGeneration &+= 1
+        clearCachedToken()
+        devices.removeAll(keepingCapacity: false)
+        errorMessage = nil
         isLoading = false
     }
 

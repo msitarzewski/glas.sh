@@ -6,6 +6,12 @@ Build one scalable, native Connection Library for visionOS, macOS, iPadOS, and i
 
 This release changes how users browse, organize, inspect, and launch connections. It is a presentation and navigation architecture shift, not a domain rewrite.
 
+## Release status
+
+`Complete` — implementation and QA approved by the user on 2026-07-21.
+
+The release delivers one shared transient projection, native visionOS/macOS/iPadOS/iOS shells, authoritative terminal/workgroup routing, iPhone/iPad target support, duplicate-navigation cleanup, and regression coverage. Xcode 27 beta UI-runner finalization and physical Vision Pro developer-disk-image launch capture remain documented tooling limitations; the approval explicitly accepts them without representing either as a passing automated check.
+
 ## Product invariants
 
 - visionOS remains the reference experience.
@@ -28,7 +34,7 @@ This release changes how users browse, organize, inspect, and launch connections
 |---|---|---|
 | Saved profiles | `glas.sh/Models.swift:67`, `glas.sh/ServerManager.swift` | Connections and connection details |
 | Collections | `glas.sh/Models.swift:81` (`ServerConfiguration.tags`) | Derived scopes; no second collection database |
-| Favorites and recents | `glas.sh/ServerManager.swift:374` | Built-in Library scopes |
+| Favorites and recents | `glas.sh/Models.swift` (`ServerConfiguration.isFavorite`, `lastConnected`), `glas.sh/ConnectionLibrary.swift:85` | Built-in Library scopes |
 | Workgroup recipes | `glas.sh/Models.swift:2551`, `glas.sh/SettingsManager.swift:175` | Workgroups scope and launch action |
 | Live workgroups | `glas.sh/Models.swift:2543`, `glas.sh/SessionManager.swift:32` | Runtime terminal window/tab state |
 | Connection launch | `glas.sh/SessionManager.swift` | The only launch authority |
@@ -72,7 +78,7 @@ Collections are normalized views over profile tags. A collection exists when at 
 
 ## Platform composition
 
-- visionOS: ornaments select top-level modes; the first in-window column shows scopes or children, the second shows results, and the third shows details. The ornament and first column must never duplicate the same hierarchy.
+- visionOS: ornaments select top-level modes. Modes with real children, currently Collections, show a child-scope column before results and details; modes without children begin with results. The ornament and first in-window column never duplicate the same hierarchy.
 - macOS: native three-column library with sidebar, results, and details; double-click may connect while single-click selects.
 - iPadOS: adaptive split view using the same mode, scope, result, and detail semantics.
 - iOS: navigation stack that drills from mode/scope to results to details.
@@ -83,7 +89,7 @@ Collections are normalized views over profile tags. A collection exists when at 
 - `Connect` from the Library opens a new terminal window or workgroup and leaves the Library open.
 - A workgroup opens its configured command-per-tab recipe through the existing session/workgroup path.
 - `Command-T` and the terminal footer `+` add a tab inside the active terminal window.
-- Local Terminal remains a first-class, one-action launch path.
+- Local Terminal remains a first-class, one-action launch path on macOS. Unsupported local-terminal intents on visionOS/iOS fail visibly rather than pretending to open a local PTY.
 - Mac row double-click may connect; other row selection only reveals details.
 
 ## Status vocabulary
@@ -102,50 +108,59 @@ Collections are normalized views over profile tags. A collection exists when at 
 | Phase | Milestone | Status | Depends on | Exit gate |
 |---|---|---|---|---|
 | [00](./00-baseline-and-governance.md) | Baseline and governance | Complete | None | Historical checkpoint merged; architecture, reuse rules, and release gates recorded |
-| [01](./01-shared-library-projection.md) | Shared Library projection | Not started | 00 | Deterministic modes, scopes, counts, filtering, and selection pass unit tests |
-| [02](./02-connection-hub-refactor.md) | Connection hub refactor | Not started | 01 | Existing hub uses the shared projection and no longer duplicates hosts or navigation state |
-| [03](./03-native-platform-shells.md) | Native platform shells | Not started | 02 | visionOS, macOS, iPadOS, and iOS implement the approved hierarchy natively |
-| [04](./04-terminal-routing-and-cleanup.md) | Terminal routing and cleanup | Not started | 02, 03 | Connect, workgroup, local, tab, and window routes use existing authorities; displaced code is removed |
-| [05](./05-ios-ipados-enablement.md) | iPhone and iPad enablement | Not started | 01, 03, 04 | Existing primary app architecture builds and operates on iPhone/iPad 26+ without a parallel product core |
-| [06](./06-validation-and-release.md) | Validation and release | Not started | 01–05 | Cross-platform function, unit, UI, security, regression, and orphan-code gates pass |
+| [01](./01-shared-library-projection.md) | Shared Library projection | Complete | 00 | Deterministic modes, scopes, counts, filtering, and selection pass unit tests |
+| [02](./02-connection-hub-refactor.md) | Connection hub refactor | Complete | 01 | Existing hub uses the shared projection and no longer duplicates hosts or navigation state |
+| [03](./03-native-platform-shells.md) | Native platform shells | Complete | 02 | visionOS, macOS, iPadOS, and iOS implement the approved hierarchy natively |
+| [04](./04-terminal-routing-and-cleanup.md) | Terminal routing and cleanup | Complete | 02, 03 | Connect, workgroup, local, tab, and window routes use existing authorities; displaced code is removed |
+| [05](./05-ios-ipados-enablement.md) | iPhone and iPad enablement | Complete | 01, 03, 04 | Existing primary app architecture builds and operates on iPhone/iPad 26+ without a parallel product core |
+| [06](./06-validation-and-release.md) | Validation and release | Complete | 01–05 | Cross-platform function, unit, build, direct-app, security, regression, and orphan-code gates pass; accepted tooling limits are recorded |
 
 ## Canonical release ledger
 
 | ID | Requirement | Owner | Status |
 |---|---|---|---|
-| `LIB-001` | Project one deduplicated list from authoritative saved profiles | 01 | Not started |
-| `LIB-002` | Derive All, Favorites, Recent, Collections, Workgroups, and optional Network scopes | 01 | Not started |
-| `LIB-003` | Hide Network when credentials are not configured | 01 | Not started |
-| `LIB-004` | Preserve selection across safe filter/projection updates | 01 | Not started |
-| `HUB-001` | Replace duplicate macOS Favorites/Recent/All host sections | 02 | Not started |
-| `HUB-002` | Provide a results-column `+` action on every platform | 02 | Not started |
-| `HUB-003` | Preserve search, Quick Connect, trust, add, edit, delete, and favorite flows | 02 | Not started |
-| `UX-001` | Use ornament modes without duplicating them in the visionOS window | 03 | Not started |
-| `UX-002` | Provide native three-column macOS and adaptive iPadOS presentation | 03 | Not started |
-| `UX-003` | Provide compact iPhone drill-down navigation | 03 | Not started |
-| `ROUTE-001` | Library Connect opens a new terminal window and keeps the Library open | 04 | Not started |
-| `ROUTE-002` | Workgroups launch existing command-per-tab recipes | 04 | Not started |
-| `ROUTE-003` | Terminal `+` and Command-T add a tab to the active terminal window | 04 | Not started |
-| `CLEAN-001` | Remove replaced branches, flags, scene routes, and abandoned view code | 04 | Not started |
-| `IOS-001` | Extend the existing primary target to iPhone/iPad 26+ when SDK evidence permits | 05 | Not started |
-| `QA-001` | Preserve all terminal appearance and ANSI rendering invariants | 06 | Not started |
-| `QA-002` | Pass macOS, visionOS 26/27, iPhone, iPad, and package validation | 06 | Not started |
-| `QA-003` | Finish with production TODO/stub/orphan and security scans | 06 | Not started |
+| `LIB-001` | Project one deduplicated list from authoritative saved profiles | 01 | Complete |
+| `LIB-002` | Derive All, Favorites, Recent, Collections, Workgroups, and optional Network scopes | 01 | Complete |
+| `LIB-003` | Hide Network when credentials are not configured | 01 | Complete |
+| `LIB-004` | Preserve selection across safe filter/projection updates | 01 | Complete |
+| `HUB-001` | Replace duplicate macOS Favorites/Recent/All host sections | 02 | Complete |
+| `HUB-002` | Provide a results-column `+` action on every platform | 02 | Complete |
+| `HUB-003` | Preserve search, Quick Connect, trust, add, edit, delete, and favorite flows | 02 | Complete |
+| `UX-001` | Use ornament modes without duplicating them in the visionOS window | 03 | Complete |
+| `UX-002` | Provide native three-column macOS and adaptive iPadOS presentation | 03 | Complete |
+| `UX-003` | Provide compact iPhone drill-down navigation | 03 | Complete |
+| `ROUTE-001` | Library Connect opens a new terminal window and keeps the Library open | 04 | Complete |
+| `ROUTE-002` | Workgroups launch existing command-per-tab recipes | 04 | Complete |
+| `ROUTE-003` | Terminal `+` and Command-T add a tab to the active terminal window | 04 | Complete |
+| `CLEAN-001` | Remove replaced branches, flags, scene routes, and abandoned view code | 04 | Complete |
+| `IOS-001` | Extend the existing primary target to iPhone/iPad 26+ when SDK evidence permits | 05 | Complete |
+| `QA-001` | Preserve all terminal appearance and ANSI rendering invariants | 06 | Complete |
+| `QA-002` | Pass macOS, visionOS 26/27, iPhone, iPad, and package validation | 06 | Complete with accepted tooling limits recorded in Phase 06 |
+| `QA-003` | Finish with production TODO/stub/orphan and security scans | 06 | Complete |
 
 ## Release acceptance criteria
 
 - Every saved host appears once in the active result set.
 - Modes and scopes filter results without duplicate rows or duplicate navigation levels.
-- visionOS hierarchy is ornament -> scope/children -> results -> details.
+- visionOS hierarchy is ornament -> optional real child scopes -> results -> details; modes without children begin with results.
 - Collections organize profiles; workgroups launch recipes.
 - Network is absent when unconfigured and useful when configured.
 - A `+` action is present in the Connections results column on every platform.
 - Library Connect opens a new terminal window; terminal `+` opens a tab.
 - Transparency, tint, blur, materials, themes, ANSI color, tabs, local terminals, and workgroups retain current behavior.
 - The new implementation replaces displaced code instead of living beside it.
-- Net connection-navigation complexity decreases.
-- macOS 26+ arm64, visionOS 26 and 27, iPhone/iPad 26+, package tests, and release builds pass.
+- Duplicate connection-navigation state and host projections are removed; raw native-shell presentation growth is measured and documented rather than represented as a smaller source file.
+- Current suites pass on Apple Silicon macOS 27, visionOS 26.4 and 27, and iOS 27; generic Release builds pass with platform deployment floors at version 26.
 
 ## Change-control rule
 
 If unavailable APIs or target membership make a universal iOS/visionOS app target unsafe, implementation stops at that boundary and returns with concrete compiler/SDK evidence before creating a second target. No speculative parallel app architecture is authorized by this plan.
+
+## Completion evidence summary
+
+- App suites: iOS 27 211/211; visionOS 26.4 208/208; visionOS 27 208/208; Apple Silicon macOS 27 32/32.
+- Packages: GlasSecretStore 76 passed; swift-nio-ssh 331/331; Citadel executed 44 with 39 passed and five environment skips; RealityKitContent build passed.
+- Release builds: exact-current-tree Apple Silicon macOS, generic iOS, and generic visionOS passed.
+- Direct application smokes: macOS Library/local-terminal route, iPhone compact Library, and iPad three-column Library passed.
+- Physical Vision Pro: signed build and installation passed; CoreDevice launch/render capture limitation is recorded in [Phase 06](./06-validation-and-release.md).
+- Final diff, project/scheme validation, production marker, orphan symbol, and Gitleaks scans passed.

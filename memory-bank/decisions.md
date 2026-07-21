@@ -1,5 +1,28 @@
 # Decisions
 
+## 2026-07-21: Shared Connection Library projection with native platform shells
+- Status: Approved
+- Context:
+  - Saved profiles, tags, favorites, recents, workgroup recipes, and optional network discovery were presented through duplicated platform-specific navigation state.
+  - visionOS ornaments, macOS/iPadOS split views, and compact iPhone navigation require different composition without forking product behavior.
+  - Optional Network visibility previously risked synchronous Keychain work in SwiftUI render evaluation.
+- Decision:
+  - Add one transient `ConnectionLibraryProjection` over existing authoritative stores; collections remain normalized tag views and workgroups remain recipes/runtime groups.
+  - Build the projection once per body evaluation and cache network credential presence outside the render hot path.
+  - Share capability, selection, filtering, and action semantics while using native platform shells rather than identical view trees.
+  - Extend the existing primary iOS/visionOS app target and shared managers; do not create a second iPhone/iPad product core.
+  - Remove replaced connection sections, filter flags, helper projections, and abandoned routes in the same release.
+- Alternatives:
+  - Persist a new collection/library database — rejected because tags and existing managers already own the data.
+  - Build separate platform connection hubs — rejected because it duplicates domain, security, and routing behavior.
+  - Read Keychain state directly from body-fed computed properties — rejected because synchronous secret-store calls block rendering and execute repeatedly.
+- Consequences:
+  - All platforms expose the same Library behavior with native navigation.
+  - Connection/session authorization and terminal appearance remain authoritative and unchanged.
+  - `ConnectionManagerView.swift` grows in raw presentation lines for four native shells, while duplicate domain/navigation state is removed.
+  - Xcode 27 beta UI-runner finalization and physical CoreDevice launch-capture limitations remain explicitly recorded evidence boundaries.
+- References: `memory-bank/releases/connection-library/README.md`, `memory-bank/tasks/2026-07/210726_connection-library-release.md`
+
 ## 2026-02-07: Adopt memory-bank structure from AGENTS.md
 - Status: Approved
 - Context: Project needed durable, structured context and task history outside runtime app source.

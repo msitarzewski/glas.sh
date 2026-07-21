@@ -64,6 +64,8 @@ struct GeneralSettingsView: View {
     @State private var sshConfigText: String = ""
     @State private var importResultMessage: String?
     @State private var tailscaleAuthMethod: TailscaleAuthMethod = .apiKey
+    @State private var persistedTailscaleAuthMethod: TailscaleAuthMethod = .apiKey
+    @State private var tailscaleCredentialPresence: TailscaleCredentialPresence = .absent
     @State private var tailscaleAPIKey: String = ""
     @State private var tailscaleOAuthClientID: String = ""
     @State private var tailscaleOAuthClientSecret: String = ""
@@ -147,10 +149,9 @@ struct GeneralSettingsView: View {
                     Text("API Key").tag(TailscaleAuthMethod.apiKey)
                     Text("OAuth Client").tag(TailscaleAuthMethod.oauthClient)
                 }
-                .onChange(of: tailscaleAuthMethod) { _, newValue in
-                    UserDefaults.standard.set(newValue.rawValue, forKey: UserDefaultsKeys.tailscaleAuthMethod)
+                .onChange(of: tailscaleAuthMethod) { _, _ in
                     tailscaleTestResult = nil
-                    NotificationCenter.default.post(name: .tailscaleCredentialsDidChange, object: nil)
+                    clearTailscaleCredentialInputs()
                 }
 
                 if tailscaleAuthMethod == .apiKey {
@@ -168,6 +169,10 @@ struct GeneralSettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+
+                Label(tailscaleCredentialStatusText, systemImage: tailscaleCredentialStatusIcon)
+                    .font(.caption)
+                    .foregroundStyle(tailscaleCredentialStatusColor)
 
                 Button {
                     saveTailscaleCredentialsAndTest()
@@ -276,7 +281,10 @@ struct GeneralSettingsView: View {
         .padding()
         .task {
             serverManager.loadServersIfNeeded()
-            loadTailscaleCredentials()
+            loadTailscaleCredentialState()
+        }
+        .onDisappear {
+            clearTailscaleCredentialInputs()
         }
         .sheet(isPresented: $showingAddSSHKey) {
             AddSSHKeyView()
@@ -351,28 +359,73 @@ struct GeneralSettingsView: View {
         #endif
     }
 
-    private func loadTailscaleCredentials() {
-        tailscaleAuthMethod = TailscaleAuthMethod(rawValue:
+    private func loadTailscaleCredentialState() {
+        let storedMethod = TailscaleAuthMethod(rawValue:
             UserDefaults.standard.string(forKey: UserDefaultsKeys.tailscaleAuthMethod) ?? "apiKey"
         ) ?? .apiKey
-
-        if let key = try? KeychainManager.retrieveTailscaleAPIKey() {
-            tailscaleAPIKey = key
-        }
-        if let creds = try? KeychainManager.retrieveTailscaleOAuthCredentials() {
-            tailscaleOAuthClientID = creds.clientID
-            tailscaleOAuthClientSecret = creds.clientSecret
-        }
+        persistedTailscaleAuthMethod = storedMethod
+        tailscaleAuthMethod = storedMethod
+        tailscaleCredentialPresence = TailscaleClient.credentialPresence()
+        clearTailscaleCredentialInputs()
     }
 
     private var tailscaleCredentialsValid: Bool {
         switch tailscaleAuthMethod {
         case .apiKey:
-            return !tailscaleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let replacement = tailscaleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !replacement.isEmpty || selectedTailscaleCredentialIsConfigured
         case .oauthClient:
-            return !tailscaleOAuthClientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && !tailscaleOAuthClientSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let clientID = tailscaleOAuthClientID.trimmingCharacters(in: .whitespacesAndNewlines)
+            let clientSecret = tailscaleOAuthClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+            if clientID.isEmpty, clientSecret.isEmpty {
+                return selectedTailscaleCredentialIsConfigured
+            }
+            return !clientID.isEmpty && !clientSecret.isEmpty
         }
+    }
+
+    private var selectedTailscaleCredentialIsConfigured: Bool {
+        tailscaleAuthMethod == persistedTailscaleAuthMethod
+            && tailscaleCredentialPresence == .configured
+    }
+
+    private var tailscaleCredentialStatusText: String {
+        guard tailscaleAuthMethod == persistedTailscaleAuthMethod else {
+            return "Enter replacement credentials to switch authentication methods."
+        }
+        switch tailscaleCredentialPresence {
+        case .configured:
+            return "Credentials are configured. Leave the replacement fields empty to test them."
+        case .absent:
+            return "No credentials are configured."
+        case .unavailable:
+            return "Credential status is unavailable. Check Keychain access before replacing credentials."
+        }
+    }
+
+    private var tailscaleCredentialStatusIcon: String {
+        switch tailscaleAuthMethod == persistedTailscaleAuthMethod
+            ? tailscaleCredentialPresence
+            : .absent {
+        case .configured: return "checkmark.circle"
+        case .absent: return "key"
+        case .unavailable: return "exclamationmark.triangle"
+        }
+    }
+
+    private var tailscaleCredentialStatusColor: Color {
+        guard tailscaleAuthMethod == persistedTailscaleAuthMethod else { return .secondary }
+        switch tailscaleCredentialPresence {
+        case .configured: return .green
+        case .absent: return .secondary
+        case .unavailable: return .orange
+        }
+    }
+
+    private func clearTailscaleCredentialInputs() {
+        tailscaleAPIKey = ""
+        tailscaleOAuthClientID = ""
+        tailscaleOAuthClientSecret = ""
     }
 
     private static func recordingStorageSize() -> Int64 {
@@ -400,22 +453,49 @@ struct GeneralSettingsView: View {
         tailscaleTestResult = nil
 
         do {
+            let wroteReplacement: Bool
             switch tailscaleAuthMethod {
             case .apiKey:
-                try KeychainManager.saveTailscaleAPIKey(
-                    tailscaleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                )
+                let apiKey = tailscaleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                if apiKey.isEmpty {
+                    guard selectedTailscaleCredentialIsConfigured else {
+                        throw TailscaleError.notAuthenticated
+                    }
+                    wroteReplacement = false
+                } else {
+                    try KeychainManager.saveTailscaleAPIKey(apiKey)
+                    wroteReplacement = true
+                }
             case .oauthClient:
-                try KeychainManager.saveTailscaleOAuthCredentials(
-                    clientID: tailscaleOAuthClientID.trimmingCharacters(in: .whitespacesAndNewlines),
-                    clientSecret: tailscaleOAuthClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
-                )
+                let clientID = tailscaleOAuthClientID.trimmingCharacters(in: .whitespacesAndNewlines)
+                let clientSecret = tailscaleOAuthClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+                if clientID.isEmpty, clientSecret.isEmpty {
+                    guard selectedTailscaleCredentialIsConfigured else {
+                        throw TailscaleError.notAuthenticated
+                    }
+                    wroteReplacement = false
+                } else {
+                    guard !clientID.isEmpty, !clientSecret.isEmpty else {
+                        throw TailscaleError.notAuthenticated
+                    }
+                    try KeychainManager.saveTailscaleOAuthCredentials(
+                        clientID: clientID,
+                        clientSecret: clientSecret
+                    )
+                    wroteReplacement = true
+                }
             }
-            // Switch the active method only after its credential write succeeds.
-            UserDefaults.standard.set(tailscaleAuthMethod.rawValue, forKey: UserDefaultsKeys.tailscaleAuthMethod)
-            NotificationCenter.default.post(name: .tailscaleCredentialsDidChange, object: nil)
+            if wroteReplacement {
+                // Switch the active method only after its credential write succeeds.
+                UserDefaults.standard.set(tailscaleAuthMethod.rawValue, forKey: UserDefaultsKeys.tailscaleAuthMethod)
+                persistedTailscaleAuthMethod = tailscaleAuthMethod
+                NotificationCenter.default.post(name: .tailscaleCredentialsDidChange, object: nil)
+            }
+            clearTailscaleCredentialInputs()
+            tailscaleCredentialPresence = TailscaleClient.credentialPresence()
         } catch {
             tailscaleTestResult = "Failed to save: \(error.localizedDescription)"
+            clearTailscaleCredentialInputs()
             tailscaleTestInProgress = false
             return
         }
@@ -428,6 +508,8 @@ struct GeneralSettingsView: View {
             } catch {
                 tailscaleTestResult = "Error: \(error.localizedDescription)"
             }
+            tailscaleCredentialPresence = TailscaleClient.credentialPresence()
+            clearTailscaleCredentialInputs()
             tailscaleTestInProgress = false
         }
     }

@@ -26,27 +26,6 @@ struct GlasShMacApp: App {
         .defaultLaunchBehavior(.suppressed)
         .windowToolbarStyle(.unifiedCompact)
 
-        WindowGroup(id: "terminal", for: UUID.self) { $sessionID in
-            if let sessionID, let session = sessionManager.session(for: sessionID) {
-                TerminalWindowView(session: session)
-                    .environment(sessionManager)
-                    .environment(settingsManager)
-                    .background(MacTerminalWindowReader(
-                        tabbingIdentifier: "sh.glas.terminal",
-                        shouldConfirmClose: {
-                            settingsManager.confirmBeforeClosing
-                                && session.state != .disconnected
-                        }
-                    ))
-            } else {
-                SessionNotFoundView(sessionID: sessionID)
-                    .environment(sessionManager)
-                    .environment(settingsManager)
-            }
-        }
-        .defaultSize(width: 1180, height: 760)
-        .windowToolbarStyle(.unifiedCompact)
-
         WindowGroup(id: "sftp", for: SFTPBrowserContext.self) { $context in
             if let context, sessionManager.session(for: context.sessionID) != nil {
                 SFTPBrowserView(sessionID: context.sessionID)

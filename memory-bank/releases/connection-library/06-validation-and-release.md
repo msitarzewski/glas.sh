@@ -4,6 +4,43 @@
 
 Prove the Connection Library architecture and all preserved terminal capabilities end to end before release completion.
 
+## Status
+
+`Complete` — user approved 2026-07-21 with the Apple beta-tooling limitations below explicitly accepted.
+
+## Automated evidence
+
+- iOS 27 app suite: 211/211 passed, zero skips and zero runtime warnings.
+- visionOS 26.4 app suite: 208/208 passed, zero skips and zero runtime warnings.
+- visionOS 27 app suite: 208/208 passed, zero skips and zero runtime warnings.
+- Apple Silicon macOS 27 suite: 32/32 passed, zero skips and zero runtime warnings.
+- GlasSecretStore: 76 passed across 13 suites.
+- swift-nio-ssh: 331/331 passed.
+- Citadel: 44 executed, with 39 passed and five expected environment-dependent skips.
+- RealityKitContent build passed.
+- Exact-current-tree Release builds passed for Apple Silicon macOS, generic iOS, and generic visionOS.
+
+## Direct application smoke evidence
+
+- macOS: the native Library launched, rendered, and remained open while Local Terminal opened in a separate terminal window.
+- iPhone 17 Pro/iOS 27 simulator: compact Library remained foreground and responsive; Library, Favorites, Recent, Workgroups, Settings, and Add Server were present and Network was absent while unconfigured.
+- iPad Pro 13-inch/iOS 27 simulator: the native three-column Library launched without a crash; the initially observed leading-row clipping was repaired and visually reverified.
+
+## Apple tooling limitations accepted at approval
+
+- The XCUITest target builds and parses, but Xcode 27 beta repeatedly loses the UI-test worker after application launch and blocks at `Blocking finish to clean up test session`. No automated UI pass is claimed. Direct application smokes and platform unit/routing coverage provide the functional evidence for this checkpoint.
+- A signed physical Vision Pro Release build passed for `RealityDevice14,1`/arm64e on visionOS 27 and installed successfully as `sh.glas.app` 1.0 (2), minimum visionOS 26.0. CoreDevice then timed out while enabling developer-disk-image services for every launch attempt, and physical screenshot/display capture is unsupported. Physical build/install are proven; launch/render is not claimed.
+- The user explicitly approved these two infrastructure limitations on 2026-07-21. A wearer-present launch remains useful additional evidence but is not represented as completed automation.
+
+## Final quality evidence
+
+- `git diff --check` passed.
+- Project and shared schemes validate; the UI-test source parses.
+- Production TODO/FIXME/HACK/stub/future/unimplemented/fatal marker scan is empty.
+- Replaced navigation/orphan symbol scan is empty.
+- Gitleaks found no secrets in the tracked diff, UI-test source, or app-icon assets.
+- No production mock data or stub implementation was added.
+
 ## Functional matrix
 
 - Browse All, Favorites, Recent, each Collection, Workgroups, and configured Network.
@@ -30,7 +67,7 @@ Prove the Connection Library architecture and all preserved terminal capabilitie
 - ANSI normal/bright color fidelity above background effects.
 - Theme import and iCloud settings synchronization.
 - Terminal padding, resize, scrollback, cursor, keyboard, and clean exit.
-- visionOS ornaments and physical Vision Pro window rendering.
+- visionOS ornaments; physical Vision Pro build/install are verified, while launch/window rendering are accepted as CoreDevice-blocked and are not claimed.
 
 ## Security and quality gates
 
@@ -52,4 +89,6 @@ After user approval of implementation:
 
 ## Exit gate
 
-All acceptance criteria pass on the supported platform matrix, physical Vision Pro verification is recorded, displaced code and stubs are absent, and the user approves release completion.
+The supported evidence matrix and explicitly accepted tooling boundaries are recorded, displaced code and stubs are absent, and the user approves release completion.
+
+**Result:** Passed with the explicitly approved Xcode UI-runner and CoreDevice launch-capture limitations recorded above.

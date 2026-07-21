@@ -14,7 +14,6 @@ enum ConnectionLibraryMode: String, CaseIterable, Identifiable, Hashable, Sendab
     case collections
     case workgroups
     case network
-    case settings
 
     var id: String { rawValue }
 
@@ -26,7 +25,6 @@ enum ConnectionLibraryMode: String, CaseIterable, Identifiable, Hashable, Sendab
         case .collections: return "Collections"
         case .workgroups: return "Workgroups"
         case .network: return "Network"
-        case .settings: return "Settings"
         }
     }
 }
@@ -38,7 +36,6 @@ enum ConnectionLibraryScope: Hashable, Identifiable, Sendable {
     case collection(String)
     case workgroups
     case network
-    case settings
 
     var id: String {
         switch self {
@@ -48,7 +45,6 @@ enum ConnectionLibraryScope: Hashable, Identifiable, Sendable {
         case .collection(let id): return "collection-\(id)"
         case .workgroups: return "workgroups"
         case .network: return "network"
-        case .settings: return "settings"
         }
     }
 }
@@ -137,7 +133,6 @@ struct ConnectionLibraryProjection {
         case .collections: return collections.map { .collection($0.id) }
         case .workgroups: return [.workgroups]
         case .network: return networkIsConfigured ? [.network] : []
-        case .settings: return [.settings]
         }
     }
 
@@ -148,8 +143,7 @@ struct ConnectionLibraryProjection {
 
     func servers(
         in scope: ConnectionLibraryScope,
-        searchQuery: String = "",
-        activeTagFilters: [String] = []
+        searchQuery: String = ""
     ) -> [ServerConfiguration] {
         let candidates: [ServerConfiguration]
         switch scope {
@@ -161,31 +155,21 @@ struct ConnectionLibraryProjection {
             candidates = servers(withIDs: recentServerIDs)
         case .collection(let collectionID):
             candidates = servers(withIDs: collections.first { $0.id == collectionID }?.serverIDs ?? [])
-        case .workgroups, .network, .settings:
+        case .workgroups, .network:
             candidates = []
         }
         return matchingServers(
             from: candidates,
-            searchQuery: searchQuery,
-            activeTagFilters: activeTagFilters
+            searchQuery: searchQuery
         )
     }
 
     func matchingServers(
         from candidates: [ServerConfiguration],
-        searchQuery: String = "",
-        activeTagFilters: [String] = []
+        searchQuery: String = ""
     ) -> [ServerConfiguration] {
         var seenServerIDs = Set<UUID>()
         var result = candidates.filter { seenServerIDs.insert($0.id).inserted }
-
-        let activeCollectionIDs = Set(activeTagFilters.compactMap(Self.collectionID(for:)))
-        if !activeCollectionIDs.isEmpty {
-            result = result.filter { server in
-                let serverCollectionIDs = Set(server.tags.compactMap(Self.collectionID(for:)))
-                return !activeCollectionIDs.isDisjoint(with: serverCollectionIDs)
-            }
-        }
 
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         if !query.isEmpty {
@@ -206,7 +190,6 @@ struct ConnectionLibraryProjection {
             preset.name.localizedCaseInsensitiveContains(query)
                 || preset.sessionIntents.contains { intent in
                     intent.label?.localizedCaseInsensitiveContains(query) == true
-                        || intent.startupCommand?.localizedCaseInsensitiveContains(query) == true
                 }
         }
     }
@@ -214,14 +197,12 @@ struct ConnectionLibraryProjection {
     func resolvedSelection(
         preferredServerID: UUID?,
         in scope: ConnectionLibraryScope,
-        searchQuery: String = "",
-        activeTagFilters: [String] = []
+        searchQuery: String = ""
     ) -> UUID? {
         guard let preferredServerID else { return nil }
         return servers(
             in: scope,
-            searchQuery: searchQuery,
-            activeTagFilters: activeTagFilters
+            searchQuery: searchQuery
         ).contains { $0.id == preferredServerID } ? preferredServerID : nil
     }
 
@@ -229,7 +210,6 @@ struct ConnectionLibraryProjection {
         switch scope {
         case .workgroups: return workgroups.count
         case .network: return networkIsConfigured ? 1 : 0
-        case .settings: return 0
         default: return servers(in: scope).count
         }
     }

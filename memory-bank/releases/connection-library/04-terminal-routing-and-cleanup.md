@@ -4,11 +4,24 @@
 
 Connect the new Library presentation to the existing terminal/workgroup lifecycle, then remove every displaced route and view branch.
 
+## Status
+
+`Complete`
+
+## Completion evidence
+
+- Library Connect routes through the existing `SessionManager` and platform scene boundary; direct Mac smoke confirmed the Library remains open while a Terminal window opens.
+- `IOSAppRouter` at `glas.sh/glas_shApp.swift:190` provides scene-local compact routing while reusing the shared session/workgroup core.
+- macOS Local Terminal, saved SSH, workgroup recipe, footer `+`, Command-T, settings, and SFTP actions reuse their existing controllers/managers rather than opening parallel sessions. Unsupported local-terminal intents on visionOS/iOS fail visibly.
+- Workgroup attach failure now removes the partially created session instead of leaving an orphan.
+- Replaced connection sections, obsolete selection/filter flags, and dead helper properties were removed in the same release.
+- Final production-marker and orphan-symbol scans are clean.
+
 ## Routing rules
 
 - Library `Connect` opens a new terminal window and leaves the Library open.
 - Workgroup launch uses existing `LayoutPreset` and `TerminalWorkgroup` behavior.
-- Local Terminal uses the existing local PTY path.
+- Local Terminal on macOS uses the existing local PTY path; visionOS/iOS do not advertise a local PTY route.
 - Terminal footer `+` and Command-T add a tab within the active terminal window.
 - Connection management never creates a parallel session object or bypasses existing authorization and host-trust policy.
 
@@ -33,3 +46,5 @@ Connect the new Library presentation to the existing terminal/workgroup lifecycl
 ## Exit gate
 
 Every launch path uses existing authorities, all displaced implementation is removed, and terminal appearance/lifecycle regressions are absent.
+
+**Result:** Passed by routing/unit coverage and direct application smoke. The premium transparent terminal canvas and existing appearance pipeline were not replaced.

@@ -1,5 +1,18 @@
 # System Patterns
 
+## Connection Library Projection and Native Shell Boundary
+
+- Build `ConnectionLibraryProjection` transiently from authoritative `ServerManager.servers`, `SettingsManager.layoutPresets`, and cached optional-network availability. Do not persist Library modes, scopes, normalized collections, counts, or selection-repair state.
+- Normalize collections from `ServerConfiguration.tags`; an empty/whitespace-only tag creates no collection, and one profile may participate in multiple collections.
+- Deduplicate by authoritative profile identity before ordering or filtering. Stable ordering uses recency followed by name, host, username, and identifier tie-breaks.
+- Build the projection once per SwiftUI body evaluation and pass it into navigation/results/detail helpers. Never perform synchronous Keychain reads from a body-fed computed property; cache credential presence and refresh it when settings/lifecycle changes.
+- Share mode, scope, result, selection, and action semantics across platforms while composing them natively:
+  - visionOS: ornament mode -> optional real child scopes -> results -> details; modes without children begin with results;
+  - macOS/iPadOS: native three-column split view;
+  - iPhone: compact stack drill-down.
+- Presentation may branch by platform, but saved-profile, credential, host-trust, connection, workgroup, and terminal lifecycle behavior stays in existing managers.
+- Explicit connection/workgroup/local launch actions cross the scene boundary only after reusing `SessionManager`; selecting a row reveals detail and does not implicitly create a session except the approved macOS double-click shortcut.
+
 ## Terminal Architecture
 - SSH transport via Citadel and `withPTY` interactive sessions.
 - Terminal rendering via the SwiftTerm host view behind the narrow `TerminalEngine`/`SwiftTermHostEngine` boundary in `Packages/RealityKitContent/Sources/RealityKitContent/SwiftTermHostView.swift`.

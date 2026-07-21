@@ -7,14 +7,54 @@
 
 import SwiftUI
 
-#if os(visionOS)
+#if os(visionOS) || os(iOS)
+@MainActor
+struct PlatformNewTerminalAction {
+    let title: String
+    private let action: () -> Void
+
+    init(title: String, action: @escaping () -> Void) {
+        self.title = title
+        self.action = action
+    }
+
+    func callAsFunction() {
+        action()
+    }
+}
+
+private struct PlatformNewTerminalActionKey: FocusedValueKey {
+    typealias Value = PlatformNewTerminalAction
+}
+
+extension FocusedValues {
+    var platformNewTerminalAction: PlatformNewTerminalAction? {
+        get { self[PlatformNewTerminalActionKey.self] }
+        set { self[PlatformNewTerminalActionKey.self] = newValue }
+    }
+}
+
+private struct PlatformTerminalCommands: Commands {
+    @FocusedValue(\.platformNewTerminalAction) private var newTerminalAction
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button(newTerminalAction?.title ?? "New Terminal") {
+                newTerminalAction?()
+            }
+            .keyboardShortcut("t", modifiers: .command)
+            .disabled(newTerminalAction == nil)
+        }
+    }
+}
+
 @main
 struct glas_shApp: App {
     @State private var sessionManager = SessionManager(loadImmediately: false)
     @State private var settingsManager = SettingsManager(loadImmediately: false)
     @State private var windowRecoveryManager = WindowRecoveryManager()
-    
     var body: some Scene {
+        #if os(visionOS)
         // Connection manager - PRIMARY WINDOW (single instance)
         Window("Connections", id: "main") {
             MainBootstrapView()
@@ -27,6 +67,7 @@ struct glas_shApp: App {
         .defaultLaunchBehavior(.presented)
         .restorationBehavior(.disabled)
         .handlesExternalEvents(matching: ["main"])
+        .commands { PlatformTerminalCommands() }
         
         // Terminal workgroup windows (each value identifies one runtime tab group).
         WindowGroup(id: "terminal", for: UUID.self) { $workgroupID in
@@ -53,6 +94,7 @@ struct glas_shApp: App {
         .windowStyle(.plain)
         .defaultSize(width: 1200, height: 800)
         .restorationBehavior(.disabled)
+        .commands { PlatformTerminalCommands() }
 
         // Minimized Connections proxy — a slowly spinning terminal icon shown when the
         // Connections window is closed while it is the last open window. Tap to restore.
@@ -124,14 +166,144 @@ struct glas_shApp: App {
         .defaultSize(width: 700, height: 600)
         .restorationBehavior(.disabled)
 
-        #if os(visionOS)
         // Immersive focus environment
         ImmersiveSpace(id: "focus-environment") {
             FocusEnvironmentView()
         }
         .immersionStyle(selection: .constant(.progressive), in: .progressive)
         .restorationBehavior(.disabled)
+        #else
+        WindowGroup {
+            IOSAppRoot()
+                .environment(sessionManager)
+                .environment(settingsManager)
+        }
+        .commands { PlatformTerminalCommands() }
         #endif
+    }
+}
+#endif
+
+#if os(iOS)
+@MainActor
+@Observable
+final class IOSAppRouter {
+    var terminalWorkgroupID: UUID?
+    private(set) var mostRecentTerminalWorkgroupID: UUID?
+    var showsSettings = false
+    var sftpContext: SFTPBrowserContext?
+    var pendingDeepLinkURL: URL?
+
+    func showTerminal(workgroupID: UUID) {
+        sftpContext = nil
+        mostRecentTerminalWorkgroupID = workgroupID
+        terminalWorkgroupID = workgroupID
+    }
+
+    func showConnections() {
+        sftpContext = nil
+        terminalWorkgroupID = nil
+    }
+
+    func liveWorkgroups(in sessionManager: SessionManager) -> [TerminalWorkgroup] {
+        sessionManager.workgroups.filter { workgroup in
+            workgroup.sessionIDs.contains { sessionManager.session(for: $0) != nil }
+        }
+    }
+
+    func resumableWorkgroupID(in sessionManager: SessionManager) -> UUID? {
+        let liveWorkgroups = liveWorkgroups(in: sessionManager)
+        if let mostRecentTerminalWorkgroupID,
+           liveWorkgroups.contains(where: { $0.id == mostRecentTerminalWorkgroupID }) {
+            return mostRecentTerminalWorkgroupID
+        }
+        return liveWorkgroups.last?.id
+    }
+
+    @discardableResult
+    func resumeTerminal(
+        workgroupID: UUID,
+        in sessionManager: SessionManager
+    ) -> Bool {
+        guard liveWorkgroups(in: sessionManager).contains(where: { $0.id == workgroupID }) else {
+            return false
+        }
+        showTerminal(workgroupID: workgroupID)
+        return true
+    }
+
+    @discardableResult
+    func resumeMostRecentTerminal(in sessionManager: SessionManager) -> Bool {
+        guard let workgroupID = resumableWorkgroupID(in: sessionManager) else {
+            return false
+        }
+        showTerminal(workgroupID: workgroupID)
+        return true
+    }
+
+    func showSettings() {
+        showsSettings = true
+    }
+
+    func showSFTP(sessionID: UUID) {
+        sftpContext = SFTPBrowserContext(sessionID: sessionID)
+    }
+}
+
+private struct IOSAppRoot: View {
+    @Environment(SessionManager.self) private var sessionManager
+    @Environment(SettingsManager.self) private var settingsManager
+    @State private var router = IOSAppRouter()
+
+    var body: some View {
+        @Bindable var router = router
+
+        Group {
+            if let workgroupID = router.terminalWorkgroupID {
+                VisionTerminalWorkgroupView(workgroupID: workgroupID)
+                    .id(workgroupID)
+            } else {
+                MainBootstrapView()
+            }
+        }
+        .environment(router)
+        .environment(sessionManager)
+        .environment(settingsManager)
+        .sheet(isPresented: $router.showsSettings) {
+            NavigationStack {
+                SettingsView()
+                    .environment(sessionManager)
+                    .environment(settingsManager)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") {
+                                router.showsSettings = false
+                            }
+                        }
+                    }
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { router.sftpContext != nil },
+            set: { isPresented in
+                if !isPresented {
+                    router.sftpContext = nil
+                }
+            }
+        )) {
+            if let context = router.sftpContext,
+               sessionManager.session(for: context.sessionID) != nil {
+                SFTPBrowserView(sessionID: context.sessionID)
+                    .environment(sessionManager)
+                    .environment(settingsManager)
+            } else {
+                SFTPBrowserNotFoundView(context: router.sftpContext)
+            }
+        }
+        .onOpenURL { url in
+            router.pendingDeepLinkURL = url
+            router.showConnections()
+        }
     }
 }
 #endif
@@ -140,6 +312,9 @@ struct MainBootstrapView: View {
     @Environment(SessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
     @Environment(\.openWindow) private var openWindow
+    #if os(iOS)
+    @Environment(IOSAppRouter.self) private var iOSRouter
+    #endif
     @State private var didBootstrap = false
     @State private var pendingDeepLinkServer: ServerConfiguration?
     @State private var pendingDeepLinkJumpRoute: [ServerConfiguration] = []
@@ -153,6 +328,9 @@ struct MainBootstrapView: View {
             guard !didBootstrap else { return }
             didBootstrap = true
             loadPersistentState()
+            #if os(iOS)
+            consumePendingDeepLinkIfNeeded()
+            #endif
         }
         // NOTE: We intentionally do NOT close sessions on scenePhase == .background.
         // On visionOS, closing the Connections window (or glancing away) backgrounds
@@ -160,8 +338,17 @@ struct MainBootstrapView: View {
         // "Session not found". Sessions are ephemeral and the OS tears down sockets on
         // actual app termination; TerminalSession.deinit cancels outstanding tasks.
         .onOpenURL { url in
+            #if os(iOS)
+            iOSRouter.pendingDeepLinkURL = url
+            #else
             handleDeepLink(url)
+            #endif
         }
+        #if os(iOS)
+        .onChange(of: iOSRouter.pendingDeepLinkURL) { _, _ in
+            consumePendingDeepLinkIfNeeded()
+        }
+        #endif
         .alert(
             "Connect to Server?",
             isPresented: deepLinkConfirmationBinding,
@@ -215,6 +402,14 @@ struct MainBootstrapView: View {
         sessionManager.preloadPersistentStateIfNeeded()
         settingsManager.loadPersistentStateIfNeeded()
     }
+
+    #if os(iOS)
+    private func consumePendingDeepLinkIfNeeded() {
+        guard let url = iOSRouter.pendingDeepLinkURL else { return }
+        iOSRouter.pendingDeepLinkURL = nil
+        handleDeepLink(url)
+    }
+    #endif
 
     private func handleDeepLink(_ url: URL) {
         loadPersistentState()
@@ -379,6 +574,15 @@ struct MainBootstrapView: View {
     }
 
     private func presentTerminalWorkgroup(for session: TerminalSession) {
+        #if os(macOS)
+        openWindow(
+            id: "workspace",
+            value: MacLiveSessionWorkspaceRouter.launchRequest(
+                for: session,
+                sessionManager: sessionManager
+            )
+        )
+        #else
         let workgroupID = sessionManager.createWorkgroup(
             name: session.server.name,
             colorTag: session.server.colorTag
@@ -389,10 +593,15 @@ struct MainBootstrapView: View {
             deepLinkFailureMessage = "The terminal could not be added to its workgroup."
             return
         }
+        #if os(visionOS)
         openWindow(id: "terminal", value: workgroupID)
+        #elseif os(iOS)
+        iOSRouter.showTerminal(workgroupID: workgroupID)
+        #endif
+        #endif
     }
 
-    private static func sameDeepLinkSecurityIdentity(
+    static func sameDeepLinkSecurityIdentity(
         _ lhs: ServerConfiguration,
         _ rhs: ServerConfiguration
     ) -> Bool {
@@ -400,8 +609,10 @@ struct MainBootstrapView: View {
             && lhs.port == rhs.port
             && lhs.username == rhs.username
             && lhs.authMethod == rhs.authMethod
+            && lhs.sshKeyPath == rhs.sshKeyPath
             && lhs.sshKeyID == rhs.sshKeyID
             && lhs.resolvedJumpHostIDs == rhs.resolvedJumpHostIDs
+            && lhs.forwardAgent == rhs.forwardAgent
             && lhs.legacyAlgorithmsEnabled == rhs.legacyAlgorithmsEnabled
     }
 
@@ -464,52 +675,6 @@ struct MinimizedConnectionsView: View {
         .terminalHoverHighlight()
         .help("Open Connections")
         .accessibilityLabel("Open Connections")
-    }
-}
-
-struct SessionNotFoundView: View {
-    let sessionID: UUID?
-    @Environment(\.openWindow) private var openWindow
-    @Environment(\.dismissWindow) private var dismissWindow
-
-    var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "terminal")
-                .font(.system(size: 44))
-                .foregroundStyle(.secondary)
-
-            Text("Session not found")
-                .font(.title3)
-                .fontWeight(.semibold)
-
-            Text("This terminal window's session is no longer active.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
-
-            HStack(spacing: 12) {
-                Button("Open Connections") {
-                    openWindow(id: "main")
-                    closeThisWindow()
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button("Close Window") {
-                    closeThisWindow()
-                }
-                .buttonStyle(.bordered)
-            }
-        }
-        .padding(32)
-    }
-
-    private func closeThisWindow() {
-        if let sessionID {
-            dismissWindow(id: "terminal", value: sessionID)
-        } else {
-            dismissWindow(id: "terminal")
-        }
     }
 }
 

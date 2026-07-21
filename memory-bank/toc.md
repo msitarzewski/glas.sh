@@ -43,3 +43,4 @@
 - [2026-03](./tasks/2026-03/README.md)
 - [2026-05](./tasks/2026-05/README.md)
 - [2026-07](./tasks/2026-07/README.md)
+  - [Connection Library Release Completion](./tasks/2026-07/210726_connection-library-release.md)

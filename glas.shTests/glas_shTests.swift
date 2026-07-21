@@ -22,6 +22,27 @@ private struct LegacyKEXFixture: Error, CustomStringConvertible {
     var description: String { "keyExchangeNegotiationFailure" }
 }
 
+private struct TestByteSequence: AsyncSequence, Sendable {
+    typealias Element = UInt8
+
+    let count: Int
+
+    struct AsyncIterator: AsyncIteratorProtocol {
+        let count: Int
+        var index = 0
+
+        mutating func next() async -> UInt8? {
+            guard index < count else { return nil }
+            defer { index += 1 }
+            return UInt8(truncatingIfNeeded: index)
+        }
+    }
+
+    func makeAsyncIterator() -> AsyncIterator {
+        AsyncIterator(count: count)
+    }
+}
+
 @MainActor
 private final class TerminalWriteProbe {
     private(set) var writes: [Data] = []
@@ -796,6 +817,19 @@ struct glas_shTests {
         #expect(!openedMacTab)
         #endif
     }
+
+    #if os(visionOS) || os(iOS)
+    @Test @MainActor func platformNewTerminalCommandInvokesTheFocusedRoute() {
+        var invocationCount = 0
+        let action = PlatformNewTerminalAction(title: "New Terminal Tab") {
+            invocationCount += 1
+        }
+
+        #expect(action.title == "New Terminal Tab")
+        action()
+        #expect(invocationCount == 1)
+    }
+    #endif
 
     @Test func terminalSettingsExposeEveryHistoricalSection() {
         #expect(TerminalSettingsModalTab.allCases == [
@@ -1930,6 +1964,49 @@ struct glas_shTests {
         }
     }
 
+    @Test func duplicateServerIDsFailClosedBeforeCredentialAccess() throws {
+        let fixture = migrationDefaults("duplicate-server-id")
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.name) }
+
+        let duplicateID = UUID()
+        let first = ServerConfiguration(
+            id: duplicateID,
+            name: "First",
+            host: "first.example.com",
+            username: "operator"
+        )
+        let second = ServerConfiguration(
+            id: duplicateID,
+            name: "Second",
+            host: "second.example.com",
+            username: "admin"
+        )
+        fixture.defaults.set(
+            try JSONEncoder().encode([first, second]),
+            forKey: UserDefaultsKeys.servers
+        )
+
+        var credentialReads = 0
+        let manager = ServerManager(
+            defaults: fixture.defaults,
+            passwordStore: ServerPasswordStore(
+                retrieve: { _ in
+                    credentialReads += 1
+                    return "must-not-be-returned"
+                },
+                save: { _, _ in },
+                delete: { _ in }
+            )
+        )
+
+        #expect(manager.servers.isEmpty)
+        #expect(manager.serverCatalogLoadError == .invalidServerCatalog)
+        #expect(throws: ServerManagerError.invalidServerCatalog) {
+            try manager.password(for: first)
+        }
+        #expect(credentialReads == 0)
+    }
+
     @Test func invalidSSHKeyCatalogBlocksAddRenameDeleteAndSecretAccess() throws {
         let fixtures: [(String, Any)] = [
             ("malformed", Data("not-json".utf8)),
@@ -2926,8 +3003,6 @@ struct glas_shTests {
     @Test @MainActor func serverManagerStartsEmpty() {
         let manager = ServerManager(loadImmediately: false)
         #expect(manager.servers.isEmpty)
-        #expect(manager.favoriteServers.isEmpty)
-        #expect(manager.recentServers.isEmpty)
     }
 
     @Test @MainActor func serverManagerAddAndRemove() {
@@ -2961,11 +3036,9 @@ struct glas_shTests {
 
         manager.toggleFavorite(server)
         #expect(manager.servers.first?.isFavorite == true)
-        #expect(manager.favoriteServers.count == 1)
 
         manager.toggleFavorite(manager.servers.first!)
         #expect(manager.servers.first?.isFavorite == false)
-        #expect(manager.favoriteServers.isEmpty)
     }
 
     @Test @MainActor func serverManagerUpdateServer() {
@@ -3059,7 +3132,7 @@ struct glas_shTests {
         #expect(projection.collection(named: "production")?.serverIDs == [tagged.id])
     }
 
-    @Test func connectionLibraryProjectsFavoritesRecentsAndSearchDeterministically() {
+    @Test func connectionLibraryProjectsFavoritesRecentsAndSearchDeterministically() throws {
         var oldest = ServerConfiguration(
             name: "Alpha",
             host: "alpha.example.com",
@@ -3097,11 +3170,10 @@ struct glas_shTests {
         #expect(projection.servers(in: .allConnections, searchQuery: "internal").map(\.id) == [middle.id])
         #expect(projection.servers(in: .allConnections, searchQuery: "dba").map(\.id) == [middle.id])
         #expect(projection.servers(in: .allConnections, searchQuery: "home lab").map(\.id) == [oldest.id])
+        let production = try #require(projection.collection(named: " production "))
         #expect(
-            projection.servers(
-                in: .allConnections,
-                activeTagFilters: [" production "]
-            ).map(\.id) == [newest.id, middle.id]
+            projection.servers(in: .collection(production.id)).map(\.id)
+                == [newest.id, middle.id]
         )
     }
 
@@ -3184,7 +3256,8 @@ struct glas_shTests {
         #expect(hiddenNetwork.scopes(for: .network).isEmpty)
         #expect(visibleNetwork.availableModes.contains(.network))
         #expect(visibleNetwork.scopes(for: .network) == [.network])
-        #expect(hiddenNetwork.workgroups(matching: "journalctl").map(\.id) == [preset.id])
+        #expect(hiddenNetwork.workgroups(matching: "Logs").map(\.id) == [preset.id])
+        #expect(hiddenNetwork.workgroups(matching: "journalctl").isEmpty)
 
         let collection = try #require(hiddenNetwork.collection(named: "anomalous"))
         let scope = ConnectionLibraryScope.collection(collection.id)
@@ -3248,6 +3321,282 @@ struct glas_shTests {
             oauthClientID: "client",
             oauthClientSecret: "secret"
         ))
+    }
+
+    @Test func tailscaleCredentialPresenceDistinguishesAbsentAndUnavailableStores() {
+        let suiteName = "sh.glas.test.tailscale-credential-presence.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(TailscaleAuthMethod.apiKey.rawValue, forKey: UserDefaultsKeys.tailscaleAuthMethod)
+
+        #expect(TailscaleClient.credentialPresence(
+            defaults: defaults,
+            apiKeyProvider: { "tskey-api" },
+            oauthCredentialsProvider: { ("", "") }
+        ) == .configured)
+        #expect(TailscaleClient.credentialPresence(
+            defaults: defaults,
+            apiKeyProvider: { throw SecretStoreError.notFound },
+            oauthCredentialsProvider: { ("", "") }
+        ) == .absent)
+        #expect(TailscaleClient.credentialPresence(
+            defaults: defaults,
+            apiKeyProvider: { throw SecretStoreError.encodingFailed },
+            oauthCredentialsProvider: { ("", "") }
+        ) == .unavailable)
+
+        defaults.set(TailscaleAuthMethod.oauthClient.rawValue, forKey: UserDefaultsKeys.tailscaleAuthMethod)
+        #expect(TailscaleClient.credentialPresence(
+            defaults: defaults,
+            apiKeyProvider: { "" },
+            oauthCredentialsProvider: { ("client", "secret") }
+        ) == .configured)
+        #expect(TailscaleClient.credentialPresence(
+            defaults: defaults,
+            apiKeyProvider: { "" },
+            oauthCredentialsProvider: { throw SecretStoreError.notFound }
+        ) == .absent)
+        #expect(TailscaleClient.credentialPresence(
+            defaults: defaults,
+            apiKeyProvider: { "" },
+            oauthCredentialsProvider: { throw SecretStoreError.queryFailed(status: -1) }
+        ) == .unavailable)
+    }
+
+    @Test func tailscaleBoundedTransportRejectsDeclaredAndStreamedOverflow() async throws {
+        let limit = 8
+        let accepted = try await TailscaleClient.boundedData(
+            from: TestByteSequence(count: limit),
+            expectedContentLength: Int64(limit),
+            maximumBytes: limit
+        )
+        #expect(accepted.count == limit)
+
+        await #expect(throws: TailscaleError.self) {
+            try await TailscaleClient.boundedData(
+                from: TestByteSequence(count: 0),
+                expectedContentLength: Int64(limit + 1),
+                maximumBytes: limit
+            )
+        }
+        await #expect(throws: TailscaleError.self) {
+            try await TailscaleClient.boundedData(
+                from: TestByteSequence(count: limit + 1),
+                expectedContentLength: -1,
+                maximumBytes: limit
+            )
+        }
+    }
+
+    @Test func tailscaleOAuthExchangeBoundsBodyTokenAndLifetime() async throws {
+        let responseLimit = TailscaleClient.maximumOAuthResponseBytes
+        let accepted = try await TailscaleClient.boundedData(
+            from: TestByteSequence(count: responseLimit),
+            expectedContentLength: Int64(responseLimit),
+            maximumBytes: responseLimit
+        )
+        #expect(accepted.count == responseLimit)
+        await #expect(throws: TailscaleError.self) {
+            try await TailscaleClient.boundedData(
+                from: TestByteSequence(count: 0),
+                expectedContentLength: Int64(responseLimit + 1),
+                maximumBytes: responseLimit
+            )
+        }
+
+        #expect(TailscaleClient.oauthExchangeFieldsAreValid(
+            accessToken: "token",
+            expiresIn: 3_600
+        ))
+        #expect(!TailscaleClient.oauthExchangeFieldsAreValid(
+            accessToken: String(repeating: "a", count: TailscaleClient.maximumOAuthAccessTokenBytes + 1),
+            expiresIn: 3_600
+        ))
+        #expect(!TailscaleClient.oauthExchangeFieldsAreValid(
+            accessToken: "token\nleak",
+            expiresIn: 3_600
+        ))
+        #expect(!TailscaleClient.oauthExchangeFieldsAreValid(
+            accessToken: "token",
+            expiresIn: .infinity
+        ))
+        #expect(!TailscaleClient.oauthExchangeFieldsAreValid(
+            accessToken: "token",
+            expiresIn: TailscaleClient.maximumOAuthTokenLifetime + 1
+        ))
+    }
+
+    @Test @MainActor func deepLinkSecurityIdentityIncludesKeyPathAndAgentForwarding() {
+        let original = ServerConfiguration(
+            name: "Original",
+            host: "server.example.com",
+            username: "operator",
+            authMethod: .sshKey,
+            sshKeyPath: "/keys/approved"
+        )
+        var changedKeyPath = original
+        changedKeyPath.sshKeyPath = "/keys/replacement"
+        var enabledAgentForwarding = original
+        enabledAgentForwarding.forwardAgent = true
+
+        #expect(MainBootstrapView.sameDeepLinkSecurityIdentity(original, original))
+        #expect(!MainBootstrapView.sameDeepLinkSecurityIdentity(original, changedKeyPath))
+        #expect(!MainBootstrapView.sameDeepLinkSecurityIdentity(original, enabledAgentForwarding))
+    }
+
+    @Test func tailscaleDeviceValidatesInventoryAndNormalizesTags() throws {
+        let device = try #require(TailscaleDevice(
+            id: "device-123",
+            hostname: "build-host",
+            displayName: "build-host.example.ts.net",
+            addresses: ["fd7a:115c:a1e0::1", "100.064.001.009/32"],
+            os: "linux",
+            lastSeen: nil,
+            user: "operator",
+            rawTags: ["tag:Production", " production ", "tag:WEB"]
+        ))
+
+        #expect(device.ipAddress == "100.64.1.9")
+        #expect(device.tags == ["production", "web"])
+        #expect(TailscaleDevice.normalizedIPv4Address(from: "100.64.0.1/24") == nil)
+        #expect(TailscaleDevice.normalizedIPv4Address(from: "100.64.0.999") == nil)
+        #expect(TailscaleDevice(
+            id: "device-123",
+            hostname: "bad\nhost",
+            displayName: "bad.example.ts.net",
+            addresses: ["100.64.0.1"],
+            os: "linux",
+            lastSeen: nil,
+            user: "operator",
+            rawTags: []
+        ) == nil)
+        #expect(TailscaleDevice(
+            id: "device-123",
+            hostname: "build-host",
+            displayName: "build-host.example.ts.net",
+            addresses: Array(
+                repeating: "100.64.0.1",
+                count: TailscaleDevice.maximumAddressCount + 1
+            ),
+            os: "linux",
+            lastSeen: nil,
+            user: "operator",
+            rawTags: []
+        ) == nil)
+        #expect(TailscaleDevice(
+            id: "device-123",
+            hostname: "build-host",
+            displayName: "build-host.example.ts.net",
+            addresses: ["100.64.0.1"],
+            os: "linux",
+            lastSeen: nil,
+            user: "operator",
+            rawTags: Array(
+                repeating: "tag:production",
+                count: TailscaleDevice.maximumTagCount + 1
+            )
+        ) == nil)
+    }
+
+    @Test @MainActor func tailscaleImportDraftPreservesProvenanceWithoutGuessingSSHCredentials() throws {
+        let device = try #require(TailscaleDevice(
+            id: "device-123",
+            hostname: "build-host",
+            displayName: "build-host.example.ts.net",
+            addresses: ["100.64.1.9"],
+            os: "linux",
+            lastSeen: nil,
+            user: "tailscale-owner",
+            rawTags: ["tag:production", "tag:tailscale"]
+        ))
+
+        let draft = try #require(ConnectionManagerView.tailscaleImportDraft(for: device))
+
+        #expect(draft.name == "build-host")
+        #expect(draft.host == "100.64.1.9")
+        #expect(draft.port == 22)
+        #expect(draft.username.isEmpty)
+        #expect(draft.tags == ["tailscale", "production"])
+        #expect(draft.provenance == ServerConnectionProvenance(
+            provider: .tailscale,
+            externalID: "device-123"
+        ))
+    }
+
+    @Test func tailscaleInventoryLimitsAcceptBoundaryAndRejectLargerPayloads() {
+        #expect(TailscaleClient.inventoryResponseByteCountIsAllowed(
+            TailscaleClient.maximumInventoryResponseBytes
+        ))
+        #expect(!TailscaleClient.inventoryResponseByteCountIsAllowed(
+            TailscaleClient.maximumInventoryResponseBytes + 1
+        ))
+        #expect(TailscaleClient.inventoryDeviceCountIsAllowed(
+            TailscaleClient.maximumInventoryDeviceCount
+        ))
+        #expect(!TailscaleClient.inventoryDeviceCountIsAllowed(
+            TailscaleClient.maximumInventoryDeviceCount + 1
+        ))
+    }
+
+    @Test func serverConnectionProvenanceIsBoundedAndRoundTrips() throws {
+        let provenance = try #require(ServerConnectionProvenance(
+            provider: .tailscale,
+            externalID: "device-123"
+        ))
+        let server = ServerConfiguration(
+            name: "Build Host",
+            host: "100.64.1.9",
+            username: "operator",
+            tags: ["tailscale", "production"],
+            provenance: provenance
+        )
+
+        let decoded = try JSONDecoder().decode(
+            ServerConfiguration.self,
+            from: JSONEncoder().encode(server)
+        )
+        #expect(decoded.provenance == provenance)
+
+        let legacyServer = ServerConfiguration(
+            name: "Legacy Host",
+            host: "legacy.example.com",
+            username: "operator"
+        )
+        let decodedLegacyServer = try JSONDecoder().decode(
+            ServerConfiguration.self,
+            from: JSONEncoder().encode(legacyServer)
+        )
+        #expect(decodedLegacyServer.provenance == nil)
+        #expect(ServerConnectionProvenance(
+            provider: .tailscale,
+            externalID: String(repeating: "x", count: 257)
+        ) == nil)
+        #expect(ServerConnectionProvenance(
+            provider: .tailscale,
+            externalID: "device\n123"
+        ) == nil)
+    }
+
+    @Test @MainActor func tailscaleCredentialInvalidationClearsInventoryState() throws {
+        let device = try #require(TailscaleDevice(
+            id: "device-123",
+            hostname: "build-host",
+            displayName: "build-host.example.ts.net",
+            addresses: ["100.64.1.9"],
+            os: "linux",
+            lastSeen: nil,
+            user: "operator",
+            rawTags: ["tag:production"]
+        ))
+        let client = TailscaleClient()
+        client.devices = [device]
+        client.errorMessage = "old account"
+
+        client.invalidateCredentialState()
+
+        #expect(client.devices.isEmpty)
+        #expect(client.errorMessage == nil)
+        #expect(client.isLoading == false)
     }
 
     // MARK: - SettingsManager Tests
@@ -3996,10 +4345,24 @@ struct glas_shTests {
         let expiredB = cache.token(for: credentialsB, now: now.addingTimeInterval(31))
         let acceptedEmpty = cache.store("", expiresIn: 3_600, for: credentialsA, now: now)
         let acceptedShortLifetime = cache.store("token", expiresIn: 30, for: credentialsA, now: now)
+        let acceptedInfiniteLifetime = cache.store(
+            "token",
+            expiresIn: .infinity,
+            for: credentialsA,
+            now: now
+        )
+        let acceptedOversizedToken = cache.store(
+            String(repeating: "a", count: TailscaleClient.maximumOAuthAccessTokenBytes + 1),
+            expiresIn: 3_600,
+            for: credentialsA,
+            now: now
+        )
         #expect(storedB)
         #expect(expiredB == nil)
         #expect(!acceptedEmpty)
         #expect(!acceptedShortLifetime)
+        #expect(!acceptedInfiniteLifetime)
+        #expect(!acceptedOversizedToken)
 
         let restoredA = cache.store("token-a", expiresIn: 3_600, for: credentialsA, now: now)
         #expect(restoredA)
@@ -6019,6 +6382,100 @@ struct glas_shTests {
         #expect(manager.workgroup(for: secondGroup)?.sessionIDs == [second.id])
         #expect(manager.session(for: second.id) === second)
     }
+
+    #if os(iOS)
+    @Test @MainActor func iOSRoutersKeepSceneNavigationIndependent() {
+        let first = IOSAppRouter()
+        let second = IOSAppRouter()
+        let workgroupID = UUID()
+
+        first.showTerminal(workgroupID: workgroupID)
+        first.showSettings()
+        first.showSFTP(sessionID: UUID())
+
+        #expect(first.terminalWorkgroupID == workgroupID)
+        #expect(first.showsSettings)
+        #expect(first.sftpContext != nil)
+        #expect(second.terminalWorkgroupID == nil)
+        #expect(!second.showsSettings)
+        #expect(second.sftpContext == nil)
+    }
+
+    @Test @MainActor func iOSRouterResumesExactLiveWorkgroupWithDuplicateServerSessions() {
+        let manager = SessionManager(loadImmediately: false)
+        let sharedServer = ServerConfiguration(
+            name: "Shared",
+            host: "shared.example.com",
+            port: 22,
+            username: "user"
+        )
+        let first = TerminalSession(server: sharedServer)
+        let second = TerminalSession(server: sharedServer)
+        manager.registerSession(first)
+        manager.registerSession(second)
+        let firstGroup = manager.createWorkgroup(name: "First Group", colorTag: .red)
+        let secondGroup = manager.createWorkgroup(name: "Second Group", colorTag: .cyan)
+        #expect(manager.appendSession(first, toWorkgroup: firstGroup))
+        #expect(manager.appendSession(second, toWorkgroup: secondGroup))
+
+        let router = IOSAppRouter()
+        router.showTerminal(workgroupID: secondGroup)
+        router.showConnections()
+
+        #expect(router.terminalWorkgroupID == nil)
+        #expect(router.mostRecentTerminalWorkgroupID == secondGroup)
+        #expect(router.liveWorkgroups(in: manager).map(\.id) == [firstGroup, secondGroup])
+        #expect(router.resumeMostRecentTerminal(in: manager))
+        #expect(router.terminalWorkgroupID == secondGroup)
+        #expect(manager.workgroup(for: secondGroup)?.selectedSessionID == second.id)
+
+        router.showConnections()
+        #expect(router.resumeTerminal(workgroupID: firstGroup, in: manager))
+        #expect(router.terminalWorkgroupID == firstGroup)
+        #expect(manager.workgroup(for: firstGroup)?.selectedSessionID == first.id)
+
+        router.showTerminal(workgroupID: secondGroup)
+        router.showConnections()
+        manager.closeWorkgroup(secondGroup)
+
+        #expect(router.resumableWorkgroupID(in: manager) == firstGroup)
+        #expect(!router.resumeTerminal(workgroupID: secondGroup, in: manager))
+        #expect(router.resumeMostRecentTerminal(in: manager))
+        #expect(router.terminalWorkgroupID == firstGroup)
+    }
+
+    @Test @MainActor func iOSRouterKeepsTransientOnlyWorkgroupReachable() {
+        let manager = SessionManager(loadImmediately: false)
+        let transientServer = ServerConfiguration(
+            name: "Quick Connect",
+            host: "transient.example.com",
+            port: 22,
+            username: "temporary"
+        )
+        let transientSession = TerminalSession(server: transientServer)
+        manager.registerTransientSession(transientSession, password: "memory-only-password")
+        let workgroupID = manager.createWorkgroup(
+            name: "Transient Group",
+            colorTag: .purple
+        )
+        #expect(manager.appendSession(transientSession, toWorkgroup: workgroupID))
+        #expect(manager.serverManager.server(for: transientServer.id) == nil)
+
+        let router = IOSAppRouter()
+        router.showTerminal(workgroupID: workgroupID)
+        router.showConnections()
+
+        #expect(router.liveWorkgroups(in: manager).map(\.id) == [workgroupID])
+        #expect(router.resumeMostRecentTerminal(in: manager))
+        #expect(router.terminalWorkgroupID == workgroupID)
+        #expect(manager.workgroup(for: workgroupID)?.selectedSessionID == transientSession.id)
+
+        router.showConnections()
+        manager.closeWorkgroup(workgroupID)
+        #expect(router.resumableWorkgroupID(in: manager) == nil)
+        #expect(!router.resumeMostRecentTerminal(in: manager))
+    }
+    #endif
 
     @Test @MainActor func terminalSessionCoalescesRapidRemotePTYResizes() async {
         let probe = TerminalResizeProbe()

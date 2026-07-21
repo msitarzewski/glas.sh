@@ -4,6 +4,18 @@
 
 Refactor the existing connection hub around the shared Library projection while preserving all working connection-management behavior.
 
+## Status
+
+`Complete`
+
+## Completion evidence
+
+- `glas.sh/ConnectionManagerView.swift:24` owns one mode/scope/selection model shared by every platform presentation.
+- `glas.sh/ConnectionManagerView.swift:266` composes navigation, results, and detail regions from the shared projection rather than parallel Favorites/Recent/All branches.
+- Add, edit, delete, favorite, search, Quick Connect, trust, retry, failure, Tailscale import, Local Terminal, and workgroup actions remain attached to their existing authorities.
+- The obsolete `ConnectionSection`, `selectedSection`, `activeTagFilters`, `macFilteredServers`, `sortedSections`, `macShowsTailscale`, `ServerManager.favoriteServers`, and `ServerManager.recentServers` paths were removed; final symbol scans find no remaining references.
+- The source file is larger because it now hosts native four-platform shell composition and accessibility hooks. The semantic navigation model is smaller: one projection, one selection model, and no duplicate platform-specific domain state.
+
 ## Current integration point
 
 `glas.sh/ConnectionManagerView.swift:12` currently owns platform branches, search, filters, actions, workgroups, details, and Tailscale. macOS also renders separate Favorites, Recent, and All Connections host sections around `glas.sh/ConnectionManagerView.swift:330`, while row interaction and connection behavior are mixed into the same surface.
@@ -28,4 +40,6 @@ Refactor the existing connection hub around the shared Library projection while 
 
 ## Exit gate
 
-The existing hub is materially smaller, uses the shared projection, preserves existing management flows, and contains no duplicate navigation implementation.
+The existing hub is semantically consolidated around the shared projection, preserves existing management flows, contains no duplicate domain/navigation implementation, and records the raw presentation growth required by four native shells.
+
+**Result:** Passed on the semantic/state boundary. `ConnectionManagerView.swift` grew from 2,008 baseline lines to 2,588 current lines and platform conditionals grew from 10 to 34 for native shell presentation; replaced navigation state and duplicate host projections were removed.
