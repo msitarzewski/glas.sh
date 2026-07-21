@@ -1,11 +1,19 @@
 # Active Context
 
 ## Current Focus
-- The `codex-completions` native macOS/visionOS parity candidate was approved on 2026-07-19. The implementation is ready for publication from `agent/macos-27-terminal`; distribution gates remain separate.
+- The approved terminal workgroup, lifecycle, and settings checkpoint was merged through PR #28 on 2026-07-20. The new working branch is `agent/connection-library` at the merged baseline.
+- The current implementation focus is the cross-platform Connection Library release defined in `memory-bank/releases/connection-library/README.md`: one shared projection over existing profiles, tags, favorites, recents, workgroups, and optional Network data, presented with native shells on visionOS, macOS, iPadOS, and iOS.
+- The release must replace displaced connection-navigation code rather than coexist with it. No second persisted connection, collection, workgroup, or session-opening model is authorized.
 - The current checkpoint is not an App Store go decision. Physical-device, matching-toolchain, conformance, cross-repository, and distribution gates remain open.
-- Working branch: `agent/macos-27-terminal`. The approved worktree must be committed intact; do not overwrite or revert it.
+- Working branch: `agent/connection-library`.
 
 ## What's Next
+- **Build the Connection Library release in dependency order.**
+  - Implement and test the transient shared Library projection.
+  - Refactor the existing connection hub around scope, results, and detail regions.
+  - Apply the approved ornament/three-column/adaptive-stack hierarchy per platform.
+  - Route launches through existing session/workgroup authorities, then remove displaced branches and helpers.
+  - Enable and validate iPhone/iPad 26+ through the existing primary architecture where SDK evidence permits.
 - **Close the remaining codex-completions release gates.**
   - Finish physical IME/dictation, hardware-keyboard/accessibility, representative TUI, terminal conformance, and performance evidence.
   - Finish recording export/device policy and cross-repository glassdb acceptance.
