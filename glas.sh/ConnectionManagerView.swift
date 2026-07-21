@@ -9,18 +9,37 @@ import SwiftUI
 import GlasSecretStore
 import os
 
+private enum ConnectionWorkgroupSelection: Hashable {
+    case live(UUID)
+    case preset(UUID)
+}
+
+#if os(iOS)
+private enum ConnectionCompactDestination: Hashable {
+    case results
+    case detail
+}
+#endif
+
 struct ConnectionManagerView: View {
     @Environment(SessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
+    #if os(iOS)
+    @Environment(IOSAppRouter.self) private var iOSRouter
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
 
     private var serverManager: ServerManager { sessionManager.serverManager }
-    
-    @State private var selectedSection: ConnectionSection = .all
+
+    @State private var selectedMode: ConnectionLibraryMode = .library
+    @State private var selectedScope: ConnectionLibraryScope = .allConnections
+    @State private var selectedServerID: UUID?
+    @State private var selectedWorkgroupSelection: ConnectionWorkgroupSelection?
+    @State private var selectedTailscaleDeviceID: String?
     @State private var showingAddServer = false
     @State private var editingServer: ServerConfiguration?
     @State private var viewingServer: ServerConfiguration?
     @State private var searchQuery: String = ""
-    @State private var activeTagFilters: [String] = []
     @State private var pendingTrustSession: TerminalSession?
     @State private var pendingTrustChallenge: HostKeyTrustChallenge?
     @State private var connectionFailureMessage: String?
@@ -31,64 +50,29 @@ struct ConnectionManagerView: View {
     @State private var quickConnectPort: String = "22"
     @State private var tailscaleClient = TailscaleClient()
     @State private var tailscaleUsernamePromptDevice: TailscaleDevice?
+    @State private var tailscaleImportDraft: ServerConfiguration?
     @State private var serverPendingDeletion: ServerConfiguration?
     @State private var workgroupEditorContext: WorkgroupEditorContext?
-    #if os(macOS)
-    @State private var macSelectedServerID: UUID?
-    @State private var macShowsTailscale = false
+    @State private var tailscaleIsConfigured = false
+    #if os(iOS)
+    @State private var compactNavigationPath: [ConnectionCompactDestination] = []
     #endif
-    
     @Environment(\.openWindow) private var openWindow
-    @Environment(\.dismissWindow) private var dismissWindow
     
     var body: some View {
-        NavigationSplitView {
-            #if os(macOS)
-            macConnectionSidebar
-            #else
-            List {
-                Section("Connections") {
-                    ForEach(sortedSections) { section in
-                        Button {
-                            selectedSection = section
-                        } label: {
-                            HStack {
-                                Label(section.title, systemImage: section.icon)
-                                    .foregroundStyle(section.color)
-                                Spacer()
-                                if selectedSection == section {
-                                    Image(systemName: "checkmark")
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Connections")
-            #endif
-        } detail: {
-            #if os(macOS)
-            macConnectionDetail
-                .navigationTitle(macSelectedServer?.name ?? selectedSection.title)
-                .searchable(text: $searchQuery, prompt: "Search connections...")
-                .onSubmit(of: .search) {
-                    handleSearchSubmission()
-                }
-            #else
-            detailView
-                .navigationTitle(selectedSection.title)
-                .searchable(text: $searchQuery, prompt: "Search servers...")
-                .onSubmit(of: .search) {
-                    handleSearchSubmission()
-                }
-                .toolbar {
-                    connectionToolbar
-                }
-            #endif
-        }
+        let connectionLibrary = ConnectionLibraryProjection(
+            servers: serverManager.servers,
+            workgroups: settingsManager.layoutPresets,
+            networkIsConfigured: tailscaleIsConfigured
+        )
+
+        platformLibrary(connectionLibrary: connectionLibrary)
+        .accessibilityIdentifier("connection-library")
         .sheet(isPresented: $showingAddServer) {
             AddServerView(serverManager: serverManager)
+        }
+        .sheet(item: $tailscaleImportDraft) { draft in
+            AddServerView(serverManager: serverManager, draft: draft)
         }
         .sheet(item: $editingServer) { server in
             EditServerView(server: server, serverManager: serverManager)
@@ -220,186 +204,308 @@ struct ConnectionManagerView: View {
         }
         .task {
             serverManager.loadServersIfNeeded()
+            refreshTailscaleConfiguration()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .tailscaleCredentialsDidChange)) { _ in
+            tailscaleClient.invalidateCredentialState()
+            selectedTailscaleDeviceID = nil
+            refreshTailscaleConfiguration()
+            if tailscaleIsConfigured, selectedMode == .network {
+                loadTailscaleDevices()
+            }
+        }
+        .onChange(of: tailscaleIsConfigured) { _, isConfigured in
+            if !isConfigured, selectedMode == .network {
+                selectMode(.library, in: connectionLibrary)
+            }
+        }
+        .onChange(of: serverManager.servers.map(\.id)) { _, serverIDs in
+            if let selectedServerID, !serverIDs.contains(selectedServerID) {
+                self.selectedServerID = nil
+            }
+        }
+        .onChange(of: settingsManager.layoutPresets.map(\.id)) { _, workgroupIDs in
+            if case .preset(let selectedWorkgroupID) = selectedWorkgroupSelection,
+               !workgroupIDs.contains(selectedWorkgroupID) {
+                selectedWorkgroupSelection = nil
+            }
+        }
+        #if os(iOS)
+        .onChange(of: sessionManager.workgroups.map(\.id)) { _, workgroupIDs in
+            if case .live(let selectedWorkgroupID) = selectedWorkgroupSelection,
+               !workgroupIDs.contains(selectedWorkgroupID) {
+                selectedWorkgroupSelection = nil
+            }
+        }
+        #endif
+        .onChange(of: connectionLibrary.collections.map(\.id)) { _, collectionIDs in
+            guard selectedMode == .collections else { return }
+            if case .collection(let selectedCollectionID) = selectedScope,
+               collectionIDs.contains(selectedCollectionID) {
+                return
+            }
+            clearLibrarySelection()
+            if let firstCollectionID = collectionIDs.first {
+                selectedScope = .collection(firstCollectionID)
+            } else {
+                selectMode(.library, in: connectionLibrary)
+            }
+        }
+        .onChange(of: tailscaleClient.devices.map(\.id)) { _, deviceIDs in
+            if let selectedTailscaleDeviceID,
+               !deviceIDs.contains(selectedTailscaleDeviceID) {
+                self.selectedTailscaleDeviceID = nil
+            }
         }
     }
 
-    @ToolbarContentBuilder
-    private var connectionToolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .primaryAction) {
-            Menu {
-                layoutMenuItems
-            } label: {
-                Image(systemName: "rectangle.3.group")
-            }
-            .accessibilityLabel("Workgroups")
-
-            Button {
-                showingAddServer = true
-            } label: {
-                Image(systemName: "plus")
-            }
-            .accessibilityLabel("Add server")
-
-            Button {
-                openWindow(id: "settings")
-            } label: {
-                Image(systemName: "gearshape")
-            }
-            .accessibilityLabel("Settings")
-        }
-    }
+    // MARK: - Connection Library Shells
 
     @ViewBuilder
-    private var layoutMenuItems: some View {
-        Button("New Workgroup…") {
-            workgroupEditorContext = .new()
+    private func platformLibrary(
+        connectionLibrary: ConnectionLibraryProjection
+    ) -> some View {
+        #if os(macOS)
+        NavigationSplitView {
+            libraryNavigation(connectionLibrary: connectionLibrary)
+        } content: {
+            libraryResults(connectionLibrary: connectionLibrary)
+        } detail: {
+            libraryDetail(connectionLibrary: connectionLibrary)
         }
-
-        Button("Save Current SSH Sessions…") {
-            editCurrentSessionsAsWorkgroup()
+        #elseif os(visionOS)
+        visionLibrary(connectionLibrary: connectionLibrary)
+            .ornament(attachmentAnchor: .scene(.leading)) {
+                visionModeOrnament(connectionLibrary: connectionLibrary)
+                    .glassBackgroundEffect(in: .rect(cornerRadius: 24))
+            }
+            .focusedSceneValue(
+                \.platformNewTerminalAction,
+                PlatformNewTerminalAction(title: "New Terminal") {
+                    showTerminalChooser(in: connectionLibrary)
+                }
+            )
+        #elseif os(iOS)
+        if horizontalSizeClass == .compact {
+            iOSCompactLibrary(connectionLibrary: connectionLibrary)
+                .focusedSceneValue(
+                    \.platformNewTerminalAction,
+                    PlatformNewTerminalAction(title: "New Terminal") {
+                        showTerminalChooser(in: connectionLibrary)
+                    }
+                )
+        } else {
+            NavigationSplitView {
+                libraryNavigation(connectionLibrary: connectionLibrary)
+            } content: {
+                libraryResults(connectionLibrary: connectionLibrary)
+            } detail: {
+                libraryDetail(connectionLibrary: connectionLibrary)
+            }
+            .focusedSceneValue(
+                \.platformNewTerminalAction,
+                PlatformNewTerminalAction(title: "New Terminal") {
+                    showTerminalChooser(in: connectionLibrary)
+                }
+            )
         }
-        .disabled(currentSavedSessionIntents.isEmpty)
+        #else
+        NavigationSplitView {
+            libraryNavigation(connectionLibrary: connectionLibrary)
+        } content: {
+            libraryResults(connectionLibrary: connectionLibrary)
+        } detail: {
+            libraryDetail(connectionLibrary: connectionLibrary)
+        }
+        #endif
+    }
 
-        if !settingsManager.layoutPresets.isEmpty {
-            Divider()
-
-            ForEach(settingsManager.layoutPresets) { preset in
-                Menu {
-                    Button("Open", systemImage: "rectangle.stack") {
-                        openWorkgroup(preset)
-                    }
-                    Button("Edit…", systemImage: "pencil") {
-                        workgroupEditorContext = .edit(preset)
-                    }
-                    Button("Duplicate…", systemImage: "plus.square.on.square") {
-                        workgroupEditorContext = .duplicate(preset)
-                    }
-                    Divider()
-                    Button("Delete", systemImage: "trash", role: .destructive) {
-                        settingsManager.deleteLayoutPreset(preset)
-                    }
-                } label: {
-                    Label {
-                        Text(preset.name)
-                    } icon: {
-                        Image(systemName: "circle.fill")
-                            .foregroundStyle(preset.colorTag.color)
+    #if os(iOS)
+    private func iOSCompactLibrary(
+        connectionLibrary: ConnectionLibraryProjection
+    ) -> some View {
+        NavigationStack(path: $compactNavigationPath) {
+            libraryNavigation(connectionLibrary: connectionLibrary)
+                .navigationDestination(for: ConnectionCompactDestination.self) { destination in
+                    switch destination {
+                    case .results:
+                        libraryResults(connectionLibrary: connectionLibrary)
+                    case .detail:
+                        libraryDetail(connectionLibrary: connectionLibrary)
                     }
                 }
+        }
+        .onChange(of: selectedServerID) { _, serverID in
+            updateCompactDetailPath(hasSelection: serverID != nil)
+        }
+        .onChange(of: selectedWorkgroupSelection) { _, selection in
+            updateCompactDetailPath(hasSelection: selection != nil)
+        }
+        .onChange(of: selectedTailscaleDeviceID) { _, deviceID in
+            updateCompactDetailPath(hasSelection: deviceID != nil)
+        }
+        .onChange(of: compactNavigationPath) { _, path in
+            if path.last != .detail {
+                clearDetailSelection()
             }
         }
     }
 
-    #if os(macOS)
-    private var macConnectionSidebar: some View {
-        List(selection: $macSelectedServerID) {
-            if serverManager.servers.isEmpty {
-                ContentUnavailableView {
-                    Label("No Connections", systemImage: "server.rack")
-                } description: {
-                    Text("Add a saved host to begin.")
-                }
-                .listRowBackground(Color.clear)
-            } else if macFilteredServers(serverManager.servers).isEmpty,
-                      quickConnectConfig == nil {
-                ContentUnavailableView.search(text: searchQuery)
-                    .listRowBackground(Color.clear)
-            }
+    private func updateCompactDetailPath(hasSelection: Bool) {
+        if hasSelection {
+            guard compactNavigationPath.last == .results else { return }
+            compactNavigationPath.append(.detail)
+        } else if compactNavigationPath.last == .detail {
+            compactNavigationPath.removeLast()
+        }
+    }
+    #endif
 
-            if let config = quickConnectConfig {
-                Section("Quick Connect") {
-                    Button {
-                        quickConnectPasswordPrompt = config
-                    } label: {
-                        Label {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Connect")
-                                Text("\(config.username)@\(config.host):\(config.port)")
-                                    .font(.caption2.monospaced())
-                                    .foregroundStyle(.secondary)
-                            }
-                        } icon: {
-                            Image(systemName: "bolt.fill")
-                                .foregroundStyle(.green)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
+    #if os(visionOS)
+    @ViewBuilder
+    private func visionLibrary(
+        connectionLibrary: ConnectionLibraryProjection
+    ) -> some View {
+        if selectedMode == .collections {
+            NavigationSplitView {
+                collectionNavigation(connectionLibrary: connectionLibrary)
+            } content: {
+                libraryResults(connectionLibrary: connectionLibrary)
+            } detail: {
+                libraryDetail(connectionLibrary: connectionLibrary)
             }
-
-            let favoriteServers = macFilteredServers(serverManager.favoriteServers)
-            if !favoriteServers.isEmpty {
-                Section("Favorites") {
-                    ForEach(favoriteServers) { server in
-                        macSavedHostSidebarItem(server)
-                    }
-                }
+        } else {
+            NavigationSplitView {
+                libraryResults(connectionLibrary: connectionLibrary)
+            } detail: {
+                libraryDetail(connectionLibrary: connectionLibrary)
             }
+        }
+    }
 
-            let recentServers = macFilteredServers(serverManager.recentServers)
-            if !recentServers.isEmpty {
-                Section("Recent") {
-                    ForEach(recentServers) { server in
-                        macSavedHostSidebarItem(server)
-                    }
-                }
-            }
-
-            let allServers = macFilteredServers(serverManager.servers)
-            if !allServers.isEmpty {
-                Section("All Connections") {
-                    ForEach(allServers) { server in
-                        macSavedHostSidebarItem(server)
-                    }
-                }
-            }
-
-            if !activeTagFilters.isEmpty {
-                Section("Filters") {
-                    ForEach(activeTagFilters, id: \.self) { tag in
-                        Button {
-                            activeTagFilters.removeAll { $0.caseInsensitiveCompare(tag) == .orderedSame }
-                        } label: {
-                            Label(tag, systemImage: "xmark.circle.fill")
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-
-            Section("Network") {
+    private func visionModeOrnament(
+        connectionLibrary: ConnectionLibraryProjection
+    ) -> some View {
+        VStack(spacing: 10) {
+            ForEach(connectionLibrary.availableModes) { mode in
                 Button {
-                    macSelectedServerID = nil
-                    macShowsTailscale = true
-                    selectedSection = .tailscale
+                    selectMode(mode, in: connectionLibrary)
                 } label: {
-                    Label("Tailscale", systemImage: "network")
-                        .foregroundStyle(ConnectionSection.tailscale.color)
+                    Image(systemName: modeSystemImage(mode))
+                        .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.plain)
+                .background(
+                    selectedMode == mode ? Color.accentColor.opacity(0.2) : Color.clear,
+                    in: .circle
+                )
+                .accessibilityLabel(mode.title)
+                .accessibilityIdentifier("connection-library-mode-\(mode.rawValue)")
+                .accessibilityAddTraits(selectedMode == mode ? .isSelected : [])
+            }
+
+            Divider()
+
+            Button {
+                showSettings()
+            } label: {
+                Image(systemName: "gearshape")
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Settings")
+            .accessibilityIdentifier("connection-library-settings")
+        }
+        .padding(10)
+    }
+    #endif
+
+    private func libraryNavigation(
+        connectionLibrary: ConnectionLibraryProjection
+    ) -> some View {
+        List {
+            Section("Library") {
+                libraryNavigationButton(
+                    mode: .library,
+                    scope: .allConnections,
+                    count: connectionLibrary.itemCount(in: .allConnections)
+                )
+                libraryNavigationButton(
+                    mode: .favorites,
+                    scope: .favorites,
+                    count: connectionLibrary.itemCount(in: .favorites)
+                )
+                libraryNavigationButton(
+                    mode: .recent,
+                    scope: .recent,
+                    count: connectionLibrary.itemCount(in: .recent)
+                )
+            }
+
+            if !connectionLibrary.collections.isEmpty {
+                Section("Collections") {
+                    ForEach(connectionLibrary.collections) { collection in
+                        libraryNavigationButton(
+                            mode: .collections,
+                            scope: .collection(collection.id),
+                            title: collection.name,
+                            count: collection.count
+                        )
+                    }
+                }
+            }
+
+            Section("Workgroups") {
+                libraryNavigationButton(
+                    mode: .workgroups,
+                    scope: .workgroups,
+                    count: connectionLibrary.workgroups.count
+                )
+            }
+
+            if connectionLibrary.networkIsConfigured {
+                Section("Network") {
+                    libraryNavigationButton(
+                        mode: .network,
+                        scope: .network,
+                        title: "Tailscale",
+                        count: tailscaleClient.devices.count
+                    )
+                }
+            }
+
+            Section {
+                Button {
+                    showSettings()
+                } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
+                .accessibilityIdentifier("connection-library-settings")
             }
         }
+        .accessibilityIdentifier("connection-library-navigation")
         .listStyle(.sidebar)
         .navigationTitle("Connections")
-        .navigationSplitViewColumnWidth(min: 230, ideal: 280, max: 360)
-        .onChange(of: macSelectedServerID) { _, serverID in
-            if serverID != nil {
-                macShowsTailscale = false
-                selectedSection = .all
-            }
-        }
+        .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             HStack(spacing: 8) {
+                #if os(macOS)
+                Button("Local Terminal", systemImage: "apple.terminal") {
+                    openLocalTerminal()
+                }
+                #endif
+                #if os(iOS)
+                if iOSRouter.resumableWorkgroupID(in: sessionManager) != nil {
+                    Button("Return to Terminal", systemImage: "arrow.uturn.backward.circle") {
+                        resumeMostRecentTerminal()
+                    }
+                    .accessibilityIdentifier("connection-library-return-to-terminal")
+                }
+                #endif
                 Button("Add Server", systemImage: "plus") {
                     showingAddServer = true
                 }
-
-                Menu {
-                    layoutMenuItems
-                } label: {
-                    Label("Workgroups", systemImage: "rectangle.3.group")
-                }
-
+                .accessibilityIdentifier("connection-library-add-server-sidebar")
                 Spacer(minLength: 0)
             }
             .controlSize(.small)
@@ -408,171 +514,741 @@ struct ConnectionManagerView: View {
         }
     }
 
-    private var macConnectionDetail: some View {
-        Group {
-            if macShowsTailscale {
-                tailscaleDetailView
-            } else if let server = macSelectedServer {
-                VStack(spacing: 0) {
-                    Form {
-                        Section("Connection") {
-                            LabeledContent("Host", value: "\(server.host):\(server.port)")
-                            LabeledContent("User", value: server.username)
-                            LabeledContent("Authentication", value: server.authMethod.displayName)
-                        }
-
-                        Section("Activity") {
-                            LabeledContent(
-                                "Status",
-                                value: sessionForServer(server)?.state.displayName ?? "Disconnected"
-                            )
-                            LabeledContent(
-                                "Last Connected",
-                                value: server.lastConnected.map {
-                                    relativeDateFormatter.localizedString(for: $0, relativeTo: Date())
-                                } ?? "Never"
-                            )
-                        }
-
-                        if !server.tags.isEmpty {
-                            Section("Tags") {
-                                Text(server.tags.joined(separator: ", "))
-                            }
-                        }
-                    }
-                    .formStyle(.grouped)
-
-                    HStack {
-                        Button("Details", systemImage: "info.circle") {
-                            viewingServer = server
-                        }
-                        Button("Edit", systemImage: "pencil") {
-                            editingServer = server
-                        }
-                        Spacer()
-                        Button("Connect", systemImage: "terminal") {
-                            connectToServer(server)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .keyboardShortcut(.defaultAction)
-                    }
-                    .padding()
-                    .background(.bar)
-                }
+    private func collectionNavigation(
+        connectionLibrary: ConnectionLibraryProjection
+    ) -> some View {
+        List {
+            if connectionLibrary.collections.isEmpty {
+                ContentUnavailableView(
+                    "No Collections",
+                    systemImage: "folder",
+                    description: Text("Add a tag to a saved connection to create a collection.")
+                )
             } else {
-                ContentUnavailableView {
-                    Label("Select a Connection", systemImage: "server.rack")
-                } description: {
-                    Text("Choose a saved host in the sidebar, or add a new connection.")
-                } actions: {
-                    Button("Local Terminal", systemImage: "apple.terminal") {
-                        openLocalTerminal()
-                    }
-                    Button("Add Server", systemImage: "plus") {
-                        showingAddServer = true
-                    }
+                ForEach(connectionLibrary.collections) { collection in
+                    libraryNavigationButton(
+                        mode: .collections,
+                        scope: .collection(collection.id),
+                        title: collection.name,
+                        count: collection.count
+                    )
                 }
             }
         }
+        .navigationTitle("Collections")
     }
 
-    private var macSelectedServer: ServerConfiguration? {
-        guard let macSelectedServerID else { return nil }
-        return serverManager.server(for: macSelectedServerID)
+    private func libraryNavigationButton(
+        mode: ConnectionLibraryMode,
+        scope: ConnectionLibraryScope,
+        title: String? = nil,
+        count: Int
+    ) -> some View {
+        Button {
+            selectedMode = mode
+            selectedScope = scope
+            clearLibrarySelection()
+            #if os(iOS)
+            if horizontalSizeClass == .compact {
+                compactNavigationPath.append(.results)
+            }
+            #endif
+        } label: {
+            HStack {
+                Label(title ?? mode.title, systemImage: modeSystemImage(mode))
+                Spacer()
+                Text(count, format: .number)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("connection-library-scope-\(scope.id)")
+        .listRowBackground(
+            selectedMode == mode && selectedScope == scope
+                ? Color.accentColor.opacity(0.16)
+                : Color.clear
+        )
+        .accessibilityAddTraits(
+            selectedMode == mode && selectedScope == scope ? .isSelected : []
+        )
     }
 
     @ViewBuilder
-    private func macSavedHostSidebarItem(_ server: ServerConfiguration) -> some View {
-        macSavedHostRow(server)
-            .tag(server.id)
-            .contentShape(Rectangle())
-            .onTapGesture(count: 2) {
-                macSelectedServerID = server.id
-                connectToServer(server)
-            }
-            .contextMenu {
-                Button("Connect", systemImage: "terminal") {
-                    connectToServer(server)
-                }
-                Button("Details", systemImage: "info.circle") {
-                    viewingServer = server
-                }
-                Button("Edit", systemImage: "pencil") {
-                    editingServer = server
-                }
-                Button(
-                    server.isFavorite ? "Remove from Favorites" : "Add to Favorites",
-                    systemImage: server.isFavorite ? "heart.slash" : "heart"
-                ) {
-                    serverManager.toggleFavorite(server)
-                }
-                Divider()
-                Button("Delete", systemImage: "trash", role: .destructive) {
-                    serverPendingDeletion = server
-                }
-            }
+    private func libraryResults(
+        connectionLibrary: ConnectionLibraryProjection
+    ) -> some View {
+        switch selectedMode {
+        case .workgroups:
+            workgroupResults(connectionLibrary: connectionLibrary)
+        case .network:
+            tailscaleDetailView
+                .navigationTitle("Tailscale")
+        case .library, .favorites, .recent, .collections:
+            connectionResults(connectionLibrary: connectionLibrary)
+        }
     }
 
-    private func macFilteredServers(_ servers: [ServerConfiguration]) -> [ServerConfiguration] {
-        var result = servers
-        if !activeTagFilters.isEmpty {
-            let active = Set(activeTagFilters.map { $0.lowercased() })
-            result = result.filter { server in
-                !active.isDisjoint(with: Set(server.tags.map { $0.lowercased() }))
-            }
-        }
-
-        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !query.isEmpty {
-            result = result.filter {
-                $0.name.localizedCaseInsensitiveContains(query)
-                    || $0.host.localizedCaseInsensitiveContains(query)
-                    || $0.username.localizedCaseInsensitiveContains(query)
-                    || $0.tags.contains { $0.localizedCaseInsensitiveContains(query) }
-            }
-        }
-        return result
-    }
-
-    private func macSavedHostRow(_ server: ServerConfiguration) -> some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(server.colorTag.color)
-                .frame(width: 7, height: 7)
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 5) {
-                    Text(server.name)
-                        .font(.callout.weight(.medium))
-                        .lineLimit(1)
-                    if server.isFavorite {
-                        Image(systemName: "heart.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.pink)
+    private func connectionResults(
+        connectionLibrary: ConnectionLibraryProjection
+    ) -> some View {
+        let servers = visibleServers(in: connectionLibrary)
+        return List(selection: $selectedServerID) {
+            if let config = quickConnectConfig {
+                Section("Quick Connect") {
+                    Button {
+                        quickConnectPasswordPrompt = config
+                    } label: {
+                        Label(
+                            "Connect to \(config.username)@\(config.host):\(config.port)",
+                            systemImage: "bolt.fill"
+                        )
                     }
                 }
-                Text("\(server.username)@\(server.host):\(server.port)")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
             }
-            Spacer(minLength: 0)
-            if let session = sessionForServer(server) {
-                Circle()
-                    .fill(session.state.color)
-                    .frame(width: 6, height: 6)
-                    .accessibilityLabel(session.state.displayName)
+
+            if servers.isEmpty, quickConnectConfig == nil {
+                if searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    ContentUnavailableView {
+                        Label("No Connections", systemImage: "server.rack")
+                    } description: {
+                        Text("Add a saved host to begin.")
+                    } actions: {
+                        #if os(macOS)
+                        Button("Local Terminal", systemImage: "apple.terminal") {
+                            openLocalTerminal()
+                        }
+                        #endif
+                        Button("Add Server", systemImage: "plus") {
+                            showingAddServer = true
+                        }
+                        .accessibilityIdentifier("connection-library-add-server-empty-results")
+                    }
+                    .accessibilityIdentifier("connection-library-empty-results")
+                } else {
+                    ContentUnavailableView.search(text: searchQuery)
+                }
+            } else {
+                ForEach(servers) { server in
+                    ServerListRow(
+                        server: server,
+                        session: sessionForServer(server),
+                        onView: { viewingServer = server },
+                        onEdit: { editingServer = server },
+                        onDelete: { serverPendingDeletion = server },
+                        onToggleFavorite: { serverManager.toggleFavorite(server) }
+                    )
+                    .tag(server.id)
+                    .accessibilityIdentifier(
+                        "connection-library-server-\(server.id.uuidString.lowercased())"
+                    )
+                    .contentShape(Rectangle())
+                    #if os(macOS)
+                    .onTapGesture(count: 2) {
+                        selectedServerID = server.id
+                        connectToServer(server)
+                    }
+                    #elseif os(iOS)
+                    .onTapGesture {
+                        selectedServerID = server.id
+                    }
+                    #endif
+                }
             }
         }
-        .padding(.vertical, 2)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(server.name), \(server.username) at \(server.host)")
-        .accessibilityHint("Double-click to connect")
+        .accessibilityIdentifier("connection-library-results-connections")
+        .navigationTitle(resultTitle(connectionLibrary: connectionLibrary))
+        .searchable(text: $searchQuery, prompt: "Search connections...")
+        .onSubmit(of: .search) {
+            if let config = quickConnectConfig {
+                quickConnectPasswordPrompt = config
+            }
+        }
+        .onChange(of: servers.map(\.id)) { _, visibleIDs in
+            if let selectedServerID, !visibleIDs.contains(selectedServerID) {
+                self.selectedServerID = nil
+            }
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button {
+                    showingAddServer = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel("Add connection")
+                .accessibilityIdentifier("connection-library-add-server-results")
+
+                #if os(macOS)
+                Button {
+                    openLocalTerminal()
+                } label: {
+                    Image(systemName: "apple.terminal")
+                }
+                .accessibilityLabel("Local terminal")
+                #endif
+            }
+        }
     }
-    #endif
-    
-    private var availableTags: [String] {
-        Array(Set(serverManager.servers.flatMap { $0.tags })).sorted()
+
+    private func workgroupResults(
+        connectionLibrary: ConnectionLibraryProjection
+    ) -> some View {
+        let presets = connectionLibrary.workgroups(matching: searchQuery)
+        let liveWorkgroups = matchingLiveWorkgroups(searchQuery)
+        let visibleSelections = liveWorkgroups.map { ConnectionWorkgroupSelection.live($0.id) }
+            + presets.map { ConnectionWorkgroupSelection.preset($0.id) }
+        return List(selection: $selectedWorkgroupSelection) {
+            if liveWorkgroups.isEmpty, presets.isEmpty {
+                ContentUnavailableView(
+                    searchQuery.isEmpty ? "No Workgroups" : "No Matching Workgroups",
+                    systemImage: "rectangle.stack",
+                    description: Text(
+                        searchQuery.isEmpty
+                            ? "Create a reusable command-per-tab terminal workspace."
+                            : "Try a different search."
+                        )
+                )
+            }
+
+            #if os(iOS)
+            if !liveWorkgroups.isEmpty {
+                Section("Live Terminals") {
+                    ForEach(Array(liveWorkgroups.reversed())) { workgroup in
+                        HStack(spacing: 10) {
+                            Circle()
+                                .fill(workgroup.colorTag.color)
+                                .frame(width: 10, height: 10)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(workgroup.name)
+                                    .font(.headline)
+                                Text("\(liveSessions(in: workgroup).count) live tabs")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "waveform.path.ecg")
+                                .foregroundStyle(.green)
+                                .accessibilityHidden(true)
+                        }
+                        .tag(ConnectionWorkgroupSelection.live(workgroup.id))
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            selectedWorkgroupSelection = .live(workgroup.id)
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel(
+                            "\(workgroup.name), \(liveSessions(in: workgroup).count) live tabs"
+                        )
+                        .accessibilityHint("Select to inspect this live terminal workgroup")
+                        .accessibilityIdentifier(
+                            "connection-library-live-workgroup-\(workgroup.id.uuidString.lowercased())"
+                        )
+                        .contextMenu {
+                            Button("Resume", systemImage: "arrow.uturn.backward.circle") {
+                                resumeLiveWorkgroup(workgroup.id)
+                            }
+                        }
+                    }
+                }
+            }
+            #endif
+
+            if !presets.isEmpty {
+                Section("Saved Workgroups") {
+                    ForEach(presets) { preset in
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(preset.colorTag.color)
+                            .frame(width: 10, height: 10)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(preset.name)
+                                .font(.headline)
+                            Text("\(preset.sessionIntents.count) tabs")
+                                .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+                    .tag(ConnectionWorkgroupSelection.preset(preset.id))
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(
+                        "\(preset.name), \(preset.sessionIntents.count) tabs"
+                    )
+                    .accessibilityHint("Select to show workgroup details")
+                    .accessibilityIdentifier(
+                        "connection-library-workgroup-\(preset.id.uuidString.lowercased())"
+                    )
+                    #if os(iOS)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        selectedWorkgroupSelection = .preset(preset.id)
+                    }
+                    #endif
+                    .contextMenu {
+                        Button("Open", systemImage: "rectangle.stack") {
+                            openWorkgroup(preset)
+                        }
+                        Button("Edit", systemImage: "pencil") {
+                            workgroupEditorContext = .edit(preset)
+                        }
+                        Button("Duplicate", systemImage: "plus.square.on.square") {
+                            workgroupEditorContext = .duplicate(preset)
+                        }
+                        Divider()
+                        Button("Delete", systemImage: "trash", role: .destructive) {
+                            settingsManager.deleteLayoutPreset(preset)
+                        }
+                    }
+                }
+                }
+            }
+        }
+        .accessibilityIdentifier("connection-library-results-workgroups")
+        .navigationTitle("Workgroups")
+        .searchable(text: $searchQuery, prompt: "Search workgroups...")
+        .onChange(of: visibleSelections) { _, visibleSelections in
+            if let selectedWorkgroupSelection,
+               !visibleSelections.contains(selectedWorkgroupSelection) {
+                self.selectedWorkgroupSelection = nil
+            }
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button {
+                    editCurrentSessionsAsWorkgroup()
+                } label: {
+                    Image(systemName: "rectangle.stack.badge.plus")
+                }
+                .disabled(currentSavedSessionIntents.isEmpty)
+                .accessibilityLabel("Save current SSH sessions as workgroup")
+                .accessibilityIdentifier("connection-library-save-current-workgroup")
+
+                Button {
+                    workgroupEditorContext = .new()
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel("New workgroup")
+                .accessibilityIdentifier("connection-library-add-workgroup")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func libraryDetail(
+        connectionLibrary: ConnectionLibraryProjection
+    ) -> some View {
+        switch selectedMode {
+        case .workgroups:
+            workgroupDetail(connectionLibrary: connectionLibrary)
+        case .network:
+            tailscaleDeviceDetail
+        case .library, .favorites, .recent, .collections:
+            serverDetail(connectionLibrary: connectionLibrary)
+        }
+    }
+
+    @ViewBuilder
+    private func serverDetail(
+        connectionLibrary: ConnectionLibraryProjection
+    ) -> some View {
+        if let server = selectedServer(in: connectionLibrary) {
+            VStack(spacing: 0) {
+                Form {
+                    Section("Connection") {
+                        LabeledContent("Host", value: "\(server.host):\(server.port)")
+                        LabeledContent("User", value: server.username)
+                        LabeledContent("Authentication", value: server.authMethod.displayName)
+                    }
+                    Section("Activity") {
+                        LabeledContent(
+                            "Status",
+                            value: sessionForServer(server)?.state.displayName ?? "Disconnected"
+                        )
+                        LabeledContent(
+                            "Last Connected",
+                            value: server.lastConnected.map {
+                                relativeDateFormatter.localizedString(for: $0, relativeTo: Date())
+                            } ?? "Never"
+                        )
+                    }
+                    if !server.tags.isEmpty {
+                        Section("Collections") {
+                            Text(server.tags.joined(separator: ", "))
+                        }
+                    }
+                }
+                .formStyle(.grouped)
+
+                HStack {
+                    Button("Details", systemImage: "info.circle") {
+                        viewingServer = server
+                    }
+                    Button("Edit", systemImage: "pencil") {
+                        editingServer = server
+                    }
+                    Spacer()
+                    Button("Connect", systemImage: "terminal") {
+                        connectToServer(server)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier(
+                        "connection-library-connect-server-\(server.id.uuidString.lowercased())"
+                    )
+                }
+                .padding()
+                .background(.bar)
+            }
+            .navigationTitle(server.name)
+            .accessibilityIdentifier(
+                "connection-library-detail-server-\(server.id.uuidString.lowercased())"
+            )
+        } else {
+            ContentUnavailableView {
+                Label("Select a Connection", systemImage: "server.rack")
+            } description: {
+                Text("Choose a saved host to inspect it without connecting.")
+            } actions: {
+                #if os(macOS)
+                Button("Local Terminal", systemImage: "apple.terminal") {
+                    openLocalTerminal()
+                }
+                #endif
+                Button("Add Server", systemImage: "plus") {
+                    showingAddServer = true
+                }
+                .accessibilityIdentifier("connection-library-add-server-empty-detail")
+            }
+            .accessibilityIdentifier("connection-library-detail-empty-server")
+        }
+    }
+
+    @ViewBuilder
+    private func workgroupDetail(
+        connectionLibrary: ConnectionLibraryProjection
+    ) -> some View {
+        if let workgroup = selectedLiveWorkgroup {
+            let sessions = liveSessions(in: workgroup)
+            VStack(spacing: 0) {
+                List {
+                    Section("Live Workgroup") {
+                        LabeledContent("Name", value: workgroup.name)
+                        LabeledContent("Live Tabs", value: "\(sessions.count)")
+                    }
+                    Section("Tabs") {
+                        ForEach(sessions) { session in
+                            let isSelected = session.id == workgroup.selectedSessionID
+                            HStack(spacing: 10) {
+                                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(session.server.name)
+                                        .font(.headline)
+                                    Text("\(session.server.username)@\(session.server.host):\(session.server.port)")
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(session.state.displayName)
+                                    .font(.caption)
+                                    .foregroundStyle(session.state.color)
+                            }
+                        }
+                    }
+                }
+                HStack {
+                    Spacer()
+                    #if os(iOS)
+                    Button("Resume Terminal", systemImage: "arrow.uturn.backward.circle") {
+                        resumeLiveWorkgroup(workgroup.id)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier(
+                        "connection-library-resume-workgroup-\(workgroup.id.uuidString.lowercased())"
+                    )
+                    #endif
+                }
+                .padding()
+                .background(.bar)
+            }
+            .navigationTitle(workgroup.name)
+            .accessibilityIdentifier(
+                "connection-library-detail-live-workgroup-\(workgroup.id.uuidString.lowercased())"
+            )
+        } else if let preset = selectedWorkgroup(in: connectionLibrary) {
+            VStack(spacing: 0) {
+                List {
+                    Section("Workgroup") {
+                        LabeledContent("Name", value: preset.name)
+                        LabeledContent("Tabs", value: "\(preset.sessionIntents.count)")
+                    }
+                    Section("Ordered Tabs") {
+                        ForEach(Array(preset.sessionIntents.enumerated()), id: \.offset) { index, intent in
+                            HStack {
+                                Text("\(index + 1)")
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                                Image(systemName: intent.kind == .local ? "apple.terminal" : "network")
+                                VStack(alignment: .leading) {
+                                    Text(intent.label ?? defaultIntentLabel(intent))
+                                    if intent.startupCommand != nil {
+                                        Label("Runs startup command", systemImage: "checkmark.shield")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                HStack {
+                    Button("Edit", systemImage: "pencil") {
+                        workgroupEditorContext = .edit(preset)
+                    }
+                    Spacer()
+                    Button("Open Workgroup", systemImage: "rectangle.stack") {
+                        openWorkgroup(preset)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier(
+                        "connection-library-open-workgroup-\(preset.id.uuidString.lowercased())"
+                    )
+                }
+                .padding()
+                .background(.bar)
+            }
+            .navigationTitle(preset.name)
+            .accessibilityIdentifier(
+                "connection-library-detail-workgroup-\(preset.id.uuidString.lowercased())"
+            )
+        } else {
+            ContentUnavailableView {
+                Label("Select a Workgroup", systemImage: "rectangle.stack")
+            } description: {
+                Text("Workgroups open one configured command per terminal tab.")
+            } actions: {
+                Button("New Workgroup", systemImage: "plus") {
+                    workgroupEditorContext = .new()
+                }
+                .accessibilityIdentifier("connection-library-add-workgroup-empty-detail")
+            }
+            .accessibilityIdentifier("connection-library-detail-empty-workgroup")
+        }
+    }
+
+    @ViewBuilder
+    private var tailscaleDeviceDetail: some View {
+        if let device = selectedTailscaleDevice {
+            let savedServer = savedServer(for: device)
+            VStack(spacing: 0) {
+                Form {
+                    Section("Device") {
+                        LabeledContent("Name", value: device.hostname)
+                        LabeledContent("Address", value: device.sshAddress)
+                        LabeledContent("Operating System", value: device.os)
+                        if !device.user.isEmpty {
+                            LabeledContent("Owner", value: device.user)
+                        }
+                    }
+                    Section("Library") {
+                        LabeledContent("Saved Connection", value: savedServer?.name ?? "Not imported")
+                    }
+                }
+                HStack {
+                    if let savedServer {
+                        Button("Edit", systemImage: "pencil") {
+                            editingServer = savedServer
+                        }
+                        Spacer()
+                        Button("Connect", systemImage: "terminal") {
+                            connectToServer(savedServer)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier(
+                            "connection-library-connect-tailscale-\(device.id)"
+                        )
+                    } else {
+                        Button("Import", systemImage: "square.and.arrow.down") {
+                            importTailscaleDevice(device)
+                        }
+                        .accessibilityIdentifier(
+                            "connection-library-import-tailscale-\(device.id)"
+                        )
+                        Spacer()
+                        Button("Connect", systemImage: "terminal") {
+                            tailscaleUsernamePromptDevice = device
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier(
+                            "connection-library-connect-tailscale-\(device.id)"
+                        )
+                    }
+                }
+                .padding()
+                .background(.bar)
+            }
+            .navigationTitle(device.hostname)
+            .accessibilityIdentifier("connection-library-detail-tailscale-\(device.id)")
+        } else {
+            ContentUnavailableView(
+                "Select a Tailscale Device",
+                systemImage: "network",
+                description: Text("Choose a device to connect or save it in the Library.")
+            )
+            .accessibilityIdentifier("connection-library-detail-empty-tailscale")
+        }
+    }
+
+    private func selectMode(
+        _ mode: ConnectionLibraryMode,
+        in connectionLibrary: ConnectionLibraryProjection
+    ) {
+        selectedMode = mode
+        if let firstScope = connectionLibrary.scopes(for: mode).first {
+            selectedScope = firstScope
+        } else if mode == .collections {
+            // Empty collection IDs are impossible after tag normalization, so
+            // this transient scope renders an honest empty result set instead
+            // of leaking the previously selected mode's connections.
+            selectedScope = .collection("")
+        }
+        clearLibrarySelection()
+        searchQuery = ""
+    }
+
+    private func clearLibrarySelection() {
+        clearDetailSelection()
+        #if os(iOS)
+        compactNavigationPath.removeAll()
+        #endif
+    }
+
+    private func clearDetailSelection() {
+        selectedServerID = nil
+        selectedWorkgroupSelection = nil
+        selectedTailscaleDeviceID = nil
+    }
+
+    private func showTerminalChooser(
+        in connectionLibrary: ConnectionLibraryProjection
+    ) {
+        selectMode(.library, in: connectionLibrary)
+    }
+
+    private func modeSystemImage(_ mode: ConnectionLibraryMode) -> String {
+        switch mode {
+        case .library: return "server.rack"
+        case .favorites: return "heart.fill"
+        case .recent: return "clock.fill"
+        case .collections: return "folder.fill"
+        case .workgroups: return "rectangle.stack.fill"
+        case .network: return "network"
+        }
+    }
+
+    private func resultTitle(
+        connectionLibrary: ConnectionLibraryProjection
+    ) -> String {
+        switch selectedScope {
+        case .allConnections: return "All Connections"
+        case .favorites: return "Favorites"
+        case .recent: return "Recent"
+        case .collection(let id):
+            return connectionLibrary.collections.first(where: { $0.id == id })?.name ?? "Collection"
+        case .workgroups: return "Workgroups"
+        case .network: return "Network"
+        }
+    }
+
+    private func visibleServers(
+        in connectionLibrary: ConnectionLibraryProjection
+    ) -> [ServerConfiguration] {
+        connectionLibrary.servers(
+            in: selectedScope,
+            searchQuery: searchQuery
+        )
+    }
+
+    private func selectedServer(
+        in connectionLibrary: ConnectionLibraryProjection
+    ) -> ServerConfiguration? {
+        guard let resolvedServerID = connectionLibrary.resolvedSelection(
+            preferredServerID: selectedServerID,
+            in: selectedScope,
+            searchQuery: searchQuery
+        ) else {
+            return nil
+        }
+        return connectionLibrary.servers.first(where: { $0.id == resolvedServerID })
+    }
+
+    private func selectedWorkgroup(
+        in connectionLibrary: ConnectionLibraryProjection
+    ) -> LayoutPreset? {
+        guard case .preset(let selectedWorkgroupID) = selectedWorkgroupSelection else {
+            return nil
+        }
+        return connectionLibrary.workgroups.first(where: { $0.id == selectedWorkgroupID })
+    }
+
+    private var selectedLiveWorkgroup: TerminalWorkgroup? {
+        #if os(iOS)
+        guard case .live(let selectedWorkgroupID) = selectedWorkgroupSelection else {
+            return nil
+        }
+        return iOSRouter.liveWorkgroups(in: sessionManager).first {
+            $0.id == selectedWorkgroupID
+        }
+        #else
+        return nil
+        #endif
+    }
+
+    private func liveSessions(in workgroup: TerminalWorkgroup) -> [TerminalSession] {
+        workgroup.sessionIDs.compactMap { sessionManager.session(for: $0) }
+    }
+
+    private func matchingLiveWorkgroups(_ query: String) -> [TerminalWorkgroup] {
+        #if os(iOS)
+        let workgroups = iOSRouter.liveWorkgroups(in: sessionManager)
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedQuery.isEmpty else { return workgroups }
+        return workgroups.filter { workgroup in
+            if workgroup.name.localizedCaseInsensitiveContains(normalizedQuery) {
+                return true
+            }
+            return liveSessions(in: workgroup).contains { session in
+                session.server.name.localizedCaseInsensitiveContains(normalizedQuery)
+                    || session.server.host.localizedCaseInsensitiveContains(normalizedQuery)
+                    || session.server.username.localizedCaseInsensitiveContains(normalizedQuery)
+            }
+        }
+        #else
+        return []
+        #endif
+    }
+
+    private var selectedTailscaleDevice: TailscaleDevice? {
+        guard let selectedTailscaleDeviceID else { return nil }
+        return tailscaleClient.devices.first(where: { $0.id == selectedTailscaleDeviceID })
+    }
+
+    private func savedServer(for device: TailscaleDevice) -> ServerConfiguration? {
+        serverManager.servers.first {
+            $0.provenance?.provider == .tailscale
+                && $0.provenance?.externalID == device.id
+        }
+    }
+
+    private func defaultIntentLabel(_ intent: LayoutPreset.SessionIntent) -> String {
+        if intent.kind == .local { return "Local Terminal" }
+        guard let serverID = intent.serverID,
+              let server = serverManager.server(for: serverID) else {
+            return "Missing Connection"
+        }
+        return server.name
     }
 
     private var quickConnectConfig: ServerConfiguration? {
@@ -606,76 +1282,8 @@ struct ConnectionManagerView: View {
         )
     }
 
-    // MARK: - Detail View
-
-    @ViewBuilder
-    private var detailView: some View {
-        if selectedSection == .tailscale {
-            tailscaleDetailView
-        } else {
-            serverListDetailView
-        }
-    }
-
-    private var serverListDetailView: some View {
-        VStack(spacing: 0) {
-            if !activeTagFilters.isEmpty {
-                activeTagFilterBar
-            }
-
-            List {
-                if let config = quickConnectConfig {
-                    Section {
-                        HStack(spacing: 12) {
-                            Image(systemName: "bolt.fill")
-                                .foregroundStyle(.green)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Quick Connect")
-                                    .font(.subheadline.weight(.semibold))
-                                Text("\(config.username)@\(config.host):\(config.port)")
-                                    .font(.caption.monospaced())
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Image(systemName: "arrow.right.circle.fill")
-                                .foregroundStyle(.green)
-                        }
-                        .padding(.vertical, 4)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            quickConnectPasswordPrompt = config
-                        }
-                    }
-                }
-
-                ForEach(filteredServers) { server in
-                    ServerListRow(
-                        server: server,
-                        session: sessionForServer(server),
-                        onView: {
-                            viewingServer = server
-                        },
-                        onEdit: {
-                            editingServer = server
-                        },
-                        onDelete: {
-                            serverPendingDeletion = server
-                        },
-                        onToggleFavorite: {
-                            serverManager.toggleFavorite(server)
-                        }
-                    )
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        connectToServer(server)
-                    }
-                }
-            }
-        }
-    }
-
     private var tailscaleDetailView: some View {
-        List {
+        List(selection: $selectedTailscaleDeviceID) {
             if tailscaleClient.isLoading {
                 HStack {
                     Spacer()
@@ -711,19 +1319,39 @@ struct ConnectionManagerView: View {
                 Section("Devices (\(tailscaleClient.devices.count))") {
                     ForEach(tailscaleClient.devices) { device in
                         TailscaleDeviceRow(device: device)
+                            .tag(device.id)
                             .contentShape(Rectangle())
+                            #if os(iOS)
                             .onTapGesture {
-                                tailscaleUsernamePromptDevice = device
+                                selectedTailscaleDeviceID = device.id
                             }
+                            #endif
+                            .accessibilityIdentifier(
+                                "connection-library-tailscale-\(device.id)"
+                            )
                             .contextMenu {
-                                Button {
-                                    importTailscaleDevice(device)
-                                } label: {
-                                    Label("Import as Server", systemImage: "square.and.arrow.down")
+                                if savedServer(for: device) == nil {
+                                    Button {
+                                        importTailscaleDevice(device)
+                                    } label: {
+                                        Label("Import as Server", systemImage: "square.and.arrow.down")
+                                    }
                                 }
                             }
                     }
                 }
+            }
+        }
+        .accessibilityIdentifier("connection-library-results-network")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showingAddServer = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel("Add connection")
+                .accessibilityIdentifier("connection-library-add-server-network")
             }
         }
         .task {
@@ -822,115 +1450,32 @@ struct ConnectionManagerView: View {
     }
 
     private func importTailscaleDevice(_ device: TailscaleDevice) {
-        let config = ServerConfiguration(
+        guard savedServer(for: device) == nil else { return }
+        guard let draft = Self.tailscaleImportDraft(for: device) else {
+            connectionFailureMessage = "This Tailscale device has an invalid identity and was not imported."
+            return
+        }
+        tailscaleImportDraft = draft
+    }
+
+    static func tailscaleImportDraft(for device: TailscaleDevice) -> ServerConfiguration? {
+        guard let provenance = ServerConnectionProvenance(
+            provider: .tailscale,
+            externalID: device.id
+        ) else { return nil }
+        let importedTags = ["tailscale"] + device.tags.filter { $0 != "tailscale" }
+        return ServerConfiguration(
             name: device.hostname,
             host: device.sshAddress,
             port: 22,
             username: "",
-            tags: ["tailscale"]
+            tags: importedTags,
+            provenance: provenance
         )
-        serverManager.addServer(config)
     }
 
-    private var activeTagFilterBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(activeTagFilters, id: \.self) { tag in
-                    HStack(spacing: 6) {
-                        Text(tag)
-                        Button {
-                            activeTagFilters.removeAll { $0 == tag }
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .frame(minWidth: 44, minHeight: 44)
-                        .contentShape(Circle())
-                        .accessibilityLabel("Remove \(tag) filter")
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 12)
-                    .background(.regularMaterial, in: .capsule)
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel("Tag filter: \(tag)")
-                    .accessibilityAddTraits(.isButton)
-                }
-
-                Button("Clear") {
-                    activeTagFilters.removeAll()
-                }
-                .buttonStyle(.bordered)
-                .accessibilityLabel("Clear all tag filters")
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-        }
-        .background(.bar)
-    }
-
-    private var filteredServers: [ServerConfiguration] {
-        let servers: [ServerConfiguration]
-        
-        switch selectedSection {
-        case .favorites:
-            servers = serverManager.favoriteServers
-        case .all:
-            servers = serverManager.servers
-        case .tags:
-            servers = serverManager.servers.filter { !$0.tags.isEmpty }
-        case .recent:
-            servers = serverManager.recentServers
-        case .tailscale:
-            servers = []
-        case .tag(let tag):
-            servers = serverManager.servers.filter { $0.tags.contains(tag) }
-        }
-
-        var result = servers
-
-        if !activeTagFilters.isEmpty {
-            let active = Set(activeTagFilters.map { $0.lowercased() })
-            result = result.filter { server in
-                !active.isDisjoint(with: Set(server.tags.map { $0.lowercased() }))
-            }
-        }
-
-        if !searchQuery.isEmpty {
-            result = result.filter {
-                $0.name.localizedCaseInsensitiveContains(searchQuery) ||
-                $0.host.localizedCaseInsensitiveContains(searchQuery) ||
-                $0.username.localizedCaseInsensitiveContains(searchQuery)
-            }
-        }
-
-        return result
-    }
-
-    private var sortedSections: [ConnectionSection] {
-        ConnectionSection.allCases.sorted {
-            $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
-        }
-    }
-
-    private func handleSearchSubmission() {
-        if let config = quickConnectConfig {
-            quickConnectPasswordPrompt = config
-        } else {
-            applySearchAsTagFilterIfPossible()
-        }
-    }
-
-    private func applySearchAsTagFilterIfPossible() {
-        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return }
-        guard let matchedTag = availableTags.first(where: { $0.caseInsensitiveCompare(query) == .orderedSame }) else {
-            return
-        }
-        if !activeTagFilters.contains(where: { $0.caseInsensitiveCompare(matchedTag) == .orderedSame }) {
-            activeTagFilters.append(matchedTag)
-        }
-        searchQuery = ""
+    private func refreshTailscaleConfiguration() {
+        tailscaleIsConfigured = TailscaleClient.hasConfiguredCredentials()
     }
 
     private func sessionForServer(_ server: ServerConfiguration) -> TerminalSession? {
@@ -945,6 +1490,33 @@ struct ConnectionManagerView: View {
     }
     #endif
 
+    private func showSettings() {
+        #if os(iOS)
+        iOSRouter.showSettings()
+        #else
+        openWindow(id: "settings")
+        #endif
+    }
+
+    #if os(iOS)
+    private func resumeMostRecentTerminal() {
+        guard iOSRouter.resumeMostRecentTerminal(in: sessionManager) else {
+            connectionFailureMessage = "The terminal workgroup is no longer available."
+            return
+        }
+    }
+
+    private func resumeLiveWorkgroup(_ workgroupID: UUID) {
+        guard iOSRouter.resumeTerminal(
+            workgroupID: workgroupID,
+            in: sessionManager
+        ) else {
+            connectionFailureMessage = "The terminal workgroup is no longer available."
+            return
+        }
+    }
+    #endif
+
     private func presentTerminalWindow(for session: TerminalSession) {
         #if os(visionOS)
         let workgroupID = sessionManager.createWorkgroup(
@@ -952,14 +1524,32 @@ struct ConnectionManagerView: View {
             colorTag: session.server.colorTag
         )
         guard sessionManager.appendSession(session, toWorkgroup: workgroupID) else {
+            sessionManager.closeSession(session)
             sessionManager.discardWorkgroupIfEmpty(workgroupID)
             connectionFailureMessage = "The terminal could not be added to its workgroup."
             return
         }
         openWindow(id: "terminal", value: workgroupID)
-        dismissWindow(id: "main")
+        #elseif os(iOS)
+        let workgroupID = sessionManager.createWorkgroup(
+            name: session.server.name,
+            colorTag: session.server.colorTag
+        )
+        guard sessionManager.appendSession(session, toWorkgroup: workgroupID) else {
+            sessionManager.closeSession(session)
+            sessionManager.discardWorkgroupIfEmpty(workgroupID)
+            connectionFailureMessage = "The terminal could not be added to its workgroup."
+            return
+        }
+        iOSRouter.showTerminal(workgroupID: workgroupID)
         #else
-        openWindow(id: "terminal", value: session.id)
+        openWindow(
+            id: "workspace",
+            value: MacLiveSessionWorkspaceRouter.launchRequest(
+                for: session,
+                sessionManager: sessionManager
+            )
+        )
         #endif
     }
     
@@ -971,6 +1561,15 @@ struct ConnectionManagerView: View {
             pendingLegacyAlgorithmServer = server
             return
         }
+
+        #if os(macOS)
+        openWindow(
+            id: "workspace",
+            value: MacWorkspaceLaunchRequest(
+                initialPaneIntent: .ssh(serverID: server.id)
+            )
+        )
+        #else
 
         Task { @MainActor in
             let launch: AuthorizedSessionLaunch
@@ -1003,6 +1602,7 @@ struct ConnectionManagerView: View {
                 sessionManager.closeSession(session)
             }
         }
+        #endif
     }
 
     private var trustPromptBinding: Binding<Bool> {
@@ -1171,14 +1771,14 @@ struct ConnectionManagerView: View {
             preset: preset,
             availableServers: serverManager.servers
         )
-        #if os(visionOS)
+        #if os(visionOS) || os(iOS)
         openVisionWorkgroup(preset, plan: restorationPlan)
         #else
         openMacWorkgroup(preset, plan: restorationPlan)
         #endif
     }
 
-    #if os(visionOS)
+    #if os(visionOS) || os(iOS)
     private func openVisionWorkgroup(_ preset: LayoutPreset, plan: LayoutRestorationPlan) {
         Task { @MainActor in
             let workgroupID = sessionManager.createWorkgroup(
@@ -1228,8 +1828,11 @@ struct ConnectionManagerView: View {
 
             if let firstSessionID = appendedSessionIDs.first {
                 sessionManager.selectSession(firstSessionID, inWorkgroup: workgroupID)
+                #if os(visionOS)
                 openWindow(id: "terminal", value: workgroupID)
-                dismissWindow(id: "main")
+                #else
+                iOSRouter.showTerminal(workgroupID: workgroupID)
+                #endif
             } else {
                 sessionManager.discardWorkgroupIfEmpty(workgroupID)
             }
@@ -1526,7 +2129,10 @@ private struct WorkgroupEditorView: View {
                 } header: {
                     Text("Ordered Tabs")
                 } footer: {
-                    Text(validationMessage ?? "Startup commands run once, only after the terminal is connected and host trust succeeds.")
+                    Text(
+                        validationMessage
+                            ?? "Startup commands are saved unencrypted in app preferences. Do not include passwords, tokens, or other secrets. Commands run once, only after the terminal is connected and host trust succeeds."
+                    )
                         .foregroundStyle(validationMessage == nil ? Color.secondary : Color.red)
                 }
             }
@@ -1638,81 +2244,26 @@ private struct ServerListRow: View {
         return String(raw.prefix(127)) + "…"
     }
 
+    private var selectionHint: String {
+        #if os(macOS)
+        "Select to show connection details; double-click to connect"
+        #else
+        "Select to show connection details"
+        #endif
+    }
+
     var body: some View {
-        HStack(spacing: 16) {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(server.colorTag.color)
-                    .frame(width: 10, height: 10)
-
-                Text(server.name)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-
-                if server.isFavorite {
-                    Image(systemName: "heart.fill")
-                        .font(.caption)
-                        .foregroundStyle(.pink)
-                        .accessibilityLabel("Favorite")
-                }
-            }
-            .frame(minWidth: 180, alignment: .leading)
-
-            Text(displayConnection)
-                .font(.subheadline.monospaced())
-                .lineLimit(shouldTruncateConnection ? 1 : 2)
-                .truncationMode(.tail)
-                .minimumScaleFactor(shouldTruncateConnection ? 0.82 : 1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            Image(systemName: server.authMethod.icon)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .frame(width: 24, alignment: .center)
-                .accessibilityLabel(server.authMethod.displayName)
-
-            Group {
-                if let lastConnected = server.lastConnected {
-                    Text(lastConnected, formatter: relativeDateFormatter)
-                } else {
-                    Text("Never")
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .frame(width: 90, alignment: .leading)
-
-            Menu {
-                Button {
-                    onView()
-                } label: {
-                    Label("View", systemImage: "eye")
-                }
-
-                Button {
-                    onEdit()
-                } label: {
-                    Label("Edit", systemImage: "pencil")
-                }
-
-                Divider()
-
-                Button(role: .destructive) {
-                    onDelete()
-                } label: {
-                    Label("Delete", systemImage: "trash")
-                }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.title3)
-            }
-            .frame(width: 32, alignment: .trailing)
-            .accessibilityLabel("Actions for \(server.name)")
+        Group {
+            #if os(iOS)
+            compactContent
+            #else
+            wideContent
+            #endif
         }
         .padding(.vertical, 4)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("\(server.name), \(server.username) at \(server.host), \(server.authMethod.displayName)")
-        .accessibilityHint("Double tap to connect")
+        .accessibilityHint(selectionHint)
         .contextMenu {
             Button {
                 onToggleFavorite()
@@ -1722,6 +2273,9 @@ private struct ServerListRow: View {
                     systemImage: server.isFavorite ? "heart.slash" : "heart"
                 )
             }
+            .accessibilityIdentifier(
+                "connection-library-favorite-server-\(server.id.uuidString.lowercased())"
+            )
 
             Button {
                 onView()
@@ -1743,6 +2297,135 @@ private struct ServerListRow: View {
                 Label("Delete", systemImage: "trash")
             }
         }
+    }
+
+    #if os(iOS)
+    private var compactContent: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(server.colorTag.color)
+                .frame(width: 10, height: 10)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    serverName
+                    favoriteIndicator
+                }
+
+                Text(displayConnection)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Image(systemName: server.authMethod.icon)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel(server.authMethod.displayName)
+
+            lastConnectedLabel
+                .lineLimit(1)
+
+            actionsMenu
+        }
+    }
+    #endif
+
+    private var wideContent: some View {
+        HStack(spacing: 16) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(server.colorTag.color)
+                    .frame(width: 10, height: 10)
+
+                serverName
+                favoriteIndicator
+            }
+            .frame(minWidth: 180, alignment: .leading)
+
+            Text(displayConnection)
+                .font(.subheadline.monospaced())
+                .lineLimit(shouldTruncateConnection ? 1 : 2)
+                .truncationMode(.tail)
+                .minimumScaleFactor(shouldTruncateConnection ? 0.82 : 1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Image(systemName: server.authMethod.icon)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .frame(width: 24, alignment: .center)
+                .accessibilityLabel(server.authMethod.displayName)
+
+            lastConnectedLabel
+                .frame(width: 90, alignment: .leading)
+
+            actionsMenu
+                .frame(width: 32, alignment: .trailing)
+        }
+    }
+
+    private var serverName: some View {
+        Text(server.name)
+            .font(.subheadline.weight(.semibold))
+            .lineLimit(1)
+            .accessibilityIdentifier(
+                "connection-library-server-name-\(server.id.uuidString.lowercased())"
+            )
+    }
+
+    @ViewBuilder
+    private var favoriteIndicator: some View {
+        if server.isFavorite {
+            Image(systemName: "heart.fill")
+                .font(.caption)
+                .foregroundStyle(.pink)
+                .accessibilityLabel("Favorite")
+        }
+    }
+
+    private var lastConnectedLabel: some View {
+        Group {
+            if let lastConnected = server.lastConnected {
+                Text(lastConnected, formatter: relativeDateFormatter)
+            } else {
+                Text("Never")
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+
+    private var actionsMenu: some View {
+        Menu {
+            Button {
+                onView()
+            } label: {
+                Label("View", systemImage: "eye")
+            }
+
+            Button {
+                onEdit()
+            } label: {
+                Label("Edit", systemImage: "pencil")
+            }
+
+            Divider()
+
+            Button(role: .destructive) {
+                onDelete()
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.title3)
+        }
+        .accessibilityLabel("Actions for \(server.name)")
+        .accessibilityIdentifier(
+            "connection-library-actions-server-\(server.id.uuidString.lowercased())"
+        )
     }
 }
 
@@ -1850,66 +2533,6 @@ private struct ServerInfoView: View {
     }
 }
 
-// MARK: - Connection Section
-
-enum ConnectionSection: Hashable, Identifiable, CaseIterable {
-    case favorites
-    case all
-    case tags
-    case recent
-    case tailscale
-    case tag(String)
-
-    var id: String {
-        switch self {
-        case .favorites: return "favorites"
-        case .all: return "all"
-        case .tags: return "tags"
-        case .recent: return "recent"
-        case .tailscale: return "tailscale"
-        case .tag(let tag): return "tag-\(tag)"
-        }
-    }
-
-    var title: String {
-        switch self {
-        case .favorites: return "Favorites"
-        case .all: return "All Servers"
-        case .tags: return "Tags"
-        case .recent: return "Recent"
-        case .tailscale: return "Tailscale"
-        case .tag(let tag): return tag
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .favorites: return "heart.fill"
-        case .all: return "server.rack"
-        case .tags: return "tag"
-        case .recent: return "clock.fill"
-        case .tailscale: return "network"
-        case .tag: return "tag.fill"
-        }
-    }
-
-    var color: Color {
-        switch self {
-        case .favorites: return .pink
-        case .all: return .blue
-        case .tags: return .orange
-        case .recent: return .purple
-        case .tailscale: return .cyan
-        case .tag: return .orange
-        }
-    }
-
-    static var allCases: [ConnectionSection] {
-        [.favorites, .all, .tags, .recent, .tailscale]
-    }
-
-}
-
 // MARK: - Tailscale Device Row
 
 private struct TailscaleDeviceRow: View {
@@ -1948,7 +2571,7 @@ private struct TailscaleDeviceRow: View {
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(device.hostname), \(device.os), \(device.user)")
-        .accessibilityHint("Double tap to connect via SSH")
+        .accessibilityHint("Select to show connection details")
     }
 }
 

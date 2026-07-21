@@ -64,6 +64,47 @@ enum AuthenticationMethod: String, Codable, CaseIterable {
 
 // MARK: - Server Configuration
 
+struct ServerConnectionProvenance: Codable, Hashable, Sendable {
+    enum Provider: String, Codable, Hashable, Sendable {
+        case tailscale
+    }
+
+    static let maximumExternalIDLength = 256
+
+    let provider: Provider
+    let externalID: String
+
+    init?(provider: Provider, externalID: String) {
+        let normalizedID = externalID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedID.isEmpty,
+              normalizedID.count <= Self.maximumExternalIDLength,
+              !normalizedID.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            return nil
+        }
+        self.provider = provider
+        self.externalID = normalizedID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case provider
+        case externalID
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let provider = try container.decode(Provider.self, forKey: .provider)
+        let externalID = try container.decode(String.self, forKey: .externalID)
+        guard let validated = Self(provider: provider, externalID: externalID) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .externalID,
+                in: container,
+                debugDescription: "Connection provenance external identifier is invalid."
+            )
+        }
+        self = validated
+    }
+}
+
 struct ServerConfiguration: Identifiable, Codable, Hashable {
     let id: UUID
     var name: String
@@ -79,6 +120,7 @@ struct ServerConfiguration: Identifiable, Codable, Hashable {
     let dateAdded: Date
     var lastConnected: Date?
     var tags: [String]
+    var provenance: ServerConnectionProvenance?
     var jumpHostID: UUID?
     var jumpHostIDs: [UUID]?
 
@@ -114,6 +156,7 @@ struct ServerConfiguration: Identifiable, Codable, Hashable {
         isFavorite: Bool = false,
         colorTag: ServerColorTag = .blue,
         tags: [String] = [],
+        provenance: ServerConnectionProvenance? = nil,
         jumpHostID: UUID? = nil,
         jumpHostIDs: [UUID]? = nil
     ) {
@@ -131,6 +174,7 @@ struct ServerConfiguration: Identifiable, Codable, Hashable {
         self.dateAdded = Date()
         self.lastConnected = nil
         self.tags = tags
+        self.provenance = provenance
         self.jumpHostID = jumpHostID
         self.jumpHostIDs = jumpHostIDs
 

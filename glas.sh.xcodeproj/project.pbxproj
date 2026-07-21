@@ -26,6 +26,20 @@
 			remoteGlobalIDString = 4C24514F2E71897700F37CC4;
 			remoteInfo = glas.sh;
 		};
+		DD0000010000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4C2451482E71897700F37CC4 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 4C24514F2E71897700F37CC4;
+			remoteInfo = glas.sh;
+		};
+		EE0000010000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4C2451482E71897700F37CC4 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BB0000010000000000000040;
+			remoteInfo = "glas.sh Mac";
+		};
 		AA00000100000000000000A0 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 4C2451482E71897700F37CC4 /* Project object */;
@@ -60,6 +74,8 @@
 		4C2451502E71897700F37CC4 /* glas.sh.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = glas.sh.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4C2451542E71897700F37CC4 /* RealityKitContent */ = {isa = PBXFileReference; lastKnownFileType = wrapper; path = RealityKitContent; sourceTree = "<group>"; };
 		4C2451622E71897900F37CC4 /* glas.shTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = glas.shTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		DD0000010000000000000002 /* glas.shUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = glas.shUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		EE0000010000000000000002 /* glas.sh-macUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "glas.sh-macUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA000001000000000000000E /* glasWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = glasWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		BB0000010000000000000010 /* glas.sh.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = glas.sh.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		CC0000010000000000000002 /* glas.sh-macTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "glas.sh-macTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -135,6 +151,11 @@
 			path = "glas.sh-macTests";
 			sourceTree = "<group>";
 		};
+		DD0000010000000000000003 /* glas.shUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = glas.shUITests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -181,6 +202,20 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		DD0000010000000000000004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EE0000010000000000000004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -193,6 +228,7 @@
 				4C2451532E71897700F37CC4 /* Packages */,
 				AA00000100000000000000A2 /* glasWidgets */,
 				4C2451652E71897900F37CC4 /* glas.shTests */,
+				DD0000010000000000000003 /* glas.shUITests */,
 				4C2451512E71897700F37CC4 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -202,6 +238,8 @@
 			children = (
 				4C2451502E71897700F37CC4 /* glas.sh.app */,
 				4C2451622E71897900F37CC4 /* glas.shTests.xctest */,
+				DD0000010000000000000002 /* glas.shUITests.xctest */,
+				EE0000010000000000000002 /* glas.sh-macUITests.xctest */,
 				AA000001000000000000000E /* glasWidgets.appex */,
 				BB0000010000000000000010 /* glas.sh.app */,
 				CC0000010000000000000002 /* glas.sh-macTests.xctest */,
@@ -343,6 +381,52 @@
 			productReference = CC0000010000000000000002 /* glas.sh-macTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		DD0000010000000000000005 /* glas.shUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DD000001000000000000000B /* Build configuration list for PBXNativeTarget "glas.shUITests" */;
+			buildPhases = (
+				DD0000010000000000000006 /* Sources */,
+				DD0000010000000000000004 /* Frameworks */,
+				DD0000010000000000000007 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				DD0000010000000000000008 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				DD0000010000000000000003 /* glas.shUITests */,
+			);
+			name = glas.shUITests;
+			packageProductDependencies = (
+			);
+			productName = glas.shUITests;
+			productReference = DD0000010000000000000002 /* glas.shUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		EE0000010000000000000005 /* glas.sh-macUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = EE000001000000000000000B /* Build configuration list for PBXNativeTarget "glas.sh-macUITests" */;
+			buildPhases = (
+				EE0000010000000000000006 /* Sources */,
+				EE0000010000000000000004 /* Frameworks */,
+				EE0000010000000000000007 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				EE0000010000000000000008 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				DD0000010000000000000003 /* glas.shUITests */,
+			);
+			name = "glas.sh-macUITests";
+			packageProductDependencies = (
+			);
+			productName = "glas.sh-macUITests";
+			productReference = EE0000010000000000000002 /* glas.sh-macUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -367,6 +451,14 @@
 						CreatedOnToolsVersion = 27.0;
 					};
 					CC0000010000000000000005 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = BB0000010000000000000040;
+					};
+					DD0000010000000000000005 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = 4C24514F2E71897700F37CC4;
+					};
+					EE0000010000000000000005 = {
 						CreatedOnToolsVersion = 27.0;
 						TestTargetID = BB0000010000000000000040;
 					};
@@ -395,6 +487,8 @@
 				AA00000100000000000000A3 /* glasWidgets */,
 				BB0000010000000000000040 /* glas.sh Mac */,
 				CC0000010000000000000005 /* glas.sh-macTests */,
+				DD0000010000000000000005 /* glas.shUITests */,
+				EE0000010000000000000005 /* glas.sh-macUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -429,6 +523,20 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		CC0000010000000000000007 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DD0000010000000000000007 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EE0000010000000000000007 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -473,6 +581,20 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		DD0000010000000000000006 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EE0000010000000000000006 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -490,6 +612,16 @@
 			isa = PBXTargetDependency;
 			target = BB0000010000000000000040 /* glas.sh Mac */;
 			targetProxy = CC0000010000000000000001 /* PBXContainerItemProxy */;
+		};
+		DD0000010000000000000008 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 4C24514F2E71897700F37CC4 /* glas.sh */;
+			targetProxy = DD0000010000000000000001 /* PBXContainerItemProxy */;
+		};
+		EE0000010000000000000008 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BB0000010000000000000040 /* glas.sh Mac */;
+			targetProxy = EE0000010000000000000001 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -514,13 +646,17 @@
 				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = 7;
+				"TARGETED_DEVICE_FAMILY[sdk=iphoneos*]" = "1,2";
+				"TARGETED_DEVICE_FAMILY[sdk=iphonesimulator*]" = "1,2";
+				"TARGETED_DEVICE_FAMILY[sdk=xros*]" = 7;
+				"TARGETED_DEVICE_FAMILY[sdk=xrsimulator*]" = 7;
 			};
 			name = Debug;
 		};
@@ -544,13 +680,17 @@
 				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = 7;
+				"TARGETED_DEVICE_FAMILY[sdk=iphoneos*]" = "1,2";
+				"TARGETED_DEVICE_FAMILY[sdk=iphonesimulator*]" = "1,2";
+				"TARGETED_DEVICE_FAMILY[sdk=xros*]" = 7;
+				"TARGETED_DEVICE_FAMILY[sdk=xrsimulator*]" = 7;
 			};
 			name = Release;
 		};
@@ -612,7 +752,6 @@
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
-				SDKROOT = xros;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				XROS_DEPLOYMENT_TARGET = 26.0;
@@ -670,7 +809,6 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
-				SDKROOT = xros;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				VALIDATE_PRODUCT = YES;
 				XROS_DEPLOYMENT_TARGET = 26.0;
@@ -689,12 +827,16 @@
 				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.appTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = 7;
+				"TARGETED_DEVICE_FAMILY[sdk=iphoneos*]" = "1,2";
+				"TARGETED_DEVICE_FAMILY[sdk=iphonesimulator*]" = "1,2";
+				"TARGETED_DEVICE_FAMILY[sdk=xros*]" = 7;
+				"TARGETED_DEVICE_FAMILY[sdk=xrsimulator*]" = 7;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/glas.sh.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/glas.sh";
 				XROS_DEPLOYMENT_TARGET = 26.0;
 			};
@@ -712,12 +854,16 @@
 				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.appTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = 7;
+				"TARGETED_DEVICE_FAMILY[sdk=iphoneos*]" = "1,2";
+				"TARGETED_DEVICE_FAMILY[sdk=iphonesimulator*]" = "1,2";
+				"TARGETED_DEVICE_FAMILY[sdk=xros*]" = 7;
+				"TARGETED_DEVICE_FAMILY[sdk=xrsimulator*]" = 7;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/glas.sh.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/glas.sh";
 				XROS_DEPLOYMENT_TARGET = 26.0;
 			};
@@ -743,11 +889,15 @@
 				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.app.glasWidgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = 7;
+				"TARGETED_DEVICE_FAMILY[sdk=iphoneos*]" = "1,2";
+				"TARGETED_DEVICE_FAMILY[sdk=iphonesimulator*]" = "1,2";
+				"TARGETED_DEVICE_FAMILY[sdk=xros*]" = 7;
+				"TARGETED_DEVICE_FAMILY[sdk=xrsimulator*]" = 7;
 				XROS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = Debug;
@@ -772,11 +922,15 @@
 				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.app.glasWidgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = 7;
+				"TARGETED_DEVICE_FAMILY[sdk=iphoneos*]" = "1,2";
+				"TARGETED_DEVICE_FAMILY[sdk=iphonesimulator*]" = "1,2";
+				"TARGETED_DEVICE_FAMILY[sdk=xros*]" = 7;
+				"TARGETED_DEVICE_FAMILY[sdk=xrsimulator*]" = 7;
 				XROS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = Release;
@@ -894,6 +1048,100 @@
 			};
 			name = Release;
 		};
+		DD0000010000000000000009 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.appUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+				"TARGETED_DEVICE_FAMILY[sdk=iphoneos*]" = "1,2";
+				"TARGETED_DEVICE_FAMILY[sdk=iphonesimulator*]" = "1,2";
+				"TARGETED_DEVICE_FAMILY[sdk=xros*]" = 7;
+				"TARGETED_DEVICE_FAMILY[sdk=xrsimulator*]" = 7;
+				TEST_TARGET_NAME = glas.sh;
+				XROS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Debug;
+		};
+		DD000001000000000000000A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.appUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+				"TARGETED_DEVICE_FAMILY[sdk=iphoneos*]" = "1,2";
+				"TARGETED_DEVICE_FAMILY[sdk=iphonesimulator*]" = "1,2";
+				"TARGETED_DEVICE_FAMILY[sdk=xros*]" = 7;
+				"TARGETED_DEVICE_FAMILY[sdk=xrsimulator*]" = 7;
+				TEST_TARGET_NAME = glas.sh;
+				XROS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Release;
+		};
+		EE0000010000000000000009 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.macUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+				TEST_TARGET_NAME = "glas.sh Mac";
+			};
+			name = Debug;
+		};
+		EE000001000000000000000A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.macUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+				TEST_TARGET_NAME = "glas.sh Mac";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -947,6 +1195,24 @@
 			buildConfigurations = (
 				CC000001000000000000000A /* Debug */,
 				CC000001000000000000000B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		DD000001000000000000000B /* Build configuration list for PBXNativeTarget "glas.shUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DD0000010000000000000009 /* Debug */,
+				DD000001000000000000000A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		EE000001000000000000000B /* Build configuration list for PBXNativeTarget "glas.sh-macUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EE0000010000000000000009 /* Debug */,
+				EE000001000000000000000A /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

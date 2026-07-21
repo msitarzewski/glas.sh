@@ -1,5 +1,14 @@
 # Progress
 
+- Connection Library release approved (2026-07-21):
+  - Added one deterministic transient projection for saved profiles, Favorites, Recent, normalized tag Collections, workgroup recipes, selection, filtering, and optional configured Network data.
+  - Added native visionOS ornament hierarchy, Apple Silicon macOS/iPadOS three-column shells, and compact iPhone navigation through the existing primary app architecture.
+  - Routed saved SSH, Local Terminal, workgroups, tabs, settings, and SFTP through existing managers and scene boundaries; removed duplicate connection sections and obsolete helper projections.
+  - Preserved true terminal transparency, independent tint/opacity/blur/material controls, ANSI rendering, themes, tabs, multiwindow behavior, and workgroups.
+  - Final QA: iOS 27 211/211; visionOS 26.4 208/208; visionOS 27 208/208; Apple Silicon macOS 27 32/32; GlasSecretStore 76; NIOSSH 331; Citadel executed 44 with 39 passed and five environment skips; RealityKitContent build; all exact-current-tree Release builds passed.
+  - Direct Mac/iPhone/iPad smokes and physical Vision Pro signed build/install passed. Xcode UI-runner finalization and CoreDevice launch/render capture remain explicitly approved tooling limitations, not claimed passes.
+  - Final diff, project/scheme, marker, orphan-symbol, and secret scans pass.
+
 - Native macOS/visionOS parity candidate approved (2026-07-19):
   - Added the native Apple Silicon/macOS 26+ shell with local PTY and SSH terminals, multiwindow workspaces, tabs/splits, focused menus, secure keyboard entry, native material chrome, and a packaged Dock icon.
   - Preserved physical Vision Pro rendering and the defining independent tint/opacity/blur controls, including true full transparency and ANSI colors composited above the terminal glass.

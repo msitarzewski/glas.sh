@@ -18,6 +18,7 @@ final class MacWorkspaceController {
 
     private let defaults: UserDefaults
     private let startupCommandBroker: MacStartupCommandBroker
+    private let liveSessionBroker: MacLiveSessionBroker
     private var startupTicketIDsByPaneID: [UUID: UUID] = [:]
     private var lifecycleGeneration: UInt64 = 0
 
@@ -33,6 +34,7 @@ final class MacWorkspaceController {
     ) {
         self.defaults = defaults
         self.startupCommandBroker = .shared
+        self.liveSessionBroker = .shared
         self.workgroupID = nil
         self.workgroupName = nil
         self.workgroupColor = nil
@@ -48,10 +50,12 @@ final class MacWorkspaceController {
     init(
         request: MacWorkspaceLaunchRequest,
         startupCommandBroker: MacStartupCommandBroker = .shared,
+        liveSessionBroker: MacLiveSessionBroker = .shared,
         defaults: UserDefaults = .standard
     ) {
         self.defaults = defaults
         self.startupCommandBroker = startupCommandBroker
+        self.liveSessionBroker = liveSessionBroker
         self.workgroupID = request.workgroupID
         self.workgroupName = request.workgroupName
         self.workgroupColor = request.workgroupColor
@@ -69,6 +73,24 @@ final class MacWorkspaceController {
             startupTicketIDsByPaneID[paneID] = ticketID
         } else if let ticketID = request.startupTicketID {
             startupCommandBroker.discard(ticketID)
+        }
+        if !loaded.hadRestorationData,
+           let paneID = loaded.state.focusedPaneID,
+           let pane = loaded.state.root?.pane(id: paneID),
+           let ticketID = request.liveSessionTicketID {
+            if let ticket = liveSessionBroker.claim(ticketID) {
+                if pane.intent.kind == .ssh,
+                   pane.intent.serverID == ticket.session.server.id {
+                    sessionsByPaneID[paneID] = ticket.session
+                } else {
+                    ticket.discard()
+                    errorsByPaneID[paneID] = "The prepared terminal session did not match its launch request."
+                }
+            } else {
+                errorsByPaneID[paneID] = "The prepared terminal session expired before its window opened."
+            }
+        } else if let ticketID = request.liveSessionTicketID {
+            liveSessionBroker.discard(ticketID)
         }
     }
 

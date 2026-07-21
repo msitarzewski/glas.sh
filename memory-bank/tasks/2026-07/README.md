@@ -25,3 +25,11 @@
 - Reused the existing theme, per-session transparency/blur/tint, and forwarding views without introducing duplicate settings state.
 - Verified 27/27 macOS tests, the complete serial visionOS suite, both Release builds, and clean diff/stub/secret scans.
 - See: [200726_terminal-settings-section-recovery.md](./200726_terminal-settings-section-recovery.md)
+
+### 2026-07-21: Connection Library release completion
+- Completed one deterministic connection/workgroup projection and native Connection Library shells across visionOS, Apple Silicon macOS, iPadOS, and iOS.
+- Preserved authoritative profile, credential, host-trust, session, workgroup, terminal appearance, and ANSI rendering systems; no parallel product core or persisted collection store was introduced.
+- Removed replaced navigation branches and obsolete favorites/recents helper projections.
+- Verified 211/211 iOS 27, 208/208 on both visionOS 26.4 and 27, and 32/32 macOS 27 tests; all current Release builds and touched package gates passed.
+- Direct Mac/iPhone/iPad smokes, physical Vision Pro signed build/install, final marker/orphan scans, and Gitleaks passed. Approved Apple beta-tooling limitations are recorded in the release program.
+- See: [210726_connection-library-release.md](./210726_connection-library-release.md)

@@ -38,3 +38,6 @@
 {"timestamp":"2026-07-20T16:49:16Z","session_id":"codex-terminal-settings-navigation","event":"state_transition","from":"APPROVAL","to":"APPLY"}
 {"timestamp":"2026-07-20T16:49:16Z","session_id":"codex-terminal-settings-navigation","event":"state_transition","from":"APPLY","to":"DOCS"}
 {"timestamp":"2026-07-20T16:49:16Z","session_id":"codex-terminal-settings-navigation","event":"documentation_complete","task":"memory-bank/tasks/2026-07/200726_terminal-settings-section-recovery.md"}
+{"timestamp":"2026-07-20T23:50:00Z","session_id":"codex-connection-library","mode":"deep","mb_version":"2024-10"}
+{"timestamp":"2026-07-21T00:11:43Z","session_id":"codex-connection-library","event":"checkpoint_merged","pull_request":28,"merge_commit":"f3f00c3bb9a2b15b9efb46f30f65b11a9f415735","source_branch":"agent/macos-27-terminal"}
+{"timestamp":"2026-07-21T00:12:00Z","session_id":"codex-connection-library","event":"state_transition","from":"PLAN","to":"BUILD","branch":"agent/connection-library","release":"memory-bank/releases/connection-library/README.md"}

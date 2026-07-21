@@ -229,7 +229,7 @@ struct MacWorkspaceRestorationState: Identifiable, Codable, Hashable, Sendable {
         guard paneIDs.count <= Self.maximumPaneCount else {
             throw MacWorkspaceStateError.tooManyPanes
         }
-        guard focusedPaneID == nil || paneIDs.contains(focusedPaneID!) else {
+        if let focusedPaneID, !paneIDs.contains(focusedPaneID) {
             throw MacWorkspaceStateError.invalidFocus
         }
         return self
@@ -277,6 +277,9 @@ struct MacWorkspaceLaunchRequest: Codable, Hashable, Sendable {
     /// An opaque lookup key for runtime-only command data. The command itself
     /// is deliberately absent from this Codable launch request.
     let startupTicketID: UUID?
+    /// An opaque lookup key for a runtime-only session that was authenticated
+    /// before its workspace opened. Live session state is never Codable.
+    let liveSessionTicketID: UUID?
 
     init(
         workspaceID: UUID = UUID(),
@@ -286,7 +289,8 @@ struct MacWorkspaceLaunchRequest: Codable, Hashable, Sendable {
         workgroupName: String? = nil,
         workgroupColor: ServerColorTag? = nil,
         tabLabel: String? = nil,
-        startupTicketID: UUID? = nil
+        startupTicketID: UUID? = nil,
+        liveSessionTicketID: UUID? = nil
     ) {
         self.workspaceID = workspaceID
         self.startsEmpty = startsEmpty
@@ -296,6 +300,7 @@ struct MacWorkspaceLaunchRequest: Codable, Hashable, Sendable {
         self.workgroupColor = workgroupColor
         self.tabLabel = Self.normalizedDisplayText(tabLabel)
         self.startupTicketID = startupTicketID
+        self.liveSessionTicketID = liveSessionTicketID
     }
 
     init(from decoder: Decoder) throws {
@@ -317,6 +322,7 @@ struct MacWorkspaceLaunchRequest: Codable, Hashable, Sendable {
             try container.decodeIfPresent(String.self, forKey: .tabLabel)
         )
         startupTicketID = try container.decodeIfPresent(UUID.self, forKey: .startupTicketID)
+        liveSessionTicketID = try container.decodeIfPresent(UUID.self, forKey: .liveSessionTicketID)
     }
 
     private static func normalizedDisplayText(_ value: String?) -> String? {
@@ -346,35 +352,156 @@ struct MacWorkgroupLaunchItem: Hashable, Sendable {
 final class MacStartupCommandBroker {
     static let shared = MacStartupCommandBroker()
     static let defaultCapacity = 64
+    static let defaultExpiration: Duration = .seconds(60)
 
-    private let capacity: Int
-    private var ticketsByID: [UUID: TerminalStartupCommandTicket] = [:]
-    private var insertionOrder: [UUID] = []
-
-    init(capacity: Int = defaultCapacity) {
-        self.capacity = max(1, capacity)
+    private struct Entry {
+        let ticket: TerminalStartupCommandTicket
+        let expirationTask: Task<Void, Never>
     }
 
-    var pendingCount: Int { ticketsByID.count }
+    private let capacity: Int
+    private let expiration: Duration
+    private var entriesByID: [UUID: Entry] = [:]
+    private var insertionOrder: [UUID] = []
+
+    init(
+        capacity: Int = defaultCapacity,
+        expiration: Duration = defaultExpiration
+    ) {
+        self.capacity = max(1, capacity)
+        self.expiration = max(.milliseconds(1), expiration)
+    }
+
+    var pendingCount: Int { entriesByID.count }
 
     func issue(command: String?) -> UUID? {
         guard let ticket = TerminalStartupCommandTicket(command: command) else { return nil }
-        while ticketsByID.count >= capacity, let oldest = insertionOrder.first {
-            insertionOrder.removeFirst()
-            ticketsByID.removeValue(forKey: oldest)
+        while entriesByID.count >= capacity, let oldest = insertionOrder.first {
+            discard(oldest)
         }
-        ticketsByID[ticket.id] = ticket
+        let id = ticket.id
+        let expirationTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: self?.expiration ?? .zero)
+            } catch {
+                return
+            }
+            self?.discard(id)
+        }
+        entriesByID[id] = Entry(ticket: ticket, expirationTask: expirationTask)
         insertionOrder.append(ticket.id)
         return ticket.id
     }
 
     func claim(_ id: UUID) -> TerminalStartupCommandTicket? {
         insertionOrder.removeAll { $0 == id }
-        return ticketsByID.removeValue(forKey: id)
+        guard let entry = entriesByID.removeValue(forKey: id) else { return nil }
+        entry.expirationTask.cancel()
+        return entry.ticket
     }
 
     func discard(_ id: UUID) {
         _ = claim(id)
+    }
+}
+
+/// A single-use, runtime-only rendezvous for sessions authenticated before a
+/// macOS workspace opens. The request carries only the opaque ticket UUID.
+/// Abandoned tickets are bounded and close their sessions when evicted.
+@MainActor
+final class MacLiveSessionBroker {
+    struct Ticket {
+        let session: TerminalSession
+        private let discardHandler: @MainActor () -> Void
+
+        init(
+            session: TerminalSession,
+            discardHandler: @escaping @MainActor () -> Void
+        ) {
+            self.session = session
+            self.discardHandler = discardHandler
+        }
+
+        func discard() {
+            discardHandler()
+        }
+    }
+
+    static let shared = MacLiveSessionBroker()
+    static let defaultCapacity = 32
+    static let defaultExpiration: Duration = .seconds(60)
+
+    private struct Entry {
+        let ticket: Ticket
+        let expirationTask: Task<Void, Never>
+    }
+
+    private let capacity: Int
+    private let expiration: Duration
+    private var entriesByID: [UUID: Entry] = [:]
+    private var insertionOrder: [UUID] = []
+
+    init(
+        capacity: Int = defaultCapacity,
+        expiration: Duration = defaultExpiration
+    ) {
+        self.capacity = max(1, capacity)
+        self.expiration = max(.milliseconds(1), expiration)
+    }
+
+    var pendingCount: Int { entriesByID.count }
+
+    func issue(
+        session: TerminalSession,
+        discardHandler: @escaping @MainActor () -> Void
+    ) -> UUID {
+        while entriesByID.count >= capacity, let oldest = insertionOrder.first {
+            discard(oldest)
+        }
+        let id = UUID()
+        let expirationTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: self?.expiration ?? .zero)
+            } catch {
+                return
+            }
+            self?.discard(id)
+        }
+        entriesByID[id] = Entry(
+            ticket: Ticket(session: session, discardHandler: discardHandler),
+            expirationTask: expirationTask
+        )
+        insertionOrder.append(id)
+        return id
+    }
+
+    func claim(_ id: UUID) -> Ticket? {
+        insertionOrder.removeAll { $0 == id }
+        guard let entry = entriesByID.removeValue(forKey: id) else { return nil }
+        entry.expirationTask.cancel()
+        return entry.ticket
+    }
+
+    func discard(_ id: UUID) {
+        claim(id)?.discard()
+    }
+}
+
+@MainActor
+enum MacLiveSessionWorkspaceRouter {
+    static func launchRequest(
+        for session: TerminalSession,
+        sessionManager: SessionManager,
+        broker: MacLiveSessionBroker = .shared
+    ) -> MacWorkspaceLaunchRequest {
+        let ticketID = broker.issue(session: session) { [weak sessionManager, weak session] in
+            guard let sessionManager, let session else { return }
+            sessionManager.closeSession(session)
+        }
+        return MacWorkspaceLaunchRequest(
+            initialPaneIntent: .ssh(serverID: session.server.id),
+            liveSessionTicketID: ticketID
+        )
     }
 }
 

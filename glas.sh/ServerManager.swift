@@ -181,6 +181,7 @@ class ServerManager {
                 // wrong persisted type. That is corruption, not an empty catalog.
                 throw ServerManagerError.invalidServerCatalog
             }
+            try Self.validateServerCatalog(loadedServers)
             servers = loadedServers
             serverCatalogLoadError = nil
             do {
@@ -280,7 +281,8 @@ class ServerManager {
     }
 
     func password(for server: ServerConfiguration) throws -> String {
-        try passwordStore.retrieve(server.id)
+        try ensureServerCatalogAvailable()
+        return try passwordStore.retrieve(server.id)
     }
 
     func server(for id: UUID) -> ServerConfiguration? {
@@ -369,19 +371,6 @@ class ServerManager {
 
         servers[index].trustedHostKeys = nil
         saveServers()
-    }
-
-    var favoriteServers: [ServerConfiguration] {
-        servers.filter { $0.isFavorite }
-            .sorted { ($0.lastConnected ?? $0.dateAdded) > ($1.lastConnected ?? $1.dateAdded) }
-    }
-
-    var recentServers: [ServerConfiguration] {
-        servers
-            .filter { $0.lastConnected != nil }
-            .sorted { $0.lastConnected! > $1.lastConnected! }
-            .prefix(10)
-            .map { $0 }
     }
 
     private enum PasswordSnapshot {
@@ -794,7 +783,11 @@ class ServerManager {
 
     private func persistServersAndVerify(_ candidateServers: [ServerConfiguration]) throws {
         try ensureServerCatalogAvailable()
+        try Self.validateServerCatalog(candidateServers)
         let data = try JSONEncoder().encode(candidateServers)
+        guard data.count <= Self.maximumServerCatalogBytes else {
+            throw ServerManagerError.invalidServerCatalog
+        }
         serverDataWriter(data)
         guard let persistedData = defaults.data(forKey: UserDefaultsKeys.servers),
               let persistedServers = try? JSONDecoder().decode([ServerConfiguration].self, from: persistedData),
@@ -802,6 +795,13 @@ class ServerManager {
             throw ServerManagerError.persistenceReadbackMismatch
         }
         defaults.set(SharedDefaults.currentSchemaVersion, forKey: SharedDefaults.schemaVersionKey)
+    }
+
+    private static func validateServerCatalog(_ candidateServers: [ServerConfiguration]) throws {
+        var serverIDs = Set<UUID>()
+        guard candidateServers.allSatisfy({ serverIDs.insert($0.id).inserted }) else {
+            throw ServerManagerError.invalidServerCatalog
+        }
     }
 
     private func ensureServerCatalogAvailable() throws {

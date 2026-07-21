@@ -61,6 +61,9 @@ struct TerminalWindowView: View {
     var onSessionRequestedClose: (() -> Void)? = nil
     @Environment(SessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
+    #if os(iOS)
+    @Environment(IOSAppRouter.self) private var iOSRouter
+    #endif
     @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
     
     @State private var searchQuery: String = ""
@@ -274,7 +277,7 @@ struct TerminalWindowView: View {
                         .glassBackgroundEffect(in: .capsule)
                 }
         }
-        #else
+        #elseif os(macOS)
         VStack(spacing: 0) {
             if !ownsSessionLifecycle {
                 connectionLabel
@@ -294,7 +297,6 @@ struct TerminalWindowView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            #if os(macOS)
             bottomStatusBar
                 .controlSize(.small)
                 .glassEffect(.regular, in: .capsule)
@@ -308,13 +310,30 @@ struct TerminalWindowView: View {
                         state: .followsWindowActiveState
                     )
                 }
-            #else
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        #else
+        VStack(spacing: 0) {
+            if !ownsSessionLifecycle {
+                connectionLabel
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.regularMaterial)
+                Divider()
+            }
+
+            terminalContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             bottomStatusBar
                 .controlSize(.small)
                 .glassEffect(.regular, in: .capsule)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
-            #endif
+                .frame(maxWidth: .infinity)
+                .background(.regularMaterial)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         #endif
@@ -514,7 +533,16 @@ struct TerminalWindowView: View {
         ZStack {
             #if os(macOS)
             macTerminalCanvasBackground
+            #elseif os(visionOS)
+            terminalDisplayBackground
+            if let tintColor = tintColor {
+                Rectangle()
+                    .fill(tintColor.opacity(0.12 * effectiveWindowOpacity))
+                    .allowsHitTesting(false)
+            }
             #else
+            // UIKit owns the terminal text surface. Keep its canvas clear and
+            // paint opacity/tint underneath so ANSI glyph colors are not composited.
             terminalDisplayBackground
             if let tintColor = tintColor {
                 Rectangle()
@@ -881,8 +909,34 @@ struct TerminalWindowView: View {
             return
         }
         openWindow(id: "terminal", value: workgroupID)
+        #elseif os(iOS)
+        let existingWorkgroupID = iOSRouter.terminalWorkgroupID
+        let workgroupID = existingWorkgroupID ?? sessionManager.createWorkgroup(
+            name: duplicatedSession.server.name,
+            colorTag: duplicatedSession.server.colorTag
+        )
+        guard sessionManager.appendSession(duplicatedSession, toWorkgroup: workgroupID) else {
+            if existingWorkgroupID == nil {
+                sessionManager.discardWorkgroupIfEmpty(workgroupID)
+            }
+            sessionManager.closeSession(duplicatedSession)
+            notificationManager.post(
+                icon: "exclamationmark.triangle",
+                title: "Duplicate Failed",
+                message: "The duplicate terminal could not be added to a workgroup.",
+                style: .error
+            )
+            return
+        }
+        iOSRouter.showTerminal(workgroupID: workgroupID)
         #else
-        openWindow(id: "terminal", value: duplicatedSession.id)
+        openWindow(
+            id: "workspace",
+            value: MacLiveSessionWorkspaceRouter.launchRequest(
+                for: duplicatedSession,
+                sessionManager: sessionManager
+            )
+        )
         #endif
     }
 
@@ -981,13 +1035,30 @@ struct TerminalWindowView: View {
             return
         }
         TerminalNewTerminalRoute.platformDefault.perform(
-            openConnections: { openWindow(id: "main") },
+            openConnections: { showConnections() },
             openMacTab: {
                 #if os(macOS)
                 openMacNewTerminalTab()
                 #endif
             }
         )
+    }
+
+    private func showConnections() {
+        #if os(iOS)
+        iOSRouter.showConnections()
+        #else
+        openWindow(id: "main")
+        #endif
+    }
+
+    private func showSFTPBrowser() {
+        #if os(iOS)
+        iOSRouter.showSFTP(sessionID: session.id)
+        #else
+        let context = SFTPBrowserContext(sessionID: session.id)
+        openWindow(id: "sftp", value: context)
+        #endif
     }
 
     private var newTerminalAccessibilityLabel: String {
@@ -999,7 +1070,7 @@ struct TerminalWindowView: View {
     // MARK: - Bottom Status
 
     private var bottomStatusBar: some View {
-        #if os(macOS)
+        #if os(macOS) || os(iOS)
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 12) {
                 bottomStatusBarContents(compact: false)
@@ -1041,7 +1112,7 @@ struct TerminalWindowView: View {
         .accessibilityLabel("Connection status: \(session.state.displayName)")
 
             Button {
-                openWindow(id: "main")
+                showConnections()
             } label: {
                 Image(systemName: "server.rack")
             }
@@ -1061,8 +1132,7 @@ struct TerminalWindowView: View {
             }
 
             Button {
-                let context = SFTPBrowserContext(sessionID: session.id)
-                openWindow(id: "sftp", value: context)
+                showSFTPBrowser()
             } label: {
                 Image(systemName: "folder.fill")
             }
@@ -1126,6 +1196,7 @@ struct TerminalWindowView: View {
                 }
 
                 #if DEBUG
+                #if !os(iOS)
                 Button {
                     let context = HTMLPreviewContext(
                         sessionID: session.id,
@@ -1135,6 +1206,7 @@ struct TerminalWindowView: View {
                 } label: {
                     Label("HTML Preview", systemImage: "safari")
                 }
+                #endif
                 #endif
 
                 Button {

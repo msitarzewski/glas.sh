@@ -58,6 +58,9 @@ struct AddServerView: View {
     @Environment(SettingsManager.self) private var settingsManager
     @Environment(\.dismiss) private var dismiss
 
+    private let provenance: ServerConnectionProvenance?
+    private let isPrefilledDraft: Bool
+
     @State private var name: String = ""
     @State private var host: String = ""
     @State private var port: String = "22"
@@ -77,6 +80,23 @@ struct AddServerView: View {
 
     private enum Field: Hashable { case name, host, port, username, password }
     @FocusState private var focusedField: Field?
+
+    init(serverManager: ServerManager, draft: ServerConfiguration? = nil) {
+        self.serverManager = serverManager
+        provenance = draft?.provenance
+        isPrefilledDraft = draft != nil
+
+        _name = State(initialValue: draft?.name ?? "")
+        _host = State(initialValue: draft?.host ?? "")
+        _port = State(initialValue: draft.map { String($0.port) } ?? "22")
+        _username = State(initialValue: draft?.username ?? "")
+        _authMethod = State(initialValue: draft?.authMethod == .sshKey ? .sshKey : .password)
+        _sshKeyID = State(initialValue: draft?.sshKeyID)
+        _colorTag = State(initialValue: draft?.colorTag ?? .blue)
+        _tags = State(initialValue: draft?.tags ?? [])
+        _isFavorite = State(initialValue: draft?.isFavorite ?? false)
+        _jumpHostIDs = State(initialValue: draft?.resolvedJumpHostIDs ?? [])
+    }
 
     private var isFormValid: Bool {
         guard !name.isEmpty, !host.isEmpty, !username.isEmpty,
@@ -252,7 +272,7 @@ struct AddServerView: View {
                     }
                 }
             }
-            .navigationTitle("Add Server")
+            .navigationTitle(isPrefilledDraft ? "Import Connection" : "Add Server")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
@@ -260,7 +280,7 @@ struct AddServerView: View {
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Add Server") {
+                    Button(isPrefilledDraft ? "Save Connection" : "Add Server") {
                         saveServer()
                     }
                     .disabled(!isFormValid)
@@ -289,7 +309,7 @@ struct AddServerView: View {
         }
         .onAppear {
             normalizeSelectedSSHKey()
-            focusedField = .name
+            focusedField = isPrefilledDraft ? .username : .name
         }
         .onChange(of: authMethod) { _, _ in
             normalizeSelectedSSHKey()
@@ -315,6 +335,7 @@ struct AddServerView: View {
             isFavorite: isFavorite,
             colorTag: colorTag,
             tags: tags,
+            provenance: provenance,
             jumpHostID: jumpHostIDs.first,
             jumpHostIDs: jumpHostIDs.isEmpty ? nil : jumpHostIDs
         )
