@@ -150,6 +150,7 @@ struct GeneralSettingsView: View {
                 .onChange(of: tailscaleAuthMethod) { _, newValue in
                     UserDefaults.standard.set(newValue.rawValue, forKey: UserDefaultsKeys.tailscaleAuthMethod)
                     tailscaleTestResult = nil
+                    NotificationCenter.default.post(name: .tailscaleCredentialsDidChange, object: nil)
                 }
 
                 if tailscaleAuthMethod == .apiKey {
@@ -412,6 +413,7 @@ struct GeneralSettingsView: View {
             }
             // Switch the active method only after its credential write succeeds.
             UserDefaults.standard.set(tailscaleAuthMethod.rawValue, forKey: UserDefaultsKeys.tailscaleAuthMethod)
+            NotificationCenter.default.post(name: .tailscaleCredentialsDidChange, object: nil)
         } catch {
             tailscaleTestResult = "Failed to save: \(error.localizedDescription)"
             tailscaleTestInProgress = false

@@ -12,6 +12,12 @@ import os
 import CryptoKit
 import GlasSecretStore
 
+extension Notification.Name {
+    static let tailscaleCredentialsDidChange = Notification.Name(
+        "sh.glas.tailscaleCredentialsDidChange"
+    )
+}
+
 // MARK: - API Response (matches official Go client exactly)
 
 private struct TailscaleAPIResponse: Decodable {
@@ -152,6 +158,48 @@ class TailscaleClient {
     private var oauthTokenCache = TailscaleOAuthTokenCache()
     private var oauthInFlightExchange: TailscaleOAuthInFlightExchange?
     private let session = URLSession.shared
+
+    static func credentialsAreConfigured(
+        authMethod: TailscaleAuthMethod,
+        apiKey: String? = nil,
+        oauthClientID: String? = nil,
+        oauthClientSecret: String? = nil
+    ) -> Bool {
+        switch authMethod {
+        case .apiKey:
+            return !(apiKey ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
+        case .oauthClient:
+            return !(oauthClientID ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
+                && !(oauthClientSecret ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .isEmpty
+        }
+    }
+
+    static func hasConfiguredCredentials(defaults: UserDefaults = .standard) -> Bool {
+        let authMethod = TailscaleAuthMethod(
+            rawValue: defaults.string(forKey: UserDefaultsKeys.tailscaleAuthMethod) ?? "apiKey"
+        ) ?? .apiKey
+
+        switch authMethod {
+        case .apiKey:
+            return credentialsAreConfigured(
+                authMethod: authMethod,
+                apiKey: try? KeychainManager.retrieveTailscaleAPIKey()
+            )
+        case .oauthClient:
+            let credentials = try? KeychainManager.retrieveTailscaleOAuthCredentials()
+            return credentialsAreConfigured(
+                authMethod: authMethod,
+                oauthClientID: credentials?.clientID,
+                oauthClientSecret: credentials?.clientSecret
+            )
+        }
+    }
 
     // MARK: - Token Resolution
 

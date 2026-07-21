@@ -2987,6 +2987,269 @@ struct glas_shTests {
         #expect(manager.servers.first?.host == "updated.example.com")
     }
 
+    // MARK: - Connection Library Projection Tests
+
+    @Test func connectionLibraryDeduplicatesServersAndBuildsNormalizedCollections() throws {
+        let productionID = UUID()
+        let stagingID = UUID()
+        let production = ServerConfiguration(
+            id: productionID,
+            name: "Production",
+            host: "prod.example.com",
+            username: "deploy",
+            tags: [" Production ", "client A", "production"]
+        )
+        let duplicate = ServerConfiguration(
+            id: productionID,
+            name: "Duplicate",
+            host: "duplicate.example.com",
+            username: "ignored",
+            tags: ["ignored"]
+        )
+        let staging = ServerConfiguration(
+            id: stagingID,
+            name: "Staging",
+            host: "staging.example.com",
+            username: "deploy",
+            tags: ["production", "Client A"]
+        )
+
+        let projection = ConnectionLibraryProjection(
+            servers: [production, duplicate, staging],
+            workgroups: [],
+            networkIsConfigured: false
+        )
+
+        #expect(projection.servers.map(\.id) == [productionID, stagingID])
+        #expect(projection.collections.map(\.name) == ["Client A", "Production"])
+        let collection = try #require(projection.collection(named: "PRODUCTION"))
+        #expect(collection.serverIDs == [productionID, stagingID])
+        #expect(collection.count == 2)
+        #expect(projection.collection(named: "ignored") == nil)
+    }
+
+    @Test func connectionLibraryExcludesEmptyAndWhitespaceOnlyCollections() {
+        let blankTags = ServerConfiguration(
+            name: "Blank Tags",
+            host: "blank.example.com",
+            username: "tester",
+            tags: ["", "   ", "\n\t"]
+        )
+        let tagless = ServerConfiguration(
+            name: "Tagless",
+            host: "tagless.example.com",
+            username: "tester"
+        )
+        let tagged = ServerConfiguration(
+            name: "Tagged",
+            host: "tagged.example.com",
+            username: "tester",
+            tags: [" Production ", "  "]
+        )
+
+        let projection = ConnectionLibraryProjection(
+            servers: [blankTags, tagless, tagged],
+            workgroups: [],
+            networkIsConfigured: false
+        )
+
+        #expect(projection.collections.map(\.name) == ["Production"])
+        #expect(projection.collection(named: "") == nil)
+        #expect(projection.collection(named: "   ") == nil)
+        #expect(projection.collection(named: "production")?.serverIDs == [tagged.id])
+    }
+
+    @Test func connectionLibraryProjectsFavoritesRecentsAndSearchDeterministically() {
+        var oldest = ServerConfiguration(
+            name: "Alpha",
+            host: "alpha.example.com",
+            username: "one",
+            isFavorite: true,
+            tags: ["Home Lab"]
+        )
+        oldest.lastConnected = Date(timeIntervalSince1970: 100)
+        var newest = ServerConfiguration(
+            name: "Bravo",
+            host: "bravo.example.com",
+            username: "two",
+            isFavorite: true,
+            tags: ["Production"]
+        )
+        newest.lastConnected = Date(timeIntervalSince1970: 300)
+        var middle = ServerConfiguration(
+            name: "Database",
+            host: "db.internal",
+            username: "dba",
+            tags: ["Production"]
+        )
+        middle.lastConnected = Date(timeIntervalSince1970: 200)
+
+        let projection = ConnectionLibraryProjection(
+            servers: [oldest, newest, middle],
+            workgroups: [],
+            networkIsConfigured: false,
+            recentLimit: 2
+        )
+
+        #expect(projection.servers(in: .favorites).map(\.id) == [newest.id, oldest.id])
+        #expect(projection.servers(in: .recent).map(\.id) == [newest.id, middle.id])
+        #expect(projection.servers(in: .allConnections, searchQuery: "Alpha").map(\.id) == [oldest.id])
+        #expect(projection.servers(in: .allConnections, searchQuery: "internal").map(\.id) == [middle.id])
+        #expect(projection.servers(in: .allConnections, searchQuery: "dba").map(\.id) == [middle.id])
+        #expect(projection.servers(in: .allConnections, searchQuery: "home lab").map(\.id) == [oldest.id])
+        #expect(
+            projection.servers(
+                in: .allConnections,
+                activeTagFilters: [" production "]
+            ).map(\.id) == [newest.id, middle.id]
+        )
+    }
+
+    @Test func connectionLibraryUsesStableTieBreakOrdering() {
+        let timestamp = Date(timeIntervalSince1970: 500)
+        let lowestID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let highestID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+
+        func server(
+            id: UUID = UUID(),
+            name: String,
+            host: String,
+            username: String
+        ) -> ServerConfiguration {
+            var server = ServerConfiguration(
+                id: id,
+                name: name,
+                host: host,
+                username: username,
+                isFavorite: true
+            )
+            server.lastConnected = timestamp
+            return server
+        }
+
+        let alpha = server(name: "Alpha", host: "z.example.com", username: "zulu")
+        let hostFirst = server(name: "Bravo", host: "a.example.com", username: "zulu")
+        let userFirst = server(name: "Bravo", host: "b.example.com", username: "alpha")
+        let idFirst = server(
+            id: lowestID,
+            name: "Bravo",
+            host: "b.example.com",
+            username: "bravo"
+        )
+        let idLast = server(
+            id: highestID,
+            name: "Bravo",
+            host: "b.example.com",
+            username: "bravo"
+        )
+        let expectedIDs = [alpha.id, hostFirst.id, userFirst.id, idFirst.id, idLast.id]
+
+        let projection = ConnectionLibraryProjection(
+            servers: [idLast, userFirst, hostFirst, idFirst, alpha],
+            workgroups: [],
+            networkIsConfigured: false
+        )
+
+        #expect(projection.servers(in: .favorites).map(\.id) == expectedIDs)
+        #expect(projection.servers(in: .recent).map(\.id) == expectedIDs)
+    }
+
+    @Test func connectionLibraryModesScopesWorkgroupsAndSelectionFollowAvailability() throws {
+        let server = ServerConfiguration(
+            name: "umbp",
+            host: "100.98.187.7",
+            username: "michael",
+            tags: ["Anomalous"]
+        )
+        let preset = LayoutPreset(
+            name: "glas.sh",
+            colorTag: .cyan,
+            sessionIntents: [
+                .init(kind: .local, label: "Editor", startupCommand: "nvim"),
+                .init(serverID: server.id, label: "Logs", startupCommand: "journalctl -f"),
+            ]
+        )
+        let hiddenNetwork = ConnectionLibraryProjection(
+            servers: [server],
+            workgroups: [preset],
+            networkIsConfigured: false
+        )
+        let visibleNetwork = ConnectionLibraryProjection(
+            servers: [server],
+            workgroups: [preset],
+            networkIsConfigured: true
+        )
+
+        #expect(!hiddenNetwork.availableModes.contains(.network))
+        #expect(hiddenNetwork.scopes(for: .network).isEmpty)
+        #expect(visibleNetwork.availableModes.contains(.network))
+        #expect(visibleNetwork.scopes(for: .network) == [.network])
+        #expect(hiddenNetwork.workgroups(matching: "journalctl").map(\.id) == [preset.id])
+
+        let collection = try #require(hiddenNetwork.collection(named: "anomalous"))
+        let scope = ConnectionLibraryScope.collection(collection.id)
+        #expect(
+            hiddenNetwork.resolvedSelection(
+                preferredServerID: server.id,
+                in: scope
+            ) == server.id
+        )
+        #expect(
+            hiddenNetwork.resolvedSelection(
+                preferredServerID: server.id,
+                in: scope,
+                searchQuery: "missing"
+            ) == nil
+        )
+    }
+
+    @Test func connectionLibraryClearsSelectionAfterServerDeletion() {
+        let server = ServerConfiguration(
+            name: "Disposable",
+            host: "disposable.example.com",
+            username: "operator"
+        )
+        let beforeDeletion = ConnectionLibraryProjection(
+            servers: [server],
+            workgroups: [],
+            networkIsConfigured: false
+        )
+        let afterDeletion = ConnectionLibraryProjection(
+            servers: [],
+            workgroups: [],
+            networkIsConfigured: false
+        )
+
+        #expect(
+            beforeDeletion.resolvedSelection(
+                preferredServerID: server.id,
+                in: .allConnections
+            ) == server.id
+        )
+        #expect(
+            afterDeletion.resolvedSelection(
+                preferredServerID: server.id,
+                in: .allConnections
+            ) == nil
+        )
+    }
+
+    @Test @MainActor func tailscaleConfigurationRequiresCompleteActiveCredentials() {
+        #expect(!TailscaleClient.credentialsAreConfigured(authMethod: .apiKey, apiKey: nil))
+        #expect(!TailscaleClient.credentialsAreConfigured(authMethod: .apiKey, apiKey: "  "))
+        #expect(TailscaleClient.credentialsAreConfigured(authMethod: .apiKey, apiKey: "tskey-api"))
+        #expect(!TailscaleClient.credentialsAreConfigured(
+            authMethod: .oauthClient,
+            oauthClientID: "client",
+            oauthClientSecret: " "
+        ))
+        #expect(TailscaleClient.credentialsAreConfigured(
+            authMethod: .oauthClient,
+            oauthClientID: "client",
+            oauthClientSecret: "secret"
+        ))
+    }
+
     // MARK: - SettingsManager Tests
 
     @Test @MainActor func settingsManagerDefaults() {

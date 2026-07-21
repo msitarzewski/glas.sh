@@ -14,7 +14,7 @@ struct ConnectionManagerView: View {
     @Environment(SettingsManager.self) private var settingsManager
 
     private var serverManager: ServerManager { sessionManager.serverManager }
-    
+
     @State private var selectedSection: ConnectionSection = .all
     @State private var showingAddServer = false
     @State private var editingServer: ServerConfiguration?
@@ -33,6 +33,7 @@ struct ConnectionManagerView: View {
     @State private var tailscaleUsernamePromptDevice: TailscaleDevice?
     @State private var serverPendingDeletion: ServerConfiguration?
     @State private var workgroupEditorContext: WorkgroupEditorContext?
+    @State private var tailscaleIsConfigured = false
     #if os(macOS)
     @State private var macSelectedServerID: UUID?
     @State private var macShowsTailscale = false
@@ -42,13 +43,19 @@ struct ConnectionManagerView: View {
     @Environment(\.dismissWindow) private var dismissWindow
     
     var body: some View {
+        let connectionLibrary = ConnectionLibraryProjection(
+            servers: serverManager.servers,
+            workgroups: settingsManager.layoutPresets,
+            networkIsConfigured: tailscaleIsConfigured
+        )
+
         NavigationSplitView {
             #if os(macOS)
-            macConnectionSidebar
+            macConnectionSidebar(connectionLibrary: connectionLibrary)
             #else
             List {
                 Section("Connections") {
-                    ForEach(sortedSections) { section in
+                    ForEach(sortedSections(in: connectionLibrary)) { section in
                         Button {
                             selectedSection = section
                         } label: {
@@ -73,14 +80,14 @@ struct ConnectionManagerView: View {
                 .navigationTitle(macSelectedServer?.name ?? selectedSection.title)
                 .searchable(text: $searchQuery, prompt: "Search connections...")
                 .onSubmit(of: .search) {
-                    handleSearchSubmission()
+                    handleSearchSubmission(using: connectionLibrary)
                 }
             #else
-            detailView
+            detailView(connectionLibrary: connectionLibrary)
                 .navigationTitle(selectedSection.title)
                 .searchable(text: $searchQuery, prompt: "Search servers...")
                 .onSubmit(of: .search) {
-                    handleSearchSubmission()
+                    handleSearchSubmission(using: connectionLibrary)
                 }
                 .toolbar {
                     connectionToolbar
@@ -220,6 +227,10 @@ struct ConnectionManagerView: View {
         }
         .task {
             serverManager.loadServersIfNeeded()
+            refreshTailscaleConfiguration()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .tailscaleCredentialsDidChange)) { _ in
+            refreshTailscaleConfiguration()
         }
     }
 
@@ -291,7 +302,9 @@ struct ConnectionManagerView: View {
     }
 
     #if os(macOS)
-    private var macConnectionSidebar: some View {
+    private func macConnectionSidebar(
+        connectionLibrary: ConnectionLibraryProjection
+    ) -> some View {
         List(selection: $macSelectedServerID) {
             if serverManager.servers.isEmpty {
                 ContentUnavailableView {
@@ -300,7 +313,10 @@ struct ConnectionManagerView: View {
                     Text("Add a saved host to begin.")
                 }
                 .listRowBackground(Color.clear)
-            } else if macFilteredServers(serverManager.servers).isEmpty,
+            } else if macFilteredServers(
+                serverManager.servers,
+                using: connectionLibrary
+            ).isEmpty,
                       quickConnectConfig == nil {
                 ContentUnavailableView.search(text: searchQuery)
                     .listRowBackground(Color.clear)
@@ -327,7 +343,10 @@ struct ConnectionManagerView: View {
                 }
             }
 
-            let favoriteServers = macFilteredServers(serverManager.favoriteServers)
+            let favoriteServers = macFilteredServers(
+                serverManager.favoriteServers,
+                using: connectionLibrary
+            )
             if !favoriteServers.isEmpty {
                 Section("Favorites") {
                     ForEach(favoriteServers) { server in
@@ -336,7 +355,10 @@ struct ConnectionManagerView: View {
                 }
             }
 
-            let recentServers = macFilteredServers(serverManager.recentServers)
+            let recentServers = macFilteredServers(
+                serverManager.recentServers,
+                using: connectionLibrary
+            )
             if !recentServers.isEmpty {
                 Section("Recent") {
                     ForEach(recentServers) { server in
@@ -345,7 +367,10 @@ struct ConnectionManagerView: View {
                 }
             }
 
-            let allServers = macFilteredServers(serverManager.servers)
+            let allServers = macFilteredServers(
+                serverManager.servers,
+                using: connectionLibrary
+            )
             if !allServers.isEmpty {
                 Section("All Connections") {
                     ForEach(allServers) { server in
@@ -367,16 +392,18 @@ struct ConnectionManagerView: View {
                 }
             }
 
-            Section("Network") {
-                Button {
-                    macSelectedServerID = nil
-                    macShowsTailscale = true
-                    selectedSection = .tailscale
-                } label: {
-                    Label("Tailscale", systemImage: "network")
-                        .foregroundStyle(ConnectionSection.tailscale.color)
+            if connectionLibrary.networkIsConfigured {
+                Section("Network") {
+                    Button {
+                        macSelectedServerID = nil
+                        macShowsTailscale = true
+                        selectedSection = .tailscale
+                    } label: {
+                        Label("Tailscale", systemImage: "network")
+                            .foregroundStyle(ConnectionSection.tailscale.color)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
         }
         .listStyle(.sidebar)
@@ -513,25 +540,15 @@ struct ConnectionManagerView: View {
             }
     }
 
-    private func macFilteredServers(_ servers: [ServerConfiguration]) -> [ServerConfiguration] {
-        var result = servers
-        if !activeTagFilters.isEmpty {
-            let active = Set(activeTagFilters.map { $0.lowercased() })
-            result = result.filter { server in
-                !active.isDisjoint(with: Set(server.tags.map { $0.lowercased() }))
-            }
-        }
-
-        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !query.isEmpty {
-            result = result.filter {
-                $0.name.localizedCaseInsensitiveContains(query)
-                    || $0.host.localizedCaseInsensitiveContains(query)
-                    || $0.username.localizedCaseInsensitiveContains(query)
-                    || $0.tags.contains { $0.localizedCaseInsensitiveContains(query) }
-            }
-        }
-        return result
+    private func macFilteredServers(
+        _ servers: [ServerConfiguration],
+        using connectionLibrary: ConnectionLibraryProjection
+    ) -> [ServerConfiguration] {
+        connectionLibrary.matchingServers(
+            from: servers,
+            searchQuery: searchQuery,
+            activeTagFilters: activeTagFilters
+        )
     }
 
     private func macSavedHostRow(_ server: ServerConfiguration) -> some View {
@@ -571,8 +588,10 @@ struct ConnectionManagerView: View {
     }
     #endif
     
-    private var availableTags: [String] {
-        Array(Set(serverManager.servers.flatMap { $0.tags })).sorted()
+    private func availableTags(
+        in connectionLibrary: ConnectionLibraryProjection
+    ) -> [String] {
+        connectionLibrary.collections.map(\.name)
     }
 
     private var quickConnectConfig: ServerConfiguration? {
@@ -609,15 +628,19 @@ struct ConnectionManagerView: View {
     // MARK: - Detail View
 
     @ViewBuilder
-    private var detailView: some View {
+    private func detailView(
+        connectionLibrary: ConnectionLibraryProjection
+    ) -> some View {
         if selectedSection == .tailscale {
             tailscaleDetailView
         } else {
-            serverListDetailView
+            serverListDetailView(connectionLibrary: connectionLibrary)
         }
     }
 
-    private var serverListDetailView: some View {
+    private func serverListDetailView(
+        connectionLibrary: ConnectionLibraryProjection
+    ) -> some View {
         VStack(spacing: 0) {
             if !activeTagFilters.isEmpty {
                 activeTagFilterBar
@@ -648,7 +671,7 @@ struct ConnectionManagerView: View {
                     }
                 }
 
-                ForEach(filteredServers) { server in
+                ForEach(filteredServers(in: connectionLibrary)) { server in
                     ServerListRow(
                         server: server,
                         session: sessionForServer(server),
@@ -869,68 +892,88 @@ struct ConnectionManagerView: View {
         .background(.bar)
     }
 
-    private var filteredServers: [ServerConfiguration] {
-        let servers: [ServerConfiguration]
-        
+    private func filteredServers(
+        in connectionLibrary: ConnectionLibraryProjection
+    ) -> [ServerConfiguration] {
+        let scope: ConnectionLibraryScope?
+        let candidates: [ServerConfiguration]?
+
         switch selectedSection {
         case .favorites:
-            servers = serverManager.favoriteServers
+            scope = .favorites
+            candidates = nil
         case .all:
-            servers = serverManager.servers
+            scope = .allConnections
+            candidates = nil
         case .tags:
-            servers = serverManager.servers.filter { !$0.tags.isEmpty }
+            scope = nil
+            candidates = connectionLibrary.servers.filter { !$0.tags.isEmpty }
         case .recent:
-            servers = serverManager.recentServers
+            scope = .recent
+            candidates = nil
         case .tailscale:
-            servers = []
+            scope = .network
+            candidates = nil
         case .tag(let tag):
-            servers = serverManager.servers.filter { $0.tags.contains(tag) }
-        }
-
-        var result = servers
-
-        if !activeTagFilters.isEmpty {
-            let active = Set(activeTagFilters.map { $0.lowercased() })
-            result = result.filter { server in
-                !active.isDisjoint(with: Set(server.tags.map { $0.lowercased() }))
+            scope = connectionLibrary.collection(named: tag).map {
+                .collection($0.id)
             }
+            candidates = nil
         }
 
-        if !searchQuery.isEmpty {
-            result = result.filter {
-                $0.name.localizedCaseInsensitiveContains(searchQuery) ||
-                $0.host.localizedCaseInsensitiveContains(searchQuery) ||
-                $0.username.localizedCaseInsensitiveContains(searchQuery)
-            }
+        if let candidates {
+            return connectionLibrary.matchingServers(
+                from: candidates,
+                searchQuery: searchQuery,
+                activeTagFilters: activeTagFilters
+            )
         }
-
-        return result
+        guard let scope else { return [] }
+        return connectionLibrary.servers(
+            in: scope,
+            searchQuery: searchQuery,
+            activeTagFilters: activeTagFilters
+        )
     }
 
-    private var sortedSections: [ConnectionSection] {
-        ConnectionSection.allCases.sorted {
+    private func sortedSections(
+        in connectionLibrary: ConnectionLibraryProjection
+    ) -> [ConnectionSection] {
+        ConnectionSection.allCases.filter { section in
+            section != .tailscale || connectionLibrary.networkIsConfigured
+        }.sorted {
             $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
         }
     }
 
-    private func handleSearchSubmission() {
+    private func handleSearchSubmission(
+        using connectionLibrary: ConnectionLibraryProjection
+    ) {
         if let config = quickConnectConfig {
             quickConnectPasswordPrompt = config
         } else {
-            applySearchAsTagFilterIfPossible()
+            applySearchAsTagFilterIfPossible(using: connectionLibrary)
         }
     }
 
-    private func applySearchAsTagFilterIfPossible() {
+    private func applySearchAsTagFilterIfPossible(
+        using connectionLibrary: ConnectionLibraryProjection
+    ) {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return }
-        guard let matchedTag = availableTags.first(where: { $0.caseInsensitiveCompare(query) == .orderedSame }) else {
+        guard let matchedTag = availableTags(in: connectionLibrary).first(where: {
+            $0.caseInsensitiveCompare(query) == .orderedSame
+        }) else {
             return
         }
         if !activeTagFilters.contains(where: { $0.caseInsensitiveCompare(matchedTag) == .orderedSame }) {
             activeTagFilters.append(matchedTag)
         }
         searchQuery = ""
+    }
+
+    private func refreshTailscaleConfiguration() {
+        tailscaleIsConfigured = TailscaleClient.hasConfiguredCredentials()
     }
 
     private func sessionForServer(_ server: ServerConfiguration) -> TerminalSession? {
