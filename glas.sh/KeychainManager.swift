@@ -10,8 +10,8 @@ import Foundation
 import GlasSecretStore
 import os
 
-struct CredentialMigrationReport: Codable, Equatable {
-    enum State: String, Codable {
+nonisolated struct CredentialMigrationReport: Codable, Equatable, Sendable {
+    enum State: String, Codable, Sendable {
         case verified
         case completed
         case failed
@@ -39,7 +39,7 @@ struct CredentialMigrationReport: Codable, Equatable {
     let recordedAt: Date
 }
 
-enum CredentialMigrationMetadata: Equatable {
+nonisolated enum CredentialMigrationMetadata: Equatable, Sendable {
     /// glassdb currently keeps its profiles in its private standard defaults,
     /// which glas.sh cannot inspect. `available` is reserved for an authoritative
     /// shared metadata snapshot once both apps publish one.
@@ -47,7 +47,7 @@ enum CredentialMigrationMetadata: Equatable {
     case available(glassDBLegacyPasswordAccounts: Set<String>)
 }
 
-struct CredentialMigrationStore {
+nonisolated struct CredentialMigrationStore {
     let read: (String) throws -> Data?
     let addIfAbsent: (Data, String) throws -> Bool
     let loadReport: () throws -> CredentialMigrationReport?
@@ -109,42 +109,106 @@ struct CredentialMigrationStore {
     }
 }
 
-struct TailscaleOAuthCredentialStore {
+nonisolated struct TailscaleOAuthCredentialStore {
     let read: (String) throws -> Data?
     let addIfAbsent: (Data, String) throws -> Bool
     let delete: (String) throws -> Void
 
-    static let live = TailscaleOAuthCredentialStore(
-        read: { account in
+    static var live: TailscaleOAuthCredentialStore {
+        TailscaleOAuthCredentialStore(
+            read: { account in
+                do {
+                    return try KeychainOperations.retrieveData(
+                        account: account,
+                        service: KeychainManager.config.passwordsService,
+                        config: KeychainManager.config
+                    )
+                } catch SecretStoreError.notFound {
+                    return nil
+                }
+            },
+            addIfAbsent: { data, account in
+                try KeychainOperations.addDataIfAbsent(
+                    data,
+                    account: account,
+                    service: KeychainManager.config.passwordsService,
+                    config: KeychainManager.config
+                )
+            },
+            delete: { account in
+                try KeychainOperations.deleteItem(
+                    account: account,
+                    service: KeychainManager.config.passwordsService,
+                    config: KeychainManager.config
+                )
+            }
+        )
+    }
+}
+
+/// Injectable boundary for the two Keychain records that make an SSH password
+/// available both to this terminal profile and to other Glass apps. The live
+/// implementation still delegates every operation to GlasSecretStore.
+struct ServerCredentialStore {
+    let read: (_ account: String, _ service: String) throws -> Data?
+    let save: (_ data: Data, _ account: String, _ service: String) throws -> Void
+    let addIfAbsent: (_ data: Data, _ account: String, _ service: String) throws -> Bool
+    let delete: (_ account: String, _ service: String) throws -> Void
+
+    static let live = ServerCredentialStore(
+        read: { account, service in
             do {
                 return try KeychainOperations.retrieveData(
                     account: account,
-                    service: KeychainManager.config.passwordsService,
+                    service: service,
                     config: KeychainManager.config
                 )
             } catch SecretStoreError.notFound {
                 return nil
             }
         },
-        addIfAbsent: { data, account in
-            try KeychainOperations.addDataIfAbsent(
+        save: { data, account, service in
+            try KeychainOperations.saveData(
                 data,
                 account: account,
-                service: KeychainManager.config.passwordsService,
+                service: service,
                 config: KeychainManager.config
             )
         },
-        delete: { account in
+        addIfAbsent: { data, account, service in
+            try KeychainOperations.addDataIfAbsent(
+                data,
+                account: account,
+                service: service,
+                config: KeychainManager.config
+            )
+        },
+        delete: { account, service in
             try KeychainOperations.deleteItem(
                 account: account,
-                service: KeychainManager.config.passwordsService,
+                service: service,
                 config: KeychainManager.config
             )
         }
     )
 }
 
-enum CredentialMigrationError: LocalizedError {
+/// Short-lived, verified restoration handle for a multi-record server
+/// credential transaction. The captured values never leave process memory and
+/// are released with the surrounding profile mutation.
+struct ServerCredentialRollback {
+    private let operation: () throws -> Void
+
+    init(operation: @escaping () throws -> Void) {
+        self.operation = operation
+    }
+
+    func restore() throws {
+        try operation()
+    }
+}
+
+nonisolated enum CredentialMigrationError: LocalizedError {
     case keychainReadbackMismatch
     case persistenceReadbackMismatch
     case rollbackFailed
@@ -169,59 +233,265 @@ enum CredentialMigrationError: LocalizedError {
     }
 }
 
+enum ServerCredentialError: LocalizedError {
+    case readbackMismatch
+    case rollbackFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .readbackMismatch:
+            return "The shared SSH credential could not be verified in Keychain."
+        case .rollbackFailed:
+            return "The SSH credential write failed and its previous Keychain records could not be restored."
+        }
+    }
+}
+
+nonisolated struct CredentialMigrationServer: Sendable {
+    let id: UUID
+    let username: String
+    let host: String
+    let port: Int
+    let usesPasswordAuthentication: Bool
+}
+
 enum KeychainManager {
 
-    private static let accessGroupInfoKey = "GlasKeychainAccessGroup"
-    private static let terminalAccountPrefix = "terminal"
-    static let currentCredentialMigrationVersion = 1
-    static let legacyTailscaleAPIKeyAccount = "tailscale-api-key"
-    static let legacyTailscaleOAuthClientIDAccount = "tailscale-oauth-client-id"
-    static let legacyTailscaleOAuthClientSecretAccount = "tailscale-oauth-client-secret"
+    nonisolated private static let accessGroupInfoKey = "GlasKeychainAccessGroup"
+    nonisolated private static let terminalAccountPrefix = "terminal"
+    nonisolated static let currentCredentialMigrationVersion = 1
+    nonisolated static let legacyTailscaleAPIKeyAccount = "tailscale-api-key"
+    nonisolated static let legacyTailscaleOAuthClientIDAccount = "tailscale-oauth-client-id"
+    nonisolated static let legacyTailscaleOAuthClientSecretAccount = "tailscale-oauth-client-secret"
 
-    static let config = SecretStoreConfiguration(
+    nonisolated static let config = SecretStoreConfiguration(
         serviceNamePrefix: "sh.glas",
         accessGroup: resolvedAccessGroup,
         useDataProtectionKeychain: true
     )
 
-    private static var resolvedAccessGroup: String? {
+    nonisolated private static var resolvedAccessGroup: String? {
         guard let rawValue = Bundle.main.object(forInfoDictionaryKey: accessGroupInfoKey) as? String else {
             return nil
         }
+        return validatedSharedAccessGroup(rawValue)
+    }
+
+    nonisolated static func validatedSharedAccessGroup(_ rawValue: String?) -> String? {
+        guard let rawValue else { return nil }
         let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty, !value.contains("$(") else { return nil }
+        let components = value.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
+        guard components.count == 2,
+              components[0].count == 10,
+              components[0].allSatisfy({ $0.isASCII && ($0.isUppercase || $0.isNumber) }),
+              components[1] == "sh.glas.shared" else {
+            return nil
+        }
         return value
     }
 
     // MARK: - Server Password
 
-    static func savePassword(_ password: String, for server: ServerConfiguration) throws {
-        let account = serverPasswordAccount(for: server.id)
-        try KeychainOperations.savePassword(password, account: account, service: config.passwordsService, config: config)
+    static func savePassword(
+        _ password: String,
+        for server: ServerConfiguration,
+        store: ServerCredentialStore = .live
+    ) throws {
+        guard !password.isEmpty, let data = password.data(using: .utf8) else {
+            throw SecretStoreError.encodingFailed
+        }
+        let locations = serverCredentialLocations(for: server)
+        let snapshots = try locations.map { location in
+            (location, try store.read(location.account, location.service))
+        }
+
+        do {
+            for location in locations {
+                try store.save(data, location.account, location.service)
+                guard try store.read(location.account, location.service) == data else {
+                    throw ServerCredentialError.readbackMismatch
+                }
+            }
+        } catch {
+            do {
+                for (location, snapshot) in snapshots.reversed() {
+                    if let snapshot {
+                        try store.save(snapshot, location.account, location.service)
+                        guard try store.read(location.account, location.service) == snapshot else {
+                            throw ServerCredentialError.readbackMismatch
+                        }
+                    } else {
+                        try store.delete(location.account, location.service)
+                        guard try store.read(location.account, location.service) == nil else {
+                            throw ServerCredentialError.readbackMismatch
+                        }
+                    }
+                }
+            } catch {
+                throw ServerCredentialError.rollbackFailed
+            }
+            throw error
+        }
     }
 
-    static func retrievePassword(for server: ServerConfiguration) throws -> String {
-        try KeychainOperations.retrievePassword(
-            account: serverPasswordAccount(for: server.id),
-            service: config.passwordsService,
-            config: config
-        )
+    static func passwordRollback(
+        for server: ServerConfiguration,
+        store: ServerCredentialStore = .live
+    ) throws -> ServerCredentialRollback {
+        let snapshots = try serverCredentialLocations(for: server).map { location in
+            (location, try store.read(location.account, location.service))
+        }
+        return ServerCredentialRollback {
+            for (location, snapshot) in snapshots {
+                if let snapshot {
+                    try store.save(snapshot, location.account, location.service)
+                    guard try store.read(location.account, location.service) == snapshot else {
+                        throw ServerCredentialError.readbackMismatch
+                    }
+                } else {
+                    do {
+                        try store.delete(location.account, location.service)
+                    } catch SecretStoreError.notFound {
+                        // Absence is the captured state; verify it below.
+                    }
+                    guard try store.read(location.account, location.service) == nil else {
+                        throw ServerCredentialError.readbackMismatch
+                    }
+                }
+            }
+        }
     }
 
-    static func deletePassword(for server: ServerConfiguration) throws {
-        let account = serverPasswordAccount(for: server.id)
-        try KeychainOperations.deletePassword(account: account, service: config.passwordsService, config: config)
+    static func retrievePassword(
+        for server: ServerConfiguration,
+        store: ServerCredentialStore = .live
+    ) throws -> String {
+        let primary = serverCredentialLocations(for: server)[0]
+        if let data = try store.read(primary.account, primary.service) {
+            return try decodedPassword(data)
+        }
+
+        guard let compatibility = sharedSSHPasswordLocation(for: server),
+              let sharedData = try store.read(compatibility.account, compatibility.service) else {
+            throw SecretStoreError.notFound
+        }
+        let sharedPassword = try decodedPassword(sharedData)
+
+        if try store.addIfAbsent(sharedData, primary.account, primary.service) {
+            guard try store.read(primary.account, primary.service) == sharedData else {
+                throw ServerCredentialError.readbackMismatch
+            }
+            return sharedPassword
+        }
+
+        // Another app instance may have created the profile record after our
+        // initial lookup. Its profile-specific value deterministically wins.
+        guard let concurrentData = try store.read(primary.account, primary.service) else {
+            throw ServerCredentialError.readbackMismatch
+        }
+        return try decodedPassword(concurrentData)
+    }
+
+    static func deletePassword(
+        for server: ServerConfiguration,
+        store: ServerCredentialStore = .live
+    ) throws {
+        // The compatibility record is shared ownership. Deleting a glas.sh
+        // profile must never revoke a credential still used by glassdb.
+        try store.delete(serverPasswordAccount(for: server.id), config.passwordsService)
+    }
+
+    /// Restores the exact pre-write state after a higher-level profile
+    /// transaction fails. This is intentionally separate from normal profile
+    /// deletion, which must retain the cross-app compatibility record.
+    static func deletePublishedPassword(
+        for server: ServerConfiguration,
+        store: ServerCredentialStore = .live
+    ) throws {
+        for location in serverCredentialLocations(for: server) {
+            do {
+                try store.delete(location.account, location.service)
+            } catch SecretStoreError.notFound {
+                // The rollback target is absence; continue verifying every
+                // location even when one record was already absent.
+            }
+            guard try store.read(location.account, location.service) == nil else {
+                throw ServerCredentialError.readbackMismatch
+            }
+        }
     }
 
     /// Stable per-profile namespace. Deliberately does not use the legacy
     /// `username@host:port` tuple because that account may belong to glassdb in
     /// the shared Keychain service.
-    static func serverPasswordAccount(for serverID: UUID) -> String {
+    nonisolated static func serverPasswordAccount(for serverID: UUID) -> String {
         "\(terminalAccountPrefix).server-password.\(serverID.uuidString.lowercased())"
     }
 
     static func legacyServerPasswordAccount(for server: ServerConfiguration) -> String {
         "\(server.username)@\(server.host):\(server.port)"
+    }
+
+    nonisolated static func legacyServerPasswordAccount(
+        for server: CredentialMigrationServer
+    ) -> String {
+        "\(server.username)@\(server.host):\(server.port)"
+    }
+
+    static func credentialMigrationServers(
+        from servers: [ServerConfiguration]
+    ) -> [CredentialMigrationServer] {
+        servers.map {
+            CredentialMigrationServer(
+                id: $0.id,
+                username: $0.username,
+                host: $0.host,
+                port: $0.port,
+                usesPasswordAuthentication: $0.authMethod == .password
+            )
+        }
+    }
+
+    /// Cross-app SSH compatibility account used by glassdb in the shared
+    /// `sh.glas.sshpasswords` service.
+    static func sharedSSHPasswordAccount(for server: ServerConfiguration) -> String? {
+        let username = server.username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let host = server.host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !username.isEmpty, !host.isEmpty else { return nil }
+        return "ssh:\(username)@\(host):\(server.port)"
+    }
+
+    private struct ServerCredentialLocation {
+        let account: String
+        let service: String
+    }
+
+    private static func serverCredentialLocations(
+        for server: ServerConfiguration
+    ) -> [ServerCredentialLocation] {
+        var locations = [ServerCredentialLocation(
+            account: serverPasswordAccount(for: server.id),
+            service: config.passwordsService
+        )]
+        if let shared = sharedSSHPasswordLocation(for: server) {
+            locations.append(shared)
+        }
+        return locations
+    }
+
+    private static func sharedSSHPasswordLocation(
+        for server: ServerConfiguration
+    ) -> ServerCredentialLocation? {
+        guard let account = sharedSSHPasswordAccount(for: server) else { return nil }
+        return ServerCredentialLocation(account: account, service: config.sshPasswordsService)
+    }
+
+    private static func decodedPassword(_ data: Data) throws -> String {
+        guard let password = String(data: data, encoding: .utf8), !password.isEmpty else {
+            throw SecretStoreError.encodingFailed
+        }
+        return password
     }
 
     // MARK: - SSH Keys
@@ -332,7 +602,7 @@ enum KeychainManager {
 
     // MARK: - Tailscale API Key
 
-    static let tailscaleAPIKeyAccount = "\(terminalAccountPrefix).tailscale.api-key"
+    nonisolated static let tailscaleAPIKeyAccount = "\(terminalAccountPrefix).tailscale.api-key"
 
     static func saveTailscaleAPIKey(_ apiKey: String) throws {
         try KeychainOperations.savePassword(
@@ -343,7 +613,7 @@ enum KeychainManager {
         )
     }
 
-    static func retrieveTailscaleAPIKey() throws -> String {
+    nonisolated static func retrieveTailscaleAPIKey() throws -> String {
         try KeychainOperations.retrievePassword(
             account: tailscaleAPIKeyAccount,
             service: config.passwordsService,
@@ -361,11 +631,11 @@ enum KeychainManager {
 
     // MARK: - Tailscale OAuth Credentials
 
-    static let tailscaleOAuthClientIDAccount = "\(terminalAccountPrefix).tailscale.oauth.client-id"
-    static let tailscaleOAuthClientSecretAccount = "\(terminalAccountPrefix).tailscale.oauth.client-secret"
-    static let tailscaleOAuthCredentialsAccount = "\(terminalAccountPrefix).tailscale.oauth.credentials"
+    nonisolated static let tailscaleOAuthClientIDAccount = "\(terminalAccountPrefix).tailscale.oauth.client-id"
+    nonisolated static let tailscaleOAuthClientSecretAccount = "\(terminalAccountPrefix).tailscale.oauth.client-secret"
+    nonisolated static let tailscaleOAuthCredentialsAccount = "\(terminalAccountPrefix).tailscale.oauth.credentials"
 
-    private struct TailscaleOAuthCredentials: Codable, Equatable {
+    nonisolated private struct TailscaleOAuthCredentials: Codable, Equatable {
         let clientID: String
         let clientSecret: String
     }
@@ -381,7 +651,7 @@ enum KeychainManager {
         )
     }
 
-    static func retrieveTailscaleOAuthCredentials() throws -> (clientID: String, clientSecret: String) {
+    nonisolated static func retrieveTailscaleOAuthCredentials() throws -> (clientID: String, clientSecret: String) {
         try retrieveTailscaleOAuthCredentials(store: .live)
     }
 
@@ -389,7 +659,7 @@ enum KeychainManager {
         try deleteTailscaleOAuthCredentials(store: .live)
     }
 
-    static func retrieveTailscaleOAuthCredentials(
+    nonisolated static func retrieveTailscaleOAuthCredentials(
         store: TailscaleOAuthCredentialStore
     ) throws -> (clientID: String, clientSecret: String) {
         // Resolve all accounts before mutation. The live store maps only an
@@ -488,6 +758,19 @@ enum KeychainManager {
         metadata: CredentialMigrationMetadata,
         store: CredentialMigrationStore
     ) throws -> CredentialMigrationReport {
+        try runCredentialMigrationIfNeeded(
+            serverSnapshots: credentialMigrationServers(from: servers),
+            metadata: metadata,
+            store: store
+        )
+    }
+
+    @discardableResult
+    nonisolated static func runCredentialMigrationIfNeeded(
+        serverSnapshots: [CredentialMigrationServer],
+        metadata: CredentialMigrationMetadata,
+        store: CredentialMigrationStore
+    ) throws -> CredentialMigrationReport {
         let previousVersion = store.loadVersion()
         if previousVersion >= currentCredentialMigrationVersion,
            let report = try store.loadReport(), report.state == .completed {
@@ -495,10 +778,10 @@ enum KeychainManager {
         }
 
         let previousReport = try store.loadReport()
-        let passwordServers = servers
-            .filter { $0.authMethod == .password }
+        let passwordServers = serverSnapshots
+            .filter(\.usesPasswordAuthentication)
             .sorted { $0.id.uuidString < $1.id.uuidString }
-        var groupedServers: [String: [ServerConfiguration]] = [:]
+        var groupedServers: [String: [CredentialMigrationServer]] = [:]
         for server in passwordServers {
             groupedServers[legacyServerPasswordAccount(for: server), default: []].append(server)
         }

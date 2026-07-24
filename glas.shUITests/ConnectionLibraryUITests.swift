@@ -99,11 +99,21 @@ final class ConnectionLibraryUITests: XCTestCase {
 
         deleteTestServer(assertRemoval: true)
     }
+
     #endif
 
     @MainActor
     private var library: XCUIElement {
+        #if os(macOS)
+        // AppKit's NavigationSplitView may replace the SwiftUI root identifier
+        // with its native container name. Its navigation child remains stable.
+        return firstExistingElement(withIdentifiers: [
+            "connection-library",
+            "connection-library-navigation"
+        ])
+        #else
         element(identifier: "connection-library")
+        #endif
     }
 
     @MainActor
@@ -190,7 +200,7 @@ final class ConnectionLibraryUITests: XCTestCase {
 
     @MainActor
     private func verifyLocalTerminalRouteKeepsLibraryOpen() {
-        let connectionsWindow = app.windows["Connections"].firstMatch
+        let connectionsWindow = firstExistingConnectionLibraryWindow()
         XCTAssertTrue(connectionsWindow.waitForExistence(timeout: 5))
 
         let localTerminal = app.buttons["Local Terminal"].firstMatch
@@ -213,9 +223,14 @@ final class ConnectionLibraryUITests: XCTestCase {
         let closeButton = terminalWindow.buttons[XCUIIdentifierCloseWindow]
         XCTAssertTrue(closeButton.waitForExistence(timeout: 3))
         closeButton.click()
-        let confirmation = app.sheets["Close Terminal?"].firstMatch
+        // AppKit exposes SwiftUI confirmation dialogs as an alert-labelled
+        // sheet; the dialog title is a child rather than the sheet identifier.
+        let confirmation = terminalWindow.sheets.firstMatch
         if confirmation.waitForExistence(timeout: 2) {
-            app.buttons["Close"].firstMatch.click()
+            XCTAssertTrue(confirmation.staticTexts["Close Terminal?"].waitForExistence(timeout: 2))
+            let confirmClose = confirmation.buttons["Close"].firstMatch
+            XCTAssertTrue(confirmClose.waitForExistence(timeout: 2))
+            confirmClose.click()
         }
         XCTAssertFalse(terminalWindow.waitForExistence(timeout: 3))
     }
@@ -348,7 +363,8 @@ final class ConnectionLibraryUITests: XCTestCase {
         let settings = buttonOrElement(identifier: "connection-library-settings")
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
         #if os(macOS)
-        let connectionsWindow = app.windows["Connections"].firstMatch
+        let connectionsWindow = firstExistingConnectionLibraryWindow()
+        XCTAssertTrue(connectionsWindow.waitForExistence(timeout: 5))
         activate(settings)
 
         XCTAssertTrue(
@@ -358,6 +374,20 @@ final class ConnectionLibraryUITests: XCTestCase {
         )
         app.typeKey("w", modifierFlags: .command)
         connectionsWindow.click()
+        #elseif os(visionOS)
+        let connectionsWindow = firstExistingConnectionLibraryWindow()
+        XCTAssertTrue(connectionsWindow.waitForExistence(timeout: 5))
+        activate(settings)
+
+        XCTAssertTrue(
+            app.buttons["General"].waitForExistence(timeout: 5)
+                || app.staticTexts["Connection"].waitForExistence(timeout: 2),
+            "Settings should open in its native visionOS window."
+        )
+        app.typeKey(XCUIKeyboardKey(rawValue: "w"), modifierFlags: .command)
+        if connectionsWindow.exists {
+            connectionsWindow.tap()
+        }
         #else
         activate(settings)
 
@@ -372,6 +402,14 @@ final class ConnectionLibraryUITests: XCTestCase {
         activate(app.buttons["Done"])
         #endif
         XCTAssertTrue(library.waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    private func firstExistingConnectionLibraryWindow() -> XCUIElement {
+        let titledWindow = app.windows["All Connections"].firstMatch
+        if titledWindow.exists { return titledWindow }
+        let connectionsWindow = app.windows["Connections"].firstMatch
+        return connectionsWindow.exists ? connectionsWindow : app.windows.firstMatch
     }
 
     @MainActor

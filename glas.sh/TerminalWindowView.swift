@@ -49,6 +49,9 @@ struct TerminalWindowView: View {
     /// A visionOS workgroup presents one shared identity ornament for all tabs.
     /// Standalone terminal windows keep the per-connection ornament.
     var showsConnectionOrnament = true
+    /// A workgroup can retain several terminal views so their emulator state is
+    /// preserved. Only the selected view may own keyboard focus.
+    var isTerminalActive = true
     /// Workspace command routing increments this value to present the existing
     /// terminal search UI without duplicating search state outside this view.
     var externalSearchRequestNonce: UInt64 = 0
@@ -237,6 +240,9 @@ struct TerminalWindowView: View {
             .onChange(of: showingErrorCard) { _, showing in
                 updateTerminalFocusOwnership(competingControlPresented: showing)
             }
+            .onChange(of: isTerminalActive) { _, _ in
+                updateTerminalFocusOwnership(competingControlPresented: !isTerminalActive)
+            }
             .onChange(of: session.state) { oldState, newState in
                 handleSessionStateNotification(from: oldState, to: newState)
             }
@@ -314,7 +320,7 @@ struct TerminalWindowView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         #else
         VStack(spacing: 0) {
-            if !ownsSessionLifecycle {
+            if !ownsSessionLifecycle && showsConnectionOrnament {
                 connectionLabel
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
@@ -324,6 +330,12 @@ struct TerminalWindowView: View {
             }
 
             terminalContent
+                .modifier(GlassWindowBackground(
+                    interactive: false,
+                    material: resolvedMaterial,
+                    blurAmount: effectiveBlurBackground,
+                    appearance: settingsManager.currentTheme.resolvedAppearance
+                ))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -333,7 +345,7 @@ struct TerminalWindowView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
                 .frame(maxWidth: .infinity)
-                .background(.regularMaterial)
+                .background(.bar)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         #endif
@@ -560,6 +572,7 @@ struct TerminalWindowView: View {
                         ? settingsManager.maxScrollbackLines
                         : 0
                 ),
+                allowsFocusOwnership: terminalCanOwnFocus,
                 onSendData: { data in
                     session.sendTerminalData(data)
                 },
@@ -676,7 +689,8 @@ struct TerminalWindowView: View {
     }
 
     private var terminalCanOwnFocus: Bool {
-        !showingSearchOverlay
+        isTerminalActive
+            && !showingSearchOverlay
             && !showingTerminalSettings
             && !showingCloseConfirmation
             && !showingSnippetPicker
@@ -1067,6 +1081,16 @@ struct TerminalWindowView: View {
             : "New Terminal Tab"
     }
 
+    private var showsFooterWorkspaceNavigationActions: Bool {
+        #if os(iOS)
+        // The native workgroup toolbar owns Connections and New Tab on iPhone
+        // and iPad. Standalone terminal windows retain their footer routes.
+        ownsSessionLifecycle
+        #else
+        true
+        #endif
+    }
+
     // MARK: - Bottom Status
 
     private var bottomStatusBar: some View {
@@ -1111,14 +1135,16 @@ struct TerminalWindowView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Connection status: \(session.state.displayName)")
 
-            Button {
-                showConnections()
-            } label: {
-                Image(systemName: "server.rack")
+            if showsFooterWorkspaceNavigationActions {
+                Button {
+                    showConnections()
+                } label: {
+                    Image(systemName: "server.rack")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Connections")
+                .help("Connections")
             }
-            .buttonStyle(.borderless)
-            .accessibilityLabel("Connections")
-            .help("Connections")
 
             if aiAssistant.isAvailable {
                 Button {
@@ -1171,14 +1197,16 @@ struct TerminalWindowView: View {
 
             recordingIndicator
 
-            Button {
-                openNewTerminalFromFooter()
-            } label: {
-                Image(systemName: "plus")
+            if showsFooterWorkspaceNavigationActions {
+                Button {
+                    openNewTerminalFromFooter()
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(newTerminalAccessibilityLabel)
+                .help(newTerminalAccessibilityLabel)
             }
-            .buttonStyle(.borderless)
-            .accessibilityLabel(newTerminalAccessibilityLabel)
-            .help(newTerminalAccessibilityLabel)
 
             Menu {
                 Button {
