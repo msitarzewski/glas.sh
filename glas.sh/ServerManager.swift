@@ -47,23 +47,73 @@ struct HostTrustMigrationStore {
 
 @MainActor
 struct ServerPasswordStore {
-    let retrieve: (UUID) throws -> String
-    let save: (String, UUID) throws -> Void
+    let retrieve: (ServerConfiguration) throws -> String
+    let save: (String, ServerConfiguration) throws -> Void
     let delete: (UUID) throws -> Void
+    let prepareRollback: (ServerConfiguration) throws -> ServerCredentialRollback
+
+    init(
+        retrieve: @escaping (ServerConfiguration) throws -> String,
+        save: @escaping (String, ServerConfiguration) throws -> Void,
+        delete: @escaping (UUID) throws -> Void,
+        deletePublished: ((ServerConfiguration) throws -> Void)? = nil,
+        prepareRollback: ((ServerConfiguration) throws -> ServerCredentialRollback)? = nil
+    ) {
+        self.retrieve = retrieve
+        self.save = save
+        self.delete = delete
+        let resolvedDeletePublished = deletePublished ?? { server in
+            try delete(server.id)
+        }
+        self.prepareRollback = prepareRollback ?? { server in
+            let snapshot: String?
+            do {
+                snapshot = try retrieve(server)
+            } catch SecretStoreError.notFound {
+                snapshot = nil
+            }
+            return ServerCredentialRollback {
+                if let snapshot {
+                    try save(snapshot, server)
+                    guard try retrieve(server) == snapshot else {
+                        throw ServerManagerError.credentialReadbackMismatch
+                    }
+                } else {
+                    do {
+                        try resolvedDeletePublished(server)
+                    } catch SecretStoreError.notFound {
+                        // Absence is the captured state; verify it below.
+                    }
+                    do {
+                        _ = try retrieve(server)
+                        throw ServerManagerError.credentialReadbackMismatch
+                    } catch SecretStoreError.notFound {
+                        return
+                    }
+                }
+            }
+        }
+    }
 
     static let live = ServerPasswordStore(
-        retrieve: { serverID in
-            try KeychainManager.retrievePassword(for: ServerPasswordStore.passwordReference(for: serverID))
+        retrieve: { server in
+            try KeychainManager.retrievePassword(for: server)
         },
-        save: { password, serverID in
-            try KeychainManager.savePassword(password, for: ServerPasswordStore.passwordReference(for: serverID))
+        save: { password, server in
+            try KeychainManager.savePassword(password, for: server)
         },
         delete: { serverID in
             try KeychainManager.deletePassword(for: ServerPasswordStore.passwordReference(for: serverID))
+        },
+        deletePublished: { server in
+            try KeychainManager.deletePublishedPassword(for: server)
+        },
+        prepareRollback: { server in
+            try KeychainManager.passwordRollback(for: server)
         }
     )
 
-    private static func passwordReference(for serverID: UUID) -> ServerConfiguration {
+    static func passwordReference(for serverID: UUID) -> ServerConfiguration {
         ServerConfiguration(id: serverID, name: "Credential", host: "", username: "")
     }
 }
@@ -131,6 +181,7 @@ class ServerManager {
     private let hostTrustStore: HostTrustMigrationStore
     private let credentialMigrationStore: CredentialMigrationStore
     private let credentialMigrationMetadata: CredentialMigrationMetadata
+    private let defersLiveCredentialMigration: Bool
     private let passwordStore: ServerPasswordStore
     private let serverDataWriter: (Data) -> Void
 
@@ -148,6 +199,7 @@ class ServerManager {
         self.credentialMigrationStore = credentialMigrationStore
             ?? .live(defaults: defaults ?? SharedDefaults.defaults)
         self.credentialMigrationMetadata = credentialMigrationMetadata
+        self.defersLiveCredentialMigration = credentialMigrationStore == nil && defaults == nil
         self.passwordStore = passwordStore ?? .live
         let resolvedDefaults = defaults ?? SharedDefaults.defaults
         self.serverDataWriter = serverDataWriter ?? { data in
@@ -205,6 +257,25 @@ class ServerManager {
     }
 
     private func migrateLegacyCredentialsIfNeeded(from loadedServers: [ServerConfiguration]) {
+        if defersLiveCredentialMigration {
+            let servers = KeychainManager.credentialMigrationServers(from: loadedServers)
+            let metadata = credentialMigrationMetadata
+            Task.detached(priority: .utility) {
+                do {
+                    _ = try KeychainManager.runCredentialMigrationIfNeeded(
+                        serverSnapshots: servers,
+                        metadata: metadata,
+                        store: .live(defaults: SharedDefaults.defaults)
+                    )
+                } catch {
+                    Logger.keychain.error(
+                        "Credential namespace migration did not complete: \(error.localizedDescription)"
+                    )
+                }
+            }
+            return
+        }
+
         do {
             _ = try KeychainManager.runCredentialMigrationIfNeeded(
                 servers: loadedServers,
@@ -282,7 +353,7 @@ class ServerManager {
 
     func password(for server: ServerConfiguration) throws -> String {
         try ensureServerCatalogAvailable()
-        return try passwordStore.retrieve(server.id)
+        return try passwordStore.retrieve(server)
     }
 
     func server(for id: UUID) -> ServerConfiguration? {
@@ -296,7 +367,7 @@ class ServerManager {
         }
         let originalServers = servers
         let remainingServers = servers.filter { $0.id != server.id }
-        let passwordSnapshot = try snapshotPassword(for: server.id)
+        let passwordRollback = try passwordStore.prepareRollback(server)
         var journal = try loadCredentialDeletionJournal()
         if let existing = journal.entries.first(where: { $0.serverID == server.id }) {
             guard existing.operation == .deleteServer else {
@@ -321,7 +392,7 @@ class ServerManager {
             try persistCredentialDeletionJournal(journal)
         } catch {
             do {
-                try restorePassword(passwordSnapshot, for: server.id)
+                try passwordRollback.restore()
                 try persistServersAndVerify(originalServers)
                 journal.entries.removeAll { $0.serverID == server.id }
                 try persistCredentialDeletionJournal(journal)
@@ -373,35 +444,22 @@ class ServerManager {
         saveServers()
     }
 
-    private enum PasswordSnapshot {
-        case absent
-        case value(String)
-    }
-
-    private func snapshotPassword(for serverID: UUID) throws -> PasswordSnapshot {
-        do {
-            return .value(try passwordStore.retrieve(serverID))
-        } catch SecretStoreError.notFound {
-            return .absent
-        }
-    }
-
     private func stagePasswordAndPersist(
         _ password: String,
         for server: ServerConfiguration,
         candidateServers: [ServerConfiguration]
     ) throws {
         let originalServers = servers
-        let snapshot = try snapshotPassword(for: server.id)
+        let passwordRollback = try passwordStore.prepareRollback(server)
         do {
-            try passwordStore.save(password, server.id)
-            guard try passwordStore.retrieve(server.id) == password else {
+            try passwordStore.save(password, server)
+            guard try passwordStore.retrieve(server) == password else {
                 throw ServerManagerError.credentialReadbackMismatch
             }
             try persistServersAndVerify(candidateServers)
         } catch {
             do {
-                try restorePassword(snapshot, for: server.id)
+                try passwordRollback.restore()
                 try persistServersAndVerify(originalServers)
             } catch {
                 throw ServerManagerError.rollbackFailed
@@ -417,7 +475,7 @@ class ServerManager {
         candidateServers: [ServerConfiguration]
     ) throws {
         let originalServers = servers
-        let snapshot = try snapshotPassword(for: server.id)
+        let passwordRollback = try passwordStore.prepareRollback(server)
         var journal = try loadCredentialDeletionJournal()
         if let existing = journal.entries.first(where: { $0.serverID == server.id }) {
             guard existing.operation == .removePasswordAuthentication else {
@@ -441,7 +499,7 @@ class ServerManager {
             try persistCredentialDeletionJournal(journal)
         } catch {
             do {
-                try restorePassword(snapshot, for: server.id)
+                try passwordRollback.restore()
                 try persistServersAndVerify(originalServers)
                 journal.entries.removeAll { $0.serverID == server.id }
                 try persistCredentialDeletionJournal(journal)
@@ -471,28 +529,6 @@ class ServerManager {
         WidgetCenter.shared.reloadAllTimelines()
     }
 
-    private func restorePassword(_ snapshot: PasswordSnapshot, for serverID: UUID) throws {
-        switch snapshot {
-        case .absent:
-            do {
-                try passwordStore.delete(serverID)
-            } catch SecretStoreError.notFound {
-                break
-            }
-            do {
-                _ = try passwordStore.retrieve(serverID)
-                throw ServerManagerError.credentialReadbackMismatch
-            } catch SecretStoreError.notFound {
-                return
-            }
-        case .value(let password):
-            try passwordStore.save(password, serverID)
-            guard try passwordStore.retrieve(serverID) == password else {
-                throw ServerManagerError.credentialReadbackMismatch
-            }
-        }
-    }
-
     private func deletePasswordAndVerifyAbsence(for serverID: UUID) throws {
         do {
             try passwordStore.delete(serverID)
@@ -500,7 +536,7 @@ class ServerManager {
             // Absence is verified below through the same UUID-scoped store.
         }
         do {
-            _ = try passwordStore.retrieve(serverID)
+            _ = try passwordStore.retrieve(ServerPasswordStore.passwordReference(for: serverID))
             throw ServerManagerError.credentialReadbackMismatch
         } catch SecretStoreError.notFound {
             return
@@ -634,7 +670,7 @@ class ServerManager {
                 throw HostTrustMigrationError.conflictingKeys
             }
 
-            let recordsBefore = try hostTrustStore.allRecords()
+            let recordsBefore = candidates.isEmpty ? [] : try hostTrustStore.allRecords()
             guard candidates.allSatisfy({ candidate in
                 recordsBefore.allSatisfy { record in
                     record.lookupAccount != candidate.lookupAccount
@@ -653,7 +689,7 @@ class ServerManager {
                 try hostTrustStore.save(candidate)
             }
 
-            let recordsAfter = try hostTrustStore.allRecords()
+            let recordsAfter = candidates.isEmpty ? [] : try hostTrustStore.allRecords()
             for candidate in candidates {
                 guard recordsAfter.contains(where: { record in
                     record.storageAccount == candidate.storageAccount

@@ -7,7 +7,7 @@
 
 import Foundation
 
-enum UserDefaultsKeys {
+nonisolated enum UserDefaultsKeys {
     static let servers = "servers"
     static let autoReconnect = "autoReconnect"
     static let confirmBeforeClosing = "confirmBeforeClosing"
@@ -48,15 +48,15 @@ enum UserDefaultsKeys {
     static let glassMaterialStyle = "glassMaterialStyle"
 }
 
-enum SharedDefaults {
+nonisolated enum SharedDefaults {
     static let suiteName = "group.sh.glas.shared"
     #if os(macOS)
     // The Mac terminal must remain outside App Sandbox so it can launch the
     // user's shell and PTYs. App Group containers require sandbox membership,
     // so Mac metadata belongs in its bundle-scoped defaults domain instead.
-    static let defaults = UserDefaults.standard
+    static var defaults: UserDefaults { .standard }
     #else
-    static let defaults = UserDefaults(suiteName: suiteName)!
+    static var defaults: UserDefaults { UserDefaults(suiteName: suiteName)! }
     #endif
 
     static let schemaVersionKey = "sharedSchemaVersion"

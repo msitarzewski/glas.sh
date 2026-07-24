@@ -210,58 +210,11 @@ enum MacTerminalWindowPolicy {
         // guide, so adjustable terminal transparency never erases the chrome.
         window.titlebarAppearsTransparent = false
         window.styleMask.remove(.fullSizeContentView)
-        installTitlebarMaterial(in: window)
         window.tabbingMode = .preferred
         window.tabbingIdentifier = tabbingIdentifier
         window.isRestorable = true
         window.autorecalculatesKeyViewLoop = true
         // Never set alphaValue: foreground glyphs and the cursor must stay fully
         // opaque while theme fill and blur vary independently behind them.
-    }
-
-    private static func installTitlebarMaterial(in window: NSWindow) {
-        guard let contentView = window.contentView,
-              let themeFrame = contentView.superview else { return }
-
-        if let existing = themeFrame.subviews
-            .compactMap({ $0 as? MacTerminalTitlebarMaterialView })
-            .first(where: {
-                $0.identifier == MacTerminalTitlebarMaterialView.materialIdentifier
-            }) {
-            if existing.contentBoundary === contentView {
-                return
-            }
-            existing.removeFromSuperview()
-        }
-
-        let materialView = MacTerminalTitlebarMaterialView(frame: .zero)
-        materialView.identifier = MacTerminalTitlebarMaterialView.materialIdentifier
-        materialView.contentBoundary = contentView
-        materialView.material = .titlebar
-        materialView.blendingMode = .behindWindow
-        materialView.state = .followsWindowActiveState
-        materialView.alphaValue = 1
-        materialView.translatesAutoresizingMaskIntoConstraints = false
-        themeFrame.addSubview(materialView, positioned: .below, relativeTo: nil)
-
-        NSLayoutConstraint.activate([
-            materialView.leadingAnchor.constraint(equalTo: themeFrame.leadingAnchor),
-            materialView.trailingAnchor.constraint(equalTo: themeFrame.trailingAnchor),
-            materialView.topAnchor.constraint(equalTo: themeFrame.topAnchor),
-            materialView.bottomAnchor.constraint(equalTo: contentView.topAnchor),
-        ])
-    }
-}
-
-@MainActor
-final class MacTerminalTitlebarMaterialView: NSVisualEffectView {
-    static let materialIdentifier = NSUserInterfaceItemIdentifier(
-        "sh.glas.terminal-titlebar-material"
-    )
-
-    weak var contentBoundary: NSView?
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
     }
 }
