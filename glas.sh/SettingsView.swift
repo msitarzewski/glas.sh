@@ -281,7 +281,7 @@ struct GeneralSettingsView: View {
         .padding()
         .task {
             serverManager.loadServersIfNeeded()
-            loadTailscaleCredentialState()
+            await loadTailscaleCredentialState()
         }
         .onDisappear {
             clearTailscaleCredentialInputs()
@@ -359,13 +359,13 @@ struct GeneralSettingsView: View {
         #endif
     }
 
-    private func loadTailscaleCredentialState() {
+    private func loadTailscaleCredentialState() async {
         let storedMethod = TailscaleAuthMethod(rawValue:
             UserDefaults.standard.string(forKey: UserDefaultsKeys.tailscaleAuthMethod) ?? "apiKey"
         ) ?? .apiKey
         persistedTailscaleAuthMethod = storedMethod
         tailscaleAuthMethod = storedMethod
-        tailscaleCredentialPresence = TailscaleClient.credentialPresence()
+        tailscaleCredentialPresence = await TailscaleClient.storedCredentialPresence()
         clearTailscaleCredentialInputs()
     }
 

@@ -72,10 +72,15 @@ private final class FakeICloudSettingsStore: ICloudSettingsKeyValueStore {
     var isAvailable = true
     var isAccountAvailable = true
     var synchronizeResult = true
+    var suspendsSynchronization = false
     private(set) var values: [String: Data] = [:]
     private(set) var setCount = 0
+    private(set) var synchronizeCount = 0
     private(set) var observerCount = 0
+    private var pendingSynchronizations: [CheckedContinuation<Bool, Never>] = []
     private var handler: (@MainActor @Sendable (ICloudSettingsStoreChange) -> Void)?
+
+    var pendingSynchronizationCount: Int { pendingSynchronizations.count }
 
     func data(forKey key: String) -> Data? { values[key] }
 
@@ -84,7 +89,18 @@ private final class FakeICloudSettingsStore: ICloudSettingsKeyValueStore {
         setCount += 1
     }
 
-    func synchronize() -> Bool { synchronizeResult }
+    func synchronize() async -> Bool {
+        synchronizeCount += 1
+        guard suspendsSynchronization else { return synchronizeResult }
+        return await withCheckedContinuation { continuation in
+            pendingSynchronizations.append(continuation)
+        }
+    }
+
+    func resumeNextSynchronization(returning result: Bool) {
+        precondition(!pendingSynchronizations.isEmpty)
+        pendingSynchronizations.removeFirst().resume(returning: result)
+    }
 
     func observeExternalChanges(
         _ handler: @escaping @MainActor @Sendable (ICloudSettingsStoreChange) -> Void
@@ -98,6 +114,10 @@ private final class FakeICloudSettingsStore: ICloudSettingsKeyValueStore {
         handler = nil
         observerCount = max(0, observerCount - 1)
     }
+
+    func emit(_ change: ICloudSettingsStoreChange) {
+        handler?(change)
+    }
 }
 
 @MainActor
@@ -109,20 +129,78 @@ private final class ServerPasswordProbe {
 
     var store: ServerPasswordStore {
         ServerPasswordStore(
-            retrieve: { [unowned self] serverID in
+            retrieve: { [unowned self] server in
                 if let retrieveError { throw retrieveError }
-                guard let value = values[serverID] else { throw SecretStoreError.notFound }
+                guard let value = values[server.id] else { throw SecretStoreError.notFound }
                 return value
             },
-            save: { [unowned self] password, serverID in
+            save: { [unowned self] password, server in
                 if let saveError { throw saveError }
-                values[serverID] = password
+                values[server.id] = password
             },
             delete: { [unowned self] serverID in
                 if let deleteError { throw deleteError }
                 guard values.removeValue(forKey: serverID) != nil else {
                     throw SecretStoreError.notFound
                 }
+            }
+        )
+    }
+}
+
+@MainActor
+private final class SharedServerCredentialProbe {
+    var values: [String: Data] = [:]
+    var failSaveKey: String?
+
+    func key(account: String, service: String) -> String {
+        "\(service)\u{0}\(account)"
+    }
+
+    var store: ServerCredentialStore {
+        ServerCredentialStore(
+            read: { [unowned self] account, service in
+                values[key(account: account, service: service)]
+            },
+            save: { [unowned self] data, account, service in
+                let storageKey = key(account: account, service: service)
+                if failSaveKey == storageKey {
+                    failSaveKey = nil
+                    throw TerminalWriteFailure()
+                }
+                values[storageKey] = data
+            },
+            addIfAbsent: { [unowned self] data, account, service in
+                let storageKey = key(account: account, service: service)
+                guard values[storageKey] == nil else { return false }
+                values[storageKey] = data
+                return true
+            },
+            delete: { [unowned self] account, service in
+                values.removeValue(forKey: key(account: account, service: service))
+            }
+        )
+    }
+
+    var passwordStore: ServerPasswordStore {
+        ServerPasswordStore(
+            retrieve: { [unowned self] server in
+                try KeychainManager.retrievePassword(for: server, store: store)
+            },
+            save: { [unowned self] password, server in
+                try KeychainManager.savePassword(password, for: server, store: store)
+            },
+            delete: { [unowned self] serverID in
+                try KeychainManager.deletePassword(
+                    for: ServerPasswordStore.passwordReference(for: serverID),
+                    store: store
+                )
+            },
+            deletePublished: { [unowned self] server in
+                try KeychainManager.deletePublishedPassword(for: server, store: store)
+            },
+            prepareRollback: { [unowned self] server in
+                try KeychainManager.passwordRollback(for: server, store: store)
             }
         )
     }
@@ -251,6 +329,7 @@ private final class CredentialMigrationProbe {
 private final class HostTrustStoreProbe {
     var records: [String: PinnedSSHHostKey] = [:]
     var saveCount = 0
+    var allRecordsCount = 0
     var failSaves = false
     var omitRecordsOnReadback = false
 
@@ -264,7 +343,8 @@ private final class HostTrustStoreProbe {
                 records[record.storageAccount] = record
             },
             allRecords: { [self] in
-                omitRecordsOnReadback ? [] : Array(records.values)
+                allRecordsCount += 1
+                return omitRecordsOnReadback ? [] : Array(records.values)
             }
         )
     }
@@ -643,7 +723,7 @@ struct glas_shTests {
         #expect(first.selectedTheme?.preferredAppearance != nil)
     }
 
-    @Test @MainActor func iCloudSyncPreservesRemoteDeletionWhenStaleDevicePushes() throws {
+    @Test @MainActor func iCloudSyncPreservesRemoteDeletionWhenStaleDevicePushes() async throws {
         let store = FakeICloudSettingsStore()
         let customID = UUID()
         let early = Date(timeIntervalSinceReferenceDate: 100)
@@ -660,13 +740,16 @@ struct glas_shTests {
         )
 
         let firstDevice = ICloudSettingsSyncService(store: store, writerID: UUID())
-        firstDevice.start(onMerge: { _ in })
-        _ = try firstDevice.push(activePayload, writtenAt: early)
-        _ = try firstDevice.push(deletedPayload, writtenAt: late)
+        await firstDevice.start(onMerge: { _ in })
+        _ = try await firstDevice.push(activePayload, writtenAt: early)
+        _ = try await firstDevice.push(deletedPayload, writtenAt: late)
 
         let staleDevice = ICloudSettingsSyncService(store: store, writerID: UUID())
-        staleDevice.start(onMerge: { _ in })
-        let converged = try staleDevice.push(activePayload, writtenAt: late.addingTimeInterval(1))
+        await staleDevice.start(onMerge: { _ in })
+        let converged = try await staleDevice.push(
+            activePayload,
+            writtenAt: late.addingTimeInterval(1)
+        )
 
         #expect(converged.payload.themeRecords.first(where: { $0.id == customID })?.deletedAt == late)
         #expect(converged.payload.selectedThemeID == TerminalTheme.defaultID)
@@ -781,6 +864,12 @@ struct glas_shTests {
             iCloudSettingsSyncService: destinationService
         )
 
+        let destinationSyncDeadline = ContinuousClock.now + .seconds(5)
+        while destination.selectedThemeID != importedID,
+              ContinuousClock.now < destinationSyncDeadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+
         #expect(destination.selectedThemeID == importedID)
         #expect(destination.themeLibrary.activeRecords.first(where: { $0.id == importedID })?.origin == .appleTerminal)
         #expect(destination.currentTheme == expectedTheme)
@@ -861,6 +950,150 @@ struct glas_shTests {
         #expect(store.setCount == 0)
     }
 
+    @Test @MainActor func stoppedICloudStartIgnoresStaleSynchronizationFailure() async throws {
+        let store = FakeICloudSettingsStore()
+        store.suspendsSynchronization = true
+        let service = ICloudSettingsSyncService(store: store, writerID: UUID())
+        let startTask = Task { @MainActor in
+            await service.start(onMerge: { _ in })
+        }
+
+        guard try await waitForPendingSynchronizations(1, in: store) else {
+            Issue.record("The initial iCloud synchronization did not suspend")
+            return
+        }
+        service.stop()
+        store.resumeNextSynchronization(returning: false)
+        await startTask.value
+
+        #expect(service.status == .disabled)
+        #expect(service.lastErrorDescription == nil)
+        #expect(store.observerCount == 0)
+    }
+
+    @Test @MainActor func stoppedICloudAccountRefreshIgnoresStaleCompletion() async throws {
+        let store = FakeICloudSettingsStore()
+        let service = ICloudSettingsSyncService(store: store, writerID: UUID())
+        await service.start(onMerge: { _ in })
+        #expect(service.status == .synced)
+
+        store.suspendsSynchronization = true
+        store.emit(ICloudSettingsStoreChange(reason: .account, changedKeys: []))
+        guard try await waitForPendingSynchronizations(1, in: store) else {
+            Issue.record("The account-change synchronization did not suspend")
+            return
+        }
+        service.stop()
+        store.resumeNextSynchronization(returning: true)
+        try await Task.sleep(for: .milliseconds(10))
+
+        #expect(service.status == .disabled)
+        #expect(service.acceptedEnvelope == nil)
+        #expect(store.observerCount == 0)
+    }
+
+    @Test @MainActor func supersededICloudAccountFailureCannotOverrideLatestRefresh() async throws {
+        let store = FakeICloudSettingsStore()
+        let service = ICloudSettingsSyncService(store: store, writerID: UUID())
+        await service.start(onMerge: { _ in })
+
+        store.suspendsSynchronization = true
+        store.emit(ICloudSettingsStoreChange(reason: .account, changedKeys: []))
+        guard try await waitForPendingSynchronizations(1, in: store) else {
+            Issue.record("The first account-change synchronization did not suspend")
+            return
+        }
+        store.emit(ICloudSettingsStoreChange(reason: .account, changedKeys: []))
+        guard try await waitForPendingSynchronizations(2, in: store) else {
+            Issue.record("The replacement account-change synchronization did not suspend")
+            return
+        }
+
+        store.resumeNextSynchronization(returning: false)
+        try await Task.sleep(for: .milliseconds(10))
+        #expect(service.status == .syncing)
+
+        store.resumeNextSynchronization(returning: true)
+        for _ in 0..<40 {
+            if service.status == .synced { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(service.status == .synced)
+        #expect(service.lastErrorDescription == nil)
+    }
+
+    @Test @MainActor func stoppedICloudPushCannotPublishStaleCompletion() async throws {
+        let store = FakeICloudSettingsStore()
+        let service = ICloudSettingsSyncService(store: store, writerID: UUID())
+        await service.start(onMerge: { _ in })
+        store.suspendsSynchronization = true
+        let payload = makeICloudPayload(
+            customID: UUID(),
+            customDeletedAt: nil,
+            modifiedAt: Date(timeIntervalSinceReferenceDate: 1_000)
+        )
+        let pushTask = Task { @MainActor in
+            try await service.push(payload)
+        }
+
+        guard try await waitForPendingSynchronizations(1, in: store) else {
+            Issue.record("The outgoing iCloud synchronization did not suspend")
+            return
+        }
+        service.stop()
+        store.resumeNextSynchronization(returning: true)
+
+        do {
+            _ = try await pushTask.value
+            Issue.record("A push completed after iCloud synchronization stopped")
+        } catch is CancellationError {
+            // Expected: a stopped generation cannot publish its completion.
+        } catch {
+            Issue.record("Expected CancellationError, received \(error)")
+        }
+
+        #expect(service.status == .disabled)
+        #expect(service.acceptedEnvelope == nil)
+        #expect(service.lastErrorDescription == nil)
+    }
+
+    @Test @MainActor func settingsManagerTreatsStoppedICloudPushAsExpectedCancellation() async throws {
+        let suiteName = "sh.glas.test.icloud-push-cancellation.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(true, forKey: UserDefaultsKeys.iCloudSettingsSyncEnabled)
+        let store = FakeICloudSettingsStore()
+        let service = ICloudSettingsSyncService(store: store, writerID: UUID())
+        let settings = SettingsManager(
+            settingsDefaults: defaults,
+            iCloudSettingsSyncService: service
+        )
+
+        for _ in 0..<100 {
+            if store.setCount == 1, settings.iCloudSyncStatusText == "Up to date" { break }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(store.setCount == 1)
+        #expect(settings.iCloudSyncStatusText == "Up to date")
+
+        store.suspendsSynchronization = true
+        settings.windowOpacity = 0.42
+        settings.saveSettings()
+        guard try await waitForPendingSynchronizations(1, in: store) else {
+            Issue.record("The SettingsManager iCloud push did not suspend")
+            return
+        }
+        let writeCountAtCancellation = store.setCount
+        settings.setICloudSyncEnabled(false)
+        store.resumeNextSynchronization(returning: true)
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(settings.iCloudSyncStatusText == "Off")
+        #expect(service.status == .disabled)
+        #expect(store.observerCount == 0)
+        #expect(store.setCount == writeCountAtCancellation)
+    }
+
     @Test @MainActor func iCloudSyncRetriesTransientStoreFailure() async throws {
         let suiteName = "sh.glas.test.icloud-retry.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -879,8 +1112,50 @@ struct glas_shTests {
         let failedAttemptCount = store.setCount
         store.synchronizeResult = true
 
-        try await Task.sleep(for: .milliseconds(2_200))
+        for _ in 0..<100 {
+            if store.setCount > failedAttemptCount,
+               settings.iCloudSyncStatusText == "Up to date" {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
         #expect(store.setCount > failedAttemptCount)
+        #expect(settings.iCloudSyncStatusText == "Up to date")
+    }
+
+    @Test @MainActor func iCloudSyncWaitsForAccountChangeWithoutPolling() async throws {
+        let suiteName = "sh.glas.test.icloud-account.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(true, forKey: UserDefaultsKeys.iCloudSettingsSyncEnabled)
+        let store = FakeICloudSettingsStore()
+        store.isAccountAvailable = false
+        let service = ICloudSettingsSyncService(store: store, writerID: UUID())
+        let settings = SettingsManager(
+            settingsDefaults: defaults,
+            iCloudSettingsSyncService: service
+        )
+
+        try await Task.sleep(for: .milliseconds(650))
+        #expect(store.observerCount == 1)
+        #expect(store.setCount == 0)
+        #expect(settings.iCloudSyncStatusText.contains("iCloud account"))
+
+        // Account absence is persistent state, not a transport failure. Waiting
+        // beyond the former first retry proves no polling push is scheduled.
+        try await Task.sleep(for: .milliseconds(2_200))
+        #expect(store.setCount == 0)
+
+        store.isAccountAvailable = true
+        store.emit(ICloudSettingsStoreChange(reason: .account, changedKeys: []))
+        for _ in 0..<40 {
+            if store.setCount == 1 && settings.iCloudSyncStatusText == "Up to date" {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+
+        #expect(store.setCount == 1)
         #expect(settings.iCloudSyncStatusText == "Up to date")
     }
 
@@ -1084,6 +1359,78 @@ struct glas_shTests {
         #expect(KeychainManager.tailscaleOAuthClientIDAccount == "terminal.tailscale.oauth.client-id")
         #expect(KeychainManager.tailscaleOAuthClientSecretAccount == "terminal.tailscale.oauth.client-secret")
         #expect(KeychainManager.tailscaleOAuthCredentialsAccount == "terminal.tailscale.oauth.credentials")
+    }
+
+    @Test func sharedSSHCredentialContractMatchesGlassDB() throws {
+        let server = migrationServer(host: "bastion.example.com")
+        #expect(KeychainManager.sharedSSHPasswordAccount(for: server)
+            == "ssh:operator@bastion.example.com:22")
+        #expect(KeychainManager.config.sshPasswordsService == "sh.glas.sshpasswords")
+        #expect(KeychainManager.validatedSharedAccessGroup("7JQGQ7CRH8.sh.glas.shared")
+            == "7JQGQ7CRH8.sh.glas.shared")
+        #expect(KeychainManager.validatedSharedAccessGroup("sh.glas.shared") == nil)
+        #expect(KeychainManager.validatedSharedAccessGroup("$(AppIdentifierPrefix)sh.glas.shared") == nil)
+    }
+
+    @Test func glasPasswordSavePublishesVerifiedGlassDBCompatibleCredential() throws {
+        let server = migrationServer(host: "bastion.example.com")
+        let probe = SharedServerCredentialProbe()
+        try KeychainManager.savePassword("shared-secret", for: server, store: probe.store)
+
+        let primaryKey = probe.key(
+            account: KeychainManager.serverPasswordAccount(for: server.id),
+            service: KeychainManager.config.passwordsService
+        )
+        let sharedKey = probe.key(
+            account: try #require(KeychainManager.sharedSSHPasswordAccount(for: server)),
+            service: KeychainManager.config.sshPasswordsService
+        )
+        #expect(probe.values[primaryKey] == Data("shared-secret".utf8))
+        #expect(probe.values[sharedKey] == Data("shared-secret".utf8))
+    }
+
+    @Test func glassDBCompatibleCredentialImportsForwardIntoGlasProfile() throws {
+        let server = migrationServer(host: "bastion.example.com")
+        let probe = SharedServerCredentialProbe()
+        let sharedAccount = try #require(KeychainManager.sharedSSHPasswordAccount(for: server))
+        let sharedKey = probe.key(
+            account: sharedAccount,
+            service: KeychainManager.config.sshPasswordsService
+        )
+        probe.values[sharedKey] = Data("glassdb-secret".utf8)
+
+        #expect(try KeychainManager.retrievePassword(for: server, store: probe.store) == "glassdb-secret")
+        let primaryKey = probe.key(
+            account: KeychainManager.serverPasswordAccount(for: server.id),
+            service: KeychainManager.config.passwordsService
+        )
+        #expect(probe.values[primaryKey] == Data("glassdb-secret".utf8))
+
+        try KeychainManager.deletePassword(for: server, store: probe.store)
+        #expect(probe.values[primaryKey] == nil)
+        #expect(probe.values[sharedKey] == Data("glassdb-secret".utf8))
+    }
+
+    @Test func sharedCredentialPartialWriteRestoresBothPreviousRecords() throws {
+        let server = migrationServer(host: "bastion.example.com")
+        let probe = SharedServerCredentialProbe()
+        let primaryKey = probe.key(
+            account: KeychainManager.serverPasswordAccount(for: server.id),
+            service: KeychainManager.config.passwordsService
+        )
+        let sharedKey = probe.key(
+            account: try #require(KeychainManager.sharedSSHPasswordAccount(for: server)),
+            service: KeychainManager.config.sshPasswordsService
+        )
+        probe.values[primaryKey] = Data("old-primary".utf8)
+        probe.values[sharedKey] = Data("old-shared".utf8)
+        probe.failSaveKey = sharedKey
+
+        #expect(throws: TerminalWriteFailure.self) {
+            try KeychainManager.savePassword("new-secret", for: server, store: probe.store)
+        }
+        #expect(probe.values[primaryKey] == Data("old-primary".utf8))
+        #expect(probe.values[sharedKey] == Data("old-shared".utf8))
     }
 
     private func migrationServer(
@@ -1597,6 +1944,26 @@ struct glas_shTests {
 
     // MARK: - ServerManager Tests
 
+    @Test func hostTrustMigrationWithoutSourcesSkipsKeychainInventory() throws {
+        let fixture = migrationDefaults("host-trust-empty")
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.name) }
+        let probe = HostTrustStoreProbe()
+        let manager = ServerManager(
+            loadImmediately: false,
+            defaults: fixture.defaults,
+            hostTrustStore: probe.store
+        )
+
+        manager.loadServersIfNeeded()
+
+        #expect(probe.allRecordsCount == 0)
+        #expect(
+            fixture.defaults.integer(forKey: UserDefaultsKeys.hostTrustMigrationVersion)
+                == ServerManager.currentHostTrustMigrationVersion
+        )
+        #expect(try migrationReport(from: fixture.defaults).state == .completed)
+    }
+
     @Test func serverDeletionPersistsMetadataFirstAndRestoresItOnKeychainFailure() throws {
         let suiteName = "sh.glas.test.server-delete.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -1664,6 +2031,79 @@ struct glas_shTests {
         #expect(passwordProbe.values[server.id] == "preexisting-secret")
         let persistedData = try #require(defaults.data(forKey: UserDefaultsKeys.servers))
         #expect(try JSONDecoder().decode([ServerConfiguration].self, from: persistedData).isEmpty)
+    }
+
+    @Test func serverPasswordCreateRemovesNewCrossAppRecordsWhenMetadataReadbackFails() throws {
+        let suiteName = "sh.glas.test.server-create-shared-rollback.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(try JSONEncoder().encode([ServerConfiguration]()), forKey: UserDefaultsKeys.servers)
+
+        let server = migrationServer(host: "shared-rollback.example.com")
+        let probe = SharedServerCredentialProbe()
+        let manager = ServerManager(
+            loadImmediately: false,
+            defaults: defaults,
+            passwordStore: probe.passwordStore,
+            serverDataWriter: { _ in }
+        )
+
+        #expect(throws: ServerManagerError.persistenceReadbackMismatch) {
+            try manager.addServerOrThrow(server, password: "must-roll-back")
+        }
+
+        let primaryKey = probe.key(
+            account: KeychainManager.serverPasswordAccount(for: server.id),
+            service: KeychainManager.config.passwordsService
+        )
+        let sharedKey = probe.key(
+            account: try #require(KeychainManager.sharedSSHPasswordAccount(for: server)),
+            service: KeychainManager.config.sshPasswordsService
+        )
+        #expect(probe.values[primaryKey] == nil)
+        #expect(probe.values[sharedKey] == nil)
+        #expect(manager.servers.isEmpty)
+    }
+
+    @Test func failedEndpointEditRestoresExistingGlassDBCredentialExactly() throws {
+        let suiteName = "sh.glas.test.server-edit-shared-rollback.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let original = migrationServer(host: "old.example.com")
+        defaults.set(try JSONEncoder().encode([original]), forKey: UserDefaultsKeys.servers)
+        var updated = original
+        updated.host = "glassdb.example.com"
+
+        let probe = SharedServerCredentialProbe()
+        let primaryKey = probe.key(
+            account: KeychainManager.serverPasswordAccount(for: original.id),
+            service: KeychainManager.config.passwordsService
+        )
+        let glassDBSharedKey = probe.key(
+            account: try #require(KeychainManager.sharedSSHPasswordAccount(for: updated)),
+            service: KeychainManager.config.sshPasswordsService
+        )
+        probe.values[primaryKey] = Data("glas-profile-secret".utf8)
+        probe.values[glassDBSharedKey] = Data("glassdb-existing-secret".utf8)
+
+        let manager = ServerManager(
+            loadImmediately: false,
+            defaults: defaults,
+            passwordStore: probe.passwordStore,
+            serverDataWriter: { _ in }
+        )
+        manager.servers = [original]
+
+        #expect(throws: ServerManagerError.persistenceReadbackMismatch) {
+            try manager.updateServerOrThrow(updated, password: "replacement-secret")
+        }
+
+        #expect(probe.values[primaryKey] == Data("glas-profile-secret".utf8))
+        #expect(probe.values[glassDBSharedKey] == Data("glassdb-existing-secret".utf8))
+        #expect(manager.servers == [original])
+        let persistedData = try #require(defaults.data(forKey: UserDefaultsKeys.servers))
+        #expect(try JSONDecoder().decode([ServerConfiguration].self, from: persistedData) == [original])
     }
 
     @Test func serverPasswordEditRestoresExactOldSecretWhenMetadataReadbackFails() throws {
@@ -4065,9 +4505,13 @@ struct glas_shTests {
             destinationName: "report.txt",
             matching: completedIdentity
         )
+        try partial.file.seek(toOffset: 0)
+        #expect(try partial.file.readToEnd() == Data("download".utf8))
+        #expect(
+            try SFTPBrowserView.localFileIdentity(for: partial.file)
+                .isSameFile(as: completedIdentity)
+        )
         try partial.file.close()
-
-        #expect(try Data(contentsOf: retainedPath.appendingPathComponent("report.txt")) == Data("download".utf8))
         #expect(try fileManager.destinationOfSymbolicLink(atPath: replacementPartial.path) == victim.path)
         #expect(try Data(contentsOf: victim) == Data("untouched".utf8))
         #expect(
@@ -4798,6 +5242,41 @@ struct glas_shTests {
         #expect(model.rendererDiagnostics.failureDescription == nil)
     }
 
+    @Test @MainActor func terminalHostAppliesInitialFocusOwnershipBeforeAttachment() throws {
+        let model = SwiftTermHostModel()
+        let hostView = SwiftTermHostView(
+            model: model,
+            theme: SwiftTermTheme(
+                fontSize: 14,
+                foreground: (1, 1, 1),
+                background: (0, 0, 0, 0),
+                cursor: (1, 1, 1)
+            ),
+            runtimeSettings: SwiftTermRuntimeSettings(
+                cursorStyle: "Block",
+                blinkingCursor: true,
+                scrollbackLines: 500
+            ),
+            allowsFocusOwnership: false,
+            onSendData: { _ in },
+            onResize: { _, _ in }
+        )
+        let controller = UIHostingController(rootView: hostView)
+        controller.loadViewIfNeeded()
+        controller.view.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+        let windowScene = try #require(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        )
+        let window = UIWindow(windowScene: windowScene)
+        window.frame = controller.view.frame
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        controller.view.layoutIfNeeded()
+
+        #expect(model.allowsFocusOwnership == false)
+        window.isHidden = true
+    }
+
     @Test func terminalHardwareKeyPolicyUsesCorrectXtermSequences() {
         #expect(
             SwiftTermHardwareKeyPolicy.legacyFunctionKeySequence(for: .keyboardF10)
@@ -4821,6 +5300,161 @@ struct glas_shTests {
             blinkingCursor: true,
             scrollbackLines: 500
         ).optionAsMetaKey)
+    }
+
+    @Test func terminalContextualKeyPolicyPreservesApplicationCursorAndFunctionSequences() {
+        #expect(SwiftTermSpecialKeyPolicy.sequence(for: .escape) == [0x1b])
+        #expect(SwiftTermSpecialKeyPolicy.sequence(for: .tab) == [0x09])
+        #expect(
+            SwiftTermSpecialKeyPolicy.sequence(for: .left(applicationCursor: false))
+                == Array("\u{1B}[D".utf8)
+        )
+        #expect(
+            SwiftTermSpecialKeyPolicy.sequence(for: .left(applicationCursor: true))
+                == Array("\u{1B}OD".utf8)
+        )
+        #expect(
+            SwiftTermSpecialKeyPolicy.sequence(for: .function(12))
+                == Array("\u{1B}[24~".utf8)
+        )
+        #expect(SwiftTermSpecialKeyPolicy.sequence(for: .function(0)) == nil)
+        #expect(SwiftTermSpecialKeyPolicy.sequence(for: .function(13)) == nil)
+    }
+
+    @Test func terminalCursorScrubDeadZoneAndDominantAxisAreCellRelative() {
+        #expect(SwiftTermCursorScrubPolicy.dominantAxis(
+            horizontalPoints: 4,
+            verticalPoints: 8,
+            cellWidth: 10,
+            cellHeight: 20
+        ) == nil)
+        #expect(SwiftTermCursorScrubPolicy.keys(
+            for: .zero,
+            applicationCursor: false
+        ).isEmpty)
+        #expect(SwiftTermCursorScrubPolicy.dominantAxis(
+            horizontalPoints: 9,
+            verticalPoints: 10,
+            cellWidth: 10,
+            cellHeight: 20
+        ) == .horizontal)
+        #expect(SwiftTermCursorScrubPolicy.dominantAxis(
+            horizontalPoints: 5,
+            verticalPoints: 16,
+            cellWidth: 10,
+            cellHeight: 20
+        ) == .vertical)
+        #expect(SwiftTermCursorScrubPolicy.dominantAxis(
+            horizontalPoints: 20,
+            verticalPoints: 20,
+            cellWidth: 0,
+            cellHeight: 20
+        ) == nil)
+    }
+
+    @Test func terminalCursorScrubQuantizesOnlyTheLockedAxis() {
+        #expect(SwiftTermCursorScrubPolicy.quantizedDelta(
+            horizontalPoints: 27,
+            verticalPoints: -41,
+            cellWidth: 9,
+            cellHeight: 20,
+            lockedAxis: .horizontal
+        ) == SwiftTermCursorScrubDelta(horizontal: 3, vertical: 0))
+        #expect(SwiftTermCursorScrubPolicy.quantizedDelta(
+            horizontalPoints: 27,
+            verticalPoints: -41,
+            cellWidth: 9,
+            cellHeight: 20,
+            lockedAxis: .vertical
+        ) == SwiftTermCursorScrubDelta(horizontal: 0, vertical: -2))
+        #expect(SwiftTermCursorScrubPolicy.quantizedDelta(
+            horizontalPoints: 10_000,
+            verticalPoints: 0,
+            cellWidth: 1,
+            cellHeight: 1,
+            lockedAxis: .horizontal
+        ) == SwiftTermCursorScrubDelta(
+            horizontal: SwiftTermCursorScrubPolicy.maximumStepsPerAxis,
+            vertical: 0
+        ))
+    }
+
+    @Test func terminalCursorScrubCapsUpdatesAndPreservesReversalRemainder() {
+        let first = SwiftTermCursorScrubPolicy.incrementalDelta(
+            current: SwiftTermCursorScrubDelta(horizontal: 20, vertical: 0),
+            previouslyApplied: .zero
+        )
+        #expect(first == SwiftTermCursorScrubDelta(
+            horizontal: SwiftTermCursorScrubPolicy.maximumStepsPerUpdate,
+            vertical: 0
+        ))
+
+        let partiallyApplied = SwiftTermCursorScrubPolicy.adding(first, to: .zero)
+        let second = SwiftTermCursorScrubPolicy.incrementalDelta(
+            current: SwiftTermCursorScrubDelta(horizontal: 20, vertical: 0),
+            previouslyApplied: partiallyApplied
+        )
+        #expect(second == first)
+
+        let reversal = SwiftTermCursorScrubPolicy.incrementalDelta(
+            current: SwiftTermCursorScrubDelta(horizontal: -3, vertical: 0),
+            previouslyApplied: SwiftTermCursorScrubDelta(horizontal: 2, vertical: 0)
+        )
+        #expect(reversal == SwiftTermCursorScrubDelta(
+            horizontal: -SwiftTermCursorScrubPolicy.maximumStepsPerUpdate,
+            vertical: 0
+        ))
+        let reversalProgress = SwiftTermCursorScrubPolicy.adding(
+            reversal,
+            to: SwiftTermCursorScrubDelta(horizontal: 2, vertical: 0)
+        )
+        #expect(reversalProgress == SwiftTermCursorScrubDelta(horizontal: -2, vertical: 0))
+        #expect(SwiftTermCursorScrubPolicy.incrementalDelta(
+            current: SwiftTermCursorScrubDelta(horizontal: -3, vertical: 0),
+            previouslyApplied: reversalProgress
+        ) == SwiftTermCursorScrubDelta(horizontal: -1, vertical: 0))
+
+        let fastDragTarget = SwiftTermCursorScrubDelta(horizontal: 23, vertical: 0)
+        var fastDragApplied = SwiftTermCursorScrubDelta.zero
+        var emittedSteps = 0
+        while fastDragApplied != fastDragTarget {
+            let batch = SwiftTermCursorScrubPolicy.incrementalDelta(
+                current: fastDragTarget,
+                previouslyApplied: fastDragApplied
+            )
+            #expect(abs(batch.horizontal) <= SwiftTermCursorScrubPolicy.maximumStepsPerUpdate)
+            emittedSteps += batch.horizontal
+            fastDragApplied = SwiftTermCursorScrubPolicy.adding(batch, to: fastDragApplied)
+        }
+        #expect(emittedSteps == fastDragTarget.horizontal)
+    }
+
+    @Test func terminalCursorScrubDirectionsPreserveApplicationCursorMode() {
+        let delta = SwiftTermCursorScrubDelta(horizontal: -2, vertical: 1)
+        #expect(SwiftTermCursorScrubPolicy.keys(
+            for: delta,
+            applicationCursor: false
+        ) == [
+            .left(applicationCursor: false),
+            .left(applicationCursor: false),
+            .down(applicationCursor: false),
+        ])
+        #expect(SwiftTermCursorScrubPolicy.sequences(
+            for: delta,
+            applicationCursor: false
+        ) == [
+            Array("\u{1B}[D".utf8),
+            Array("\u{1B}[D".utf8),
+            Array("\u{1B}[B".utf8),
+        ])
+        #expect(SwiftTermCursorScrubPolicy.sequences(
+            for: delta,
+            applicationCursor: true
+        ) == [
+            Array("\u{1B}OD".utf8),
+            Array("\u{1B}OD".utf8),
+            Array("\u{1B}OB".utf8),
+        ])
     }
 
     @Test @MainActor func terminalRendererDrawsGlyphsAfterWindowAttachmentWithClearBacking() async throws {
@@ -6603,6 +7237,19 @@ struct glas_shTests {
             fontName: fontName,
             fontSize: fontSize
         )
+    }
+
+    @MainActor
+    private func waitForPendingSynchronizations(
+        _ expectedCount: Int,
+        in store: FakeICloudSettingsStore
+    ) async throws -> Bool {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while store.pendingSynchronizationCount < expectedCount,
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        return store.pendingSynchronizationCount >= expectedCount
     }
 
     private func makeICloudPayload(

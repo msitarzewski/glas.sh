@@ -27,6 +27,8 @@ struct ConnectionManagerView: View {
     #if os(iOS)
     @Environment(IOSAppRouter.self) private var iOSRouter
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #elseif os(macOS)
+    @Environment(\.openSettings) private var openSettings
     #endif
 
     private var serverManager: ServerManager { sessionManager.serverManager }
@@ -204,14 +206,16 @@ struct ConnectionManagerView: View {
         }
         .task {
             serverManager.loadServersIfNeeded()
-            refreshTailscaleConfiguration()
+            await refreshTailscaleConfiguration()
         }
         .onReceive(NotificationCenter.default.publisher(for: .tailscaleCredentialsDidChange)) { _ in
             tailscaleClient.invalidateCredentialState()
             selectedTailscaleDeviceID = nil
-            refreshTailscaleConfiguration()
-            if tailscaleIsConfigured, selectedMode == .network {
-                loadTailscaleDevices()
+            Task {
+                await refreshTailscaleConfiguration()
+                if tailscaleIsConfigured, selectedMode == .network {
+                    loadTailscaleDevices()
+                }
             }
         }
         .onChange(of: tailscaleIsConfigured) { _, isConfigured in
@@ -274,10 +278,30 @@ struct ConnectionManagerView: View {
             libraryDetail(connectionLibrary: connectionLibrary)
         }
         #elseif os(visionOS)
-        visionLibrary(connectionLibrary: connectionLibrary)
-            .ornament(attachmentAnchor: .scene(.leading)) {
-                visionModeOrnament(connectionLibrary: connectionLibrary)
-                    .glassBackgroundEffect(in: .rect(cornerRadius: 24))
+        TabView(selection: visionModeSelection(in: connectionLibrary)) {
+            ForEach(connectionLibrary.availableModes) { mode in
+                visionLibrary(
+                    mode: mode,
+                    connectionLibrary: connectionLibrary
+                )
+                    .tabItem {
+                        Label(mode.title, systemImage: modeSystemImage(mode))
+                            .accessibilityIdentifier(
+                                "connection-library-mode-\(mode.rawValue)"
+                            )
+                    }
+                    .tag(mode)
+            }
+        }
+            .toolbar {
+                ToolbarItem(placement: .bottomOrnament) {
+                    Button {
+                        showSettings()
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
+                    .accessibilityIdentifier("connection-library-settings")
+                }
             }
             .focusedSceneValue(
                 \.platformNewTerminalAction,
@@ -364,9 +388,10 @@ struct ConnectionManagerView: View {
     #if os(visionOS)
     @ViewBuilder
     private func visionLibrary(
+        mode: ConnectionLibraryMode,
         connectionLibrary: ConnectionLibraryProjection
     ) -> some View {
-        if selectedMode == .collections {
+        if mode == .collections {
             NavigationSplitView {
                 collectionNavigation(connectionLibrary: connectionLibrary)
             } content: {
@@ -383,40 +408,13 @@ struct ConnectionManagerView: View {
         }
     }
 
-    private func visionModeOrnament(
-        connectionLibrary: ConnectionLibraryProjection
-    ) -> some View {
-        VStack(spacing: 10) {
-            ForEach(connectionLibrary.availableModes) { mode in
-                Button {
-                    selectMode(mode, in: connectionLibrary)
-                } label: {
-                    Image(systemName: modeSystemImage(mode))
-                        .frame(width: 44, height: 44)
-                }
-                .buttonStyle(.plain)
-                .background(
-                    selectedMode == mode ? Color.accentColor.opacity(0.2) : Color.clear,
-                    in: .circle
-                )
-                .accessibilityLabel(mode.title)
-                .accessibilityIdentifier("connection-library-mode-\(mode.rawValue)")
-                .accessibilityAddTraits(selectedMode == mode ? .isSelected : [])
-            }
-
-            Divider()
-
-            Button {
-                showSettings()
-            } label: {
-                Image(systemName: "gearshape")
-                    .frame(width: 44, height: 44)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Settings")
-            .accessibilityIdentifier("connection-library-settings")
-        }
-        .padding(10)
+    private func visionModeSelection(
+        in connectionLibrary: ConnectionLibraryProjection
+    ) -> Binding<ConnectionLibraryMode> {
+        Binding(
+            get: { selectedMode },
+            set: { selectMode($0, in: connectionLibrary) }
+        )
     }
     #endif
 
@@ -1474,8 +1472,8 @@ struct ConnectionManagerView: View {
         )
     }
 
-    private func refreshTailscaleConfiguration() {
-        tailscaleIsConfigured = TailscaleClient.hasConfiguredCredentials()
+    private func refreshTailscaleConfiguration() async {
+        tailscaleIsConfigured = await TailscaleClient.storedCredentialPresence() == .configured
     }
 
     private func sessionForServer(_ server: ServerConfiguration) -> TerminalSession? {
@@ -1493,6 +1491,8 @@ struct ConnectionManagerView: View {
     private func showSettings() {
         #if os(iOS)
         iOSRouter.showSettings()
+        #elseif os(macOS)
+        openSettings()
         #else
         openWindow(id: "settings")
         #endif

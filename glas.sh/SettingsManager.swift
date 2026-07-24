@@ -179,6 +179,7 @@ class SettingsManager {
     private var hasLoadedPersistentState = false
     private var isApplyingICloudPayload = false
     private var iCloudSyncConfigured = false
+    private var iCloudConfigurationTask: Task<Void, Never>?
     private var iCloudPushTask: Task<Void, Never>?
     private var iCloudSyncDirty = false
     private var iCloudRetryAttempt = 0
@@ -1222,6 +1223,7 @@ class SettingsManager {
     }
 
     private func configureICloudSettingsSync() {
+        iCloudConfigurationTask?.cancel()
         iCloudPushTask?.cancel()
         iCloudSyncConfigured = false
 
@@ -1231,17 +1233,22 @@ class SettingsManager {
             return
         }
 
-        iCloudSettingsSyncService.start(
-            enabled: true,
-            onMerge: { [weak self] payload in
-                self?.applyICloudSettingsPayload(payload)
-            },
-            onStatusChange: { [weak self] status, errorDescription in
-                self?.updateICloudSyncStatus(status, errorDescription: errorDescription)
-            }
-        )
-        iCloudSyncConfigured = true
-        scheduleICloudSettingsPush()
+        iCloudConfigurationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.iCloudSettingsSyncService.start(
+                enabled: true,
+                onMerge: { [weak self] payload in
+                    self?.applyICloudSettingsPayload(payload)
+                },
+                onStatusChange: { [weak self] status, errorDescription in
+                    self?.updateICloudSyncStatus(status, errorDescription: errorDescription)
+                }
+            )
+            guard !Task.isCancelled, self.iCloudSyncEnabled else { return }
+            guard self.iCloudSettingsSyncService.status == .unavailable else { return }
+            self.iCloudSyncConfigured = true
+            self.scheduleICloudSettingsPush()
+        }
     }
 
     private func updateICloudSyncStatus(
@@ -1254,8 +1261,12 @@ class SettingsManager {
         case .syncing:
             iCloudSyncStatusText = "Syncing…"
         case .synced:
+            let needsInitialPush = !iCloudSyncConfigured
+            iCloudSyncConfigured = true
             iCloudSyncStatusText = "Up to date"
-            if iCloudSyncDirty {
+            if needsInitialPush {
+                scheduleICloudSettingsPush()
+            } else if iCloudSyncDirty {
                 scheduleICloudSettingsPush(markDirty: false)
             }
         case .unavailable:
@@ -1263,6 +1274,8 @@ class SettingsManager {
         case .quota:
             iCloudSyncStatusText = errorDescription ?? "iCloud storage quota exceeded"
         case .account:
+            iCloudSyncConfigured = false
+            iCloudPushTask?.cancel()
             iCloudSyncStatusText = errorDescription ?? "Sign in to iCloud to sync"
         case .error:
             iCloudSyncStatusText = errorDescription ?? "Sync failed"
@@ -1284,7 +1297,11 @@ class SettingsManager {
             guard !Task.isCancelled, let self else { return }
             self.iCloudSyncDirty = false
             do {
-                _ = try self.iCloudSettingsSyncService.push(self.makeICloudSettingsPayload())
+                _ = try await self.iCloudSettingsSyncService.push(
+                    self.makeICloudSettingsPayload()
+                )
+            } catch is CancellationError {
+                return
             } catch {
                 self.iCloudSyncDirty = true
                 Logger.settings.error("Failed to synchronize portable settings: \(error)")
@@ -1303,7 +1320,7 @@ class SettingsManager {
     private func shouldRetryICloudSync(after error: Error) -> Bool {
         guard let syncError = error as? ICloudSettingsSyncError else { return false }
         switch syncError {
-        case .unavailable, .accountUnavailable:
+        case .unavailable:
             return true
         default:
             return false

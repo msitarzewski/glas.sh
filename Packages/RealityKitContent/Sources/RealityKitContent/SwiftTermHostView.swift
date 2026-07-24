@@ -335,7 +335,7 @@ public final class SwiftTermHostModel: ObservableObject {
     private var pendingChunks: [Data] = []
     private var lastNonce: UInt64 = 0
     private var focusRetryTask: Task<Void, Never>?
-    private var focusOwnershipAllowed = true
+    public private(set) var allowsFocusOwnership = true
     private var nextSemanticEventSequence: UInt64 = 1
 
     public init() {}
@@ -364,7 +364,7 @@ public final class SwiftTermHostModel: ObservableObject {
     }
 
     public func focus() {
-        guard focusOwnershipAllowed else {
+        guard allowsFocusOwnership else {
             stopFocusMaintenance()
             return
         }
@@ -376,7 +376,7 @@ public final class SwiftTermHostModel: ObservableObject {
             // Focus is otherwise driven explicitly by the host UI so sheets,
             // search fields, alerts, and IME composition retain ownership.
             for _ in 0..<3 {
-                guard self.focusOwnershipAllowed,
+                guard self.allowsFocusOwnership,
                       let engine = self.terminalEngine else { return }
                 if engine.focusIfActive() {
                     return
@@ -387,13 +387,19 @@ public final class SwiftTermHostModel: ObservableObject {
     }
 
     public func setFocusOwnershipAllowed(_ allowed: Bool) {
-        focusOwnershipAllowed = allowed
+        guard allowsFocusOwnership != allowed else { return }
+        allowsFocusOwnership = allowed
         if allowed {
             focus()
         } else {
             stopFocusMaintenance()
             terminalEngine?.resignFocus()
         }
+    }
+
+    public func dismissInputFocus() {
+        stopFocusMaintenance()
+        terminalEngine?.resignFocus()
     }
 
     public func stopFocusMaintenance() {
@@ -786,6 +792,443 @@ public enum SwiftTermHardwareKeyPolicy {
     }
 }
 
+public enum SwiftTermSpecialKey: Equatable, Sendable {
+    case escape
+    case tab
+    case left(applicationCursor: Bool)
+    case down(applicationCursor: Bool)
+    case up(applicationCursor: Bool)
+    case right(applicationCursor: Bool)
+    case function(Int)
+}
+
+public enum SwiftTermSpecialKeyPolicy {
+    public static func sequence(for key: SwiftTermSpecialKey) -> [UInt8]? {
+        switch key {
+        case .escape:
+            return EscapeSequences.cmdEsc
+        case .tab:
+            return EscapeSequences.cmdTab
+        case .left(let applicationCursor):
+            return applicationCursor ? EscapeSequences.moveLeftApp : EscapeSequences.moveLeftNormal
+        case .down(let applicationCursor):
+            return applicationCursor ? EscapeSequences.moveDownApp : EscapeSequences.moveDownNormal
+        case .up(let applicationCursor):
+            return applicationCursor ? EscapeSequences.moveUpApp : EscapeSequences.moveUpNormal
+        case .right(let applicationCursor):
+            return applicationCursor ? EscapeSequences.moveRightApp : EscapeSequences.moveRightNormal
+        case .function(let number):
+            guard (1...EscapeSequences.cmdF.count).contains(number) else { return nil }
+            return EscapeSequences.cmdF[number - 1]
+        }
+    }
+}
+
+public struct SwiftTermCursorScrubDelta: Equatable, Sendable {
+    public let horizontal: Int
+    public let vertical: Int
+
+    public static let zero = SwiftTermCursorScrubDelta(horizontal: 0, vertical: 0)
+
+    public init(horizontal: Int, vertical: Int) {
+        self.horizontal = horizontal
+        self.vertical = vertical
+    }
+}
+
+public enum SwiftTermCursorScrubAxis: Equatable, Sendable {
+    case horizontal
+    case vertical
+}
+
+public enum SwiftTermCursorScrubPolicy {
+    public static let maximumStepsPerAxis = 256
+    public static let maximumStepsPerUpdate = 4
+    public static let deadZoneInCells = 0.45
+
+    public static func dominantAxis(
+        horizontalPoints: Double,
+        verticalPoints: Double,
+        cellWidth: Double,
+        cellHeight: Double
+    ) -> SwiftTermCursorScrubAxis? {
+        guard horizontalPoints.isFinite,
+              verticalPoints.isFinite,
+              cellWidth.isFinite,
+              cellHeight.isFinite,
+              cellWidth > 0,
+              cellHeight > 0 else { return nil }
+
+        let horizontalCells = abs(horizontalPoints / cellWidth)
+        let verticalCells = abs(verticalPoints / cellHeight)
+        guard max(horizontalCells, verticalCells) >= deadZoneInCells else { return nil }
+        return horizontalCells >= verticalCells ? .horizontal : .vertical
+    }
+
+    public static func quantizedDelta(
+        horizontalPoints: Double,
+        verticalPoints: Double,
+        cellWidth: Double,
+        cellHeight: Double,
+        lockedAxis: SwiftTermCursorScrubAxis
+    ) -> SwiftTermCursorScrubDelta {
+        switch lockedAxis {
+        case .horizontal:
+            return SwiftTermCursorScrubDelta(
+                horizontal: quantizedSteps(points: horizontalPoints, cellSize: cellWidth),
+                vertical: 0
+            )
+        case .vertical:
+            return SwiftTermCursorScrubDelta(
+                horizontal: 0,
+                vertical: quantizedSteps(points: verticalPoints, cellSize: cellHeight)
+            )
+        }
+    }
+
+    public static func incrementalDelta(
+        current: SwiftTermCursorScrubDelta,
+        previouslyApplied: SwiftTermCursorScrubDelta
+    ) -> SwiftTermCursorScrubDelta {
+        SwiftTermCursorScrubDelta(
+            horizontal: cappedDifference(current.horizontal, previouslyApplied.horizontal),
+            vertical: cappedDifference(current.vertical, previouslyApplied.vertical)
+        )
+    }
+
+    public static func adding(
+        _ delta: SwiftTermCursorScrubDelta,
+        to applied: SwiftTermCursorScrubDelta
+    ) -> SwiftTermCursorScrubDelta {
+        SwiftTermCursorScrubDelta(
+            horizontal: applied.horizontal + delta.horizontal,
+            vertical: applied.vertical + delta.vertical
+        )
+    }
+
+    public static func keys(
+        for delta: SwiftTermCursorScrubDelta,
+        applicationCursor: Bool
+    ) -> [SwiftTermSpecialKey] {
+        var keys: [SwiftTermSpecialKey] = []
+        let horizontalCount = boundedMagnitude(delta.horizontal)
+        let verticalCount = boundedMagnitude(delta.vertical)
+        keys.reserveCapacity(horizontalCount + verticalCount)
+
+        if delta.horizontal < 0 {
+            keys.append(contentsOf: repeatElement(
+                .left(applicationCursor: applicationCursor),
+                count: horizontalCount
+            ))
+        } else if delta.horizontal > 0 {
+            keys.append(contentsOf: repeatElement(
+                .right(applicationCursor: applicationCursor),
+                count: horizontalCount
+            ))
+        }
+
+        if delta.vertical < 0 {
+            keys.append(contentsOf: repeatElement(
+                .up(applicationCursor: applicationCursor),
+                count: verticalCount
+            ))
+        } else if delta.vertical > 0 {
+            keys.append(contentsOf: repeatElement(
+                .down(applicationCursor: applicationCursor),
+                count: verticalCount
+            ))
+        }
+
+        return keys
+    }
+
+    public static func sequences(
+        for delta: SwiftTermCursorScrubDelta,
+        applicationCursor: Bool
+    ) -> [[UInt8]] {
+        keys(for: delta, applicationCursor: applicationCursor).compactMap {
+            SwiftTermSpecialKeyPolicy.sequence(for: $0)
+        }
+    }
+
+    private static func quantizedSteps(points: Double, cellSize: Double) -> Int {
+        guard points.isFinite, cellSize.isFinite, cellSize > 0 else { return 0 }
+        let rawSteps = points / cellSize
+        guard rawSteps.isFinite else { return 0 }
+        let boundedSteps = min(
+            max(rawSteps, -Double(maximumStepsPerAxis)),
+            Double(maximumStepsPerAxis)
+        )
+        return Int(boundedSteps.rounded(.towardZero))
+    }
+
+    private static func cappedDifference(_ current: Int, _ previous: Int) -> Int {
+        let (difference, overflow) = current.subtractingReportingOverflow(previous)
+        if overflow {
+            return current >= previous ? maximumStepsPerUpdate : -maximumStepsPerUpdate
+        }
+        return min(max(difference, -maximumStepsPerUpdate), maximumStepsPerUpdate)
+    }
+
+    private static func boundedMagnitude(_ value: Int) -> Int {
+        guard value != .min else { return maximumStepsPerAxis }
+        return min(abs(value), maximumStepsPerAxis)
+    }
+}
+
+/// A native keyboard toolbar replaces SwiftTerm's permanently expanded
+/// engineering key row. UIKit supplies the accessory material and spacing;
+/// only the drag-capable cursor control needs a custom view.
+@MainActor
+private final class MinimalTerminalAccessoryView: UIToolbar {
+    private weak var terminalView: ReviewingTerminalView?
+    private let onDismissKeyboard: @MainActor () -> Void
+    private var appliedCursorDelta = SwiftTermCursorScrubDelta.zero
+    private var lockedCursorAxis: SwiftTermCursorScrubAxis?
+    private var cursorDrainTask: Task<Void, Never>?
+
+    init(
+        terminalView: ReviewingTerminalView,
+        onDismissKeyboard: @escaping @MainActor () -> Void
+    ) {
+        self.terminalView = terminalView
+        self.onDismissKeyboard = onDismissKeyboard
+        super.init(frame: CGRect(x: 0, y: 0, width: 0, height: 44))
+        sizeToFit()
+        frame.size.height = 44
+        autoresizingMask = [.flexibleWidth]
+
+        let dismissItem = UIBarButtonItem(
+            image: UIImage(systemName: "keyboard.chevron.compact.down"),
+            style: .plain,
+            target: self,
+            action: #selector(dismissKeyboard)
+        )
+        dismissItem.accessibilityLabel = "Dismiss Keyboard"
+
+        var cursorConfiguration = UIButton.Configuration.tinted()
+        cursorConfiguration.title = "Cursor"
+        cursorConfiguration.image = UIImage(
+            systemName: "arrow.up.and.down.and.arrow.left.and.right"
+        )
+        cursorConfiguration.imagePadding = 5
+        cursorConfiguration.cornerStyle = .capsule
+        let cursorPad = UIButton(configuration: cursorConfiguration)
+        cursorPad.accessibilityLabel = "Cursor Pad"
+        cursorPad.accessibilityHint = "Drag to move by terminal character cells."
+        cursorPad.isExclusiveTouch = true
+        let cursorPan = UIPanGestureRecognizer(target: self, action: #selector(scrubCursor(_:)))
+        cursorPan.maximumNumberOfTouches = 1
+        cursorPad.addGestureRecognizer(cursorPan)
+        cursorPad.frame.size = CGSize(width: 104, height: 32)
+        cursorPad.widthAnchor.constraint(equalToConstant: 104).isActive = true
+        cursorPad.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        let cursorItem = UIBarButtonItem(customView: cursorPad)
+
+        let keysItem = UIBarButtonItem(
+            image: UIImage(systemName: "keyboard.badge.ellipsis"),
+            style: .plain,
+            target: nil,
+            action: nil
+        )
+        keysItem.menu = makeMenu()
+        keysItem.accessibilityLabel = "Terminal Keys"
+        keysItem.accessibilityHint = "Shows Escape, Control, navigation, and function keys."
+
+        items = [
+            dismissItem,
+            .flexibleSpace(),
+            cursorItem,
+            .flexibleSpace(),
+            keysItem,
+        ]
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    deinit {
+        cursorDrainTask?.cancel()
+    }
+
+    override func willMove(toWindow newWindow: UIWindow?) {
+        if newWindow == nil {
+            cancelCursorScrub()
+        }
+        super.willMove(toWindow: newWindow)
+    }
+
+    private func makeMenu() -> UIMenu {
+        let escape = action("Escape", image: "escape") { [weak self] in
+            self?.send(.escape)
+        }
+        let tab = action("Tab", image: "arrow.right.to.line.compact") { [weak self] in
+            self?.send(.tab)
+        }
+        let control = action("Control for Next Key", image: "control") { [weak self] in
+            self?.armControlModifier()
+        }
+        let navigation = UIMenu(title: "Navigation", image: UIImage(systemName: "arrow.up.and.down.and.arrow.left.and.right"), children: [
+            action("Left", image: "arrow.left") { [weak self] in self?.sendArrow(.left) },
+            action("Down", image: "arrow.down") { [weak self] in self?.sendArrow(.down) },
+            action("Up", image: "arrow.up") { [weak self] in self?.sendArrow(.up) },
+            action("Right", image: "arrow.right") { [weak self] in self?.sendArrow(.right) },
+        ])
+        let functions = UIMenu(title: "Function Keys", image: UIImage(systemName: "f.square"), children: (1...12).map { number in
+            action("F\(number)") { [weak self] in self?.send(.function(number)) }
+        })
+        return UIMenu(children: [escape, tab, control, navigation, functions])
+    }
+
+    private enum Arrow { case left, down, up, right }
+
+    @objc private func dismissKeyboard() {
+        cancelCursorScrub()
+        onDismissKeyboard()
+    }
+
+    @objc private func scrubCursor(_ gesture: UIPanGestureRecognizer) {
+        guard let terminalView else { return }
+        switch gesture.state {
+        case .began:
+            cancelCursorScrub()
+        case .changed, .ended:
+            let translation = gesture.translation(in: gesture.view)
+            let terminal = terminalView.getTerminal()
+            let cellWidth = Double(terminalView.bounds.width) / Double(max(terminal.cols, 1))
+            let cellHeight = Double(terminalView.bounds.height) / Double(max(terminal.rows, 1))
+            if lockedCursorAxis == nil {
+                lockedCursorAxis = SwiftTermCursorScrubPolicy.dominantAxis(
+                    horizontalPoints: Double(translation.x),
+                    verticalPoints: Double(translation.y),
+                    cellWidth: cellWidth,
+                    cellHeight: cellHeight
+                )
+            }
+            guard let lockedCursorAxis else { return }
+            let currentDelta = SwiftTermCursorScrubPolicy.quantizedDelta(
+                horizontalPoints: Double(translation.x),
+                verticalPoints: Double(translation.y),
+                cellWidth: cellWidth,
+                cellHeight: cellHeight,
+                lockedAxis: lockedCursorAxis
+            )
+            let incrementalDelta = SwiftTermCursorScrubPolicy.incrementalDelta(
+                current: currentDelta,
+                previouslyApplied: appliedCursorDelta
+            )
+            appliedCursorDelta = SwiftTermCursorScrubPolicy.adding(
+                incrementalDelta,
+                to: appliedCursorDelta
+            )
+            sendCursorDelta(incrementalDelta)
+            if gesture.state == .ended {
+                finishCursorScrub(at: currentDelta)
+            }
+        case .cancelled, .failed:
+            cancelCursorScrub()
+        default:
+            break
+        }
+    }
+
+    fileprivate func cancelCursorScrub() {
+        cursorDrainTask?.cancel()
+        cursorDrainTask = nil
+        appliedCursorDelta = .zero
+        lockedCursorAxis = nil
+    }
+
+    private func finishCursorScrub(at target: SwiftTermCursorScrubDelta) {
+        guard appliedCursorDelta != target else {
+            appliedCursorDelta = .zero
+            lockedCursorAxis = nil
+            return
+        }
+
+        cursorDrainTask?.cancel()
+        cursorDrainTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled, self.appliedCursorDelta != target {
+                let incrementalDelta = SwiftTermCursorScrubPolicy.incrementalDelta(
+                    current: target,
+                    previouslyApplied: self.appliedCursorDelta
+                )
+                guard incrementalDelta != .zero else { break }
+                self.appliedCursorDelta = SwiftTermCursorScrubPolicy.adding(
+                    incrementalDelta,
+                    to: self.appliedCursorDelta
+                )
+                self.sendCursorDelta(incrementalDelta)
+                try? await Task.sleep(for: .milliseconds(8))
+            }
+            guard !Task.isCancelled else { return }
+            self.appliedCursorDelta = .zero
+            self.lockedCursorAxis = nil
+            self.cursorDrainTask = nil
+        }
+    }
+
+    private func armControlModifier() {
+        guard let terminalView else { return }
+        terminalView.controlModifier = true
+        #if os(iOS)
+        UIDevice.current.playInputClick()
+        #endif
+        UIAccessibility.post(
+            notification: .announcement,
+            argument: "Control is armed for the next key."
+        )
+    }
+
+    private func sendArrow(_ arrow: Arrow) {
+        let applicationCursor = terminalView?.getTerminal().applicationCursor ?? false
+        switch arrow {
+        case .left: send(.left(applicationCursor: applicationCursor))
+        case .down: send(.down(applicationCursor: applicationCursor))
+        case .up: send(.up(applicationCursor: applicationCursor))
+        case .right: send(.right(applicationCursor: applicationCursor))
+        }
+    }
+
+    private func sendCursorDelta(_ delta: SwiftTermCursorScrubDelta) {
+        let applicationCursor = terminalView?.getTerminal().applicationCursor ?? false
+        let keys = SwiftTermCursorScrubPolicy.keys(
+            for: delta,
+            applicationCursor: applicationCursor
+        )
+        guard !keys.isEmpty else { return }
+        #if os(iOS)
+        UIDevice.current.playInputClick()
+        #endif
+        for key in keys {
+            send(key, playsInputClick: false)
+        }
+    }
+
+    private func send(_ key: SwiftTermSpecialKey, playsInputClick: Bool = true) {
+        guard let terminalView,
+              let bytes = SwiftTermSpecialKeyPolicy.sequence(for: key) else { return }
+        #if os(iOS)
+        if playsInputClick {
+            UIDevice.current.playInputClick()
+        }
+        #endif
+        terminalView.terminalDelegate?.send(source: terminalView, data: bytes[...])
+    }
+
+    private func action(
+        _ title: String,
+        image: String? = nil,
+        handler: @escaping @MainActor () -> Void
+    ) -> UIAction {
+        UIAction(title: title, image: image.flatMap(UIImage.init(systemName:))) { _ in
+            MainActor.assumeIsolated { handler() }
+        }
+    }
+}
+
 @MainActor
 private final class ReviewingTerminalView: TerminalView {
     var onPasteRequest: ((String, Bool) -> Void)?
@@ -890,7 +1333,8 @@ private final class SwiftTermEngine: TerminalEngine {
         onPasteRequest: @escaping (String, Bool) -> Void,
         onPasteData: @escaping (Data) -> Void,
         onRendererDiagnostics: @escaping (SwiftTermRendererDiagnostics) -> Void,
-        onOSC52Decision: @escaping (SwiftTermOSC52Decision) -> Void
+        onOSC52Decision: @escaping (SwiftTermOSC52Decision) -> Void,
+        onDismissKeyboard: @escaping @MainActor () -> Void
     ) {
         let terminalView = ReviewingTerminalView(frame: .zero)
         let containerView = TerminalHardwareKeyContainerView(frame: .zero)
@@ -907,6 +1351,10 @@ private final class SwiftTermEngine: TerminalEngine {
         terminalView.accessibilityHint = "Double-tap to enter terminal input."
         terminalView.accessibilityTraits.insert(.updatesFrequently)
         terminalView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        terminalView.inputAccessoryView = MinimalTerminalAccessoryView(
+            terminalView: terminalView,
+            onDismissKeyboard: onDismissKeyboard
+        )
         containerView.isOpaque = false
         containerView.backgroundColor = .clear
         containerView.terminalView = terminalView
@@ -975,6 +1423,7 @@ private final class SwiftTermEngine: TerminalEngine {
     }
 
     func resignFocus() {
+        (terminalView.inputAccessoryView as? MinimalTerminalAccessoryView)?.cancelCursorScrub()
         guard terminalView.isFirstResponder else { return }
         _ = terminalView.resignFirstResponder()
     }
@@ -1226,6 +1675,7 @@ public struct SwiftTermHostView: UIViewRepresentable {
     @ObservedObject var model: SwiftTermHostModel
     let theme: SwiftTermTheme
     let runtimeSettings: SwiftTermRuntimeSettings
+    let allowsFocusOwnership: Bool
     let onSendData: (Data) -> Void
     let onResize: (Int, Int) -> Void
     let onTitleChanged: (String) -> Void
@@ -1235,6 +1685,7 @@ public struct SwiftTermHostView: UIViewRepresentable {
         model: SwiftTermHostModel,
         theme: SwiftTermTheme,
         runtimeSettings: SwiftTermRuntimeSettings,
+        allowsFocusOwnership: Bool = true,
         onSendData: @escaping (Data) -> Void,
         onResize: @escaping (Int, Int) -> Void,
         onTitleChanged: @escaping (String) -> Void = { _ in },
@@ -1243,6 +1694,7 @@ public struct SwiftTermHostView: UIViewRepresentable {
         self.model = model
         self.theme = theme
         self.runtimeSettings = runtimeSettings
+        self.allowsFocusOwnership = allowsFocusOwnership
         self.onSendData = onSendData
         self.onResize = onResize
         self.onTitleChanged = onTitleChanged
@@ -1260,6 +1712,7 @@ public struct SwiftTermHostView: UIViewRepresentable {
     }
 
     public func makeUIView(context: Context) -> UIView {
+        model.setFocusOwnershipAllowed(allowsFocusOwnership)
         let engine = makeEngine(delegate: context.coordinator)
         engine.configure(theme: theme, runtimeSettings: runtimeSettings)
         context.coordinator.engine = engine
@@ -1280,6 +1733,7 @@ public struct SwiftTermHostView: UIViewRepresentable {
     }
 
     public func updateUIView(_ uiView: UIView, context: Context) {
+        model.setFocusOwnershipAllowed(allowsFocusOwnership)
         if uiView.layer.cornerRadius != 18 {
             uiView.layer.cornerRadius = 18
         }
@@ -1317,6 +1771,9 @@ public struct SwiftTermHostView: UIViewRepresentable {
             },
             onOSC52Decision: { [weak model] decision in
                 model?.recordOSC52Decision(decision)
+            },
+            onDismissKeyboard: { [weak model] in
+                model?.dismissInputFocus()
             }
         )
     }
@@ -1625,6 +2082,7 @@ public struct SwiftTermHostView: NSViewRepresentable {
     @ObservedObject var model: SwiftTermHostModel
     let theme: SwiftTermTheme
     let runtimeSettings: SwiftTermRuntimeSettings
+    let allowsFocusOwnership: Bool
     let onSendData: (Data) -> Void
     let onResize: (Int, Int) -> Void
     let onTitleChanged: (String) -> Void
@@ -1634,6 +2092,7 @@ public struct SwiftTermHostView: NSViewRepresentable {
         model: SwiftTermHostModel,
         theme: SwiftTermTheme,
         runtimeSettings: SwiftTermRuntimeSettings,
+        allowsFocusOwnership: Bool = true,
         onSendData: @escaping (Data) -> Void,
         onResize: @escaping (Int, Int) -> Void,
         onTitleChanged: @escaping (String) -> Void = { _ in },
@@ -1642,6 +2101,7 @@ public struct SwiftTermHostView: NSViewRepresentable {
         self.model = model
         self.theme = theme
         self.runtimeSettings = runtimeSettings
+        self.allowsFocusOwnership = allowsFocusOwnership
         self.onSendData = onSendData
         self.onResize = onResize
         self.onTitleChanged = onTitleChanged
@@ -1659,6 +2119,7 @@ public struct SwiftTermHostView: NSViewRepresentable {
     }
 
     public func makeNSView(context: Context) -> NSView {
+        model.setFocusOwnershipAllowed(allowsFocusOwnership)
         let engine = MacSwiftTermEngine(
             delegate: context.coordinator,
             onPasteRequest: { [weak model] text, bracketed in
@@ -1681,6 +2142,7 @@ public struct SwiftTermHostView: NSViewRepresentable {
     }
 
     public func updateNSView(_ nsView: NSView, context: Context) {
+        model.setFocusOwnershipAllowed(allowsFocusOwnership)
         guard let engine = context.coordinator.engine, engine.hostView === nsView else { return }
         if context.coordinator.lastTheme != theme
             || context.coordinator.lastRuntimeSettings != runtimeSettings {
@@ -2535,18 +2997,25 @@ public struct SwiftTermLocalProcessHostView: NSViewRepresentable {
                 model?.recordOSC52Decision(decision)
             }
         )
-        engine.configure(theme: theme, runtimeSettings: runtimeSettings)
-        context.coordinator.engine = engine
-        context.coordinator.lastTheme = theme
-        context.coordinator.lastRuntimeSettings = runtimeSettings
-        model.attach(engine)
-        processState.attach(engine)
-        engine.start(configuration)
+        let coordinator = context.coordinator
+        coordinator.engine = engine
+        coordinator.lastTheme = theme
+        coordinator.lastRuntimeSettings = runtimeSettings
+        DispatchQueue.main.async {
+            guard coordinator.engine === engine else { return }
+            model.attach(engine)
+            processState.attach(engine)
+            engine.configure(theme: theme, runtimeSettings: runtimeSettings)
+            engine.start(configuration)
+            coordinator.isReady = true
+        }
         return engine.hostView
     }
 
     public func updateNSView(_ nsView: NSView, context: Context) {
-        guard let engine = context.coordinator.engine, engine.hostView === nsView else { return }
+        guard let engine = context.coordinator.engine,
+              engine.hostView === nsView,
+              context.coordinator.isReady else { return }
         if context.coordinator.lastTheme != theme
             || context.coordinator.lastRuntimeSettings != runtimeSettings {
             context.coordinator.lastTheme = theme
@@ -2559,11 +3028,14 @@ public struct SwiftTermLocalProcessHostView: NSViewRepresentable {
 
     public static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
         coordinator.engine?.terminateLocalProcess()
+        coordinator.engine = nil
+        coordinator.isReady = false
     }
 
     @MainActor
     public final class Coordinator {
         fileprivate var engine: MacLocalProcessEngine?
+        fileprivate var isReady = false
         fileprivate var lastTheme: SwiftTermTheme?
         fileprivate var lastRuntimeSettings: SwiftTermRuntimeSettings?
     }

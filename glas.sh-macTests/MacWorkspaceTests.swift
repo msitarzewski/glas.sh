@@ -878,18 +878,6 @@ struct MacWorkspaceTests {
         #expect(window.tabbingIdentifier == "sh.glas.test")
         #expect(!window.styleMask.contains(.fullSizeContentView))
         #expect(!window.titlebarAppearsTransparent)
-
-        let contentView = try #require(window.contentView)
-        let themeFrame = try #require(contentView.superview)
-        let materialViews = themeFrame.subviews.compactMap {
-            $0 as? MacTerminalTitlebarMaterialView
-        }
-        let materialView = try #require(materialViews.first)
-        #expect(materialViews.count == 1)
-        #expect(materialView.identifier == MacTerminalTitlebarMaterialView.materialIdentifier)
-        #expect(materialView.contentBoundary === contentView)
-        #expect(materialView.state == .followsWindowActiveState)
-        #expect(materialView.hitTest(.zero) == nil)
     }
 
     @Test func terminalCanvasAppearancePreservesIncreaseContrast() {

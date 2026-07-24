@@ -188,12 +188,12 @@ struct TailscaleDevice: Identifiable, Hashable {
     }
 }
 
-enum TailscaleAuthMethod: String, Codable {
+nonisolated enum TailscaleAuthMethod: String, Codable {
     case apiKey
     case oauthClient
 }
 
-enum TailscaleCredentialPresence: Equatable, Sendable {
+nonisolated enum TailscaleCredentialPresence: Equatable, Sendable {
     case configured
     case absent
     case unavailable
@@ -316,7 +316,7 @@ class TailscaleClient {
     private var inventoryGeneration: UInt64 = 0
     private let session = URLSession.shared
 
-    static func credentialsAreConfigured(
+    nonisolated static func credentialsAreConfigured(
         authMethod: TailscaleAuthMethod,
         apiKey: String? = nil,
         oauthClientID: String? = nil,
@@ -337,11 +337,7 @@ class TailscaleClient {
         }
     }
 
-    static func hasConfiguredCredentials(defaults: UserDefaults = .standard) -> Bool {
-        credentialPresence(defaults: defaults) == .configured
-    }
-
-    static func credentialPresence(
+    nonisolated static func credentialPresence(
         defaults: UserDefaults = .standard,
         apiKeyProvider: () throws -> String = {
             try KeychainManager.retrieveTailscaleAPIKey()
@@ -384,6 +380,12 @@ class TailscaleClient {
                 return .unavailable
             }
         }
+    }
+
+    nonisolated static func storedCredentialPresence() async -> TailscaleCredentialPresence {
+        await Task.detached(priority: .utility) {
+            credentialPresence()
+        }.value
     }
 
     // MARK: - Token Resolution

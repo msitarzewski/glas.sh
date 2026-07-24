@@ -6,6 +6,9 @@
 //
 
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 #if os(visionOS) || os(iOS)
 struct VisionTerminalWorkgroupView: View {
@@ -17,6 +20,7 @@ struct VisionTerminalWorkgroupView: View {
     @Environment(\.openWindow) private var openWindow
     #if os(iOS)
     @Environment(IOSAppRouter.self) private var iOSRouter
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
 
     @State private var selectedSessionID: UUID?
@@ -170,19 +174,20 @@ struct VisionTerminalWorkgroupView: View {
     ) -> some View {
         let tabs = TabView(selection: $selectedSessionID) {
             ForEach(sessions) { session in
-                TerminalWindowView(
-                    session: session,
-                    ownsSessionLifecycle: false,
-                    showsConnectionOrnament: false,
-                    onNewTerminalTab: {
-                        showingSavedHostPicker = true
-                    },
-                    onSessionRequestedClose: {
-                        closeSessionTab(session)
-                    }
-                )
-                .tag(Optional(session.id))
-                .tabItem {
+                Tab(value: Optional(session.id)) {
+                    TerminalWindowView(
+                        session: session,
+                        ownsSessionLifecycle: false,
+                        showsConnectionOrnament: false,
+                        isTerminalActive: selectedSessionID == session.id,
+                        onNewTerminalTab: {
+                            showingSavedHostPicker = true
+                        },
+                        onSessionRequestedClose: {
+                            closeSessionTab(session)
+                        }
+                    )
+                } label: {
                     Label {
                         Text(session.server.name)
                     } icon: {
@@ -200,27 +205,100 @@ struct VisionTerminalWorkgroupView: View {
                 .glassBackgroundEffect(in: .capsule)
         }
         #else
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Button {
-                    showConnections()
-                } label: {
-                    Image(systemName: "sidebar.left")
-                }
-                .accessibilityLabel("Connections")
-
-                workgroupLabel(workgroup: workgroup, sessions: sessions)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+        if usesCompactPhoneNavigation {
+            NavigationStack {
+                tabs
+                    .toolbar(.visible, for: .navigationBar)
+                    .toolbar(.hidden, for: .tabBar)
+                    .toolbar {
+                        terminalNavigationToolbar(
+                            sessions: sessions,
+                            includesSessionSwitcher: true
+                        )
+                    }
+                    .accessibilityIdentifier("terminal-workgroup-tabs")
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(.regularMaterial)
-
-            Divider()
-            tabs
+        } else {
+            NavigationStack {
+                tabs
+                    .tabViewStyle(.sidebarAdaptable)
+                    .toolbar {
+                        terminalNavigationToolbar(
+                            sessions: sessions,
+                            includesSessionSwitcher: false
+                        )
+                    }
+                    .toolbarBackground(.automatic, for: .tabBar)
+                    .accessibilityIdentifier("terminal-workgroup-tabs")
+            }
         }
         #endif
     }
+
+    #if os(iOS)
+    private var usesCompactPhoneNavigation: Bool {
+        horizontalSizeClass == .compact && UIDevice.current.userInterfaceIdiom == .phone
+    }
+
+    @ToolbarContentBuilder
+    private func terminalNavigationToolbar(
+        sessions: [TerminalSession],
+        includesSessionSwitcher: Bool
+    ) -> some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Button {
+                showConnections()
+            } label: {
+                Label("Connections", systemImage: "sidebar.left")
+            }
+            .accessibilityIdentifier("terminal-workgroup-connections")
+        }
+
+        if includesSessionSwitcher {
+            ToolbarItem(placement: .principal) {
+                compactSessionSwitcher(sessions: sessions)
+            }
+        }
+
+        ToolbarItem(placement: .topBarTrailing) {
+            Button {
+                showingSavedHostPicker = true
+            } label: {
+                Label("New Terminal Tab", systemImage: "plus")
+            }
+            .accessibilityIdentifier("terminal-workgroup-new-tab")
+        }
+    }
+
+    private func compactSessionSwitcher(sessions: [TerminalSession]) -> some View {
+        Menu {
+            Picker("Session", selection: $selectedSessionID) {
+                ForEach(sessions) { session in
+                    Text(
+                        "\(session.server.name) — "
+                            + "\(session.server.username)@\(session.server.host)"
+                    )
+                        .tag(Optional(session.id))
+                }
+            }
+        } label: {
+            Label(
+                selectedSessionName(in: sessions),
+                systemImage: "rectangle.stack"
+            )
+            .lineLimit(1)
+        }
+        .accessibilityLabel("Terminal Sessions")
+        .accessibilityValue(selectedSessionName(in: sessions))
+        .accessibilityIdentifier("terminal-workgroup-session-switcher")
+    }
+
+    private func selectedSessionName(in sessions: [TerminalSession]) -> String {
+        sessions.first(where: { $0.id == selectedSessionID })?.server.name
+            ?? sessions.first?.server.name
+            ?? "Session"
+    }
+    #endif
 
     private func workgroupLabel(
         workgroup: TerminalWorkgroup,

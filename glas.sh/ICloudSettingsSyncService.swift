@@ -28,13 +28,21 @@ protocol ICloudSettingsKeyValueStore: AnyObject {
     var isAvailable: Bool { get }
     var isAccountAvailable: Bool { get }
 
+    func refreshAccountAvailability() async -> Bool
+
     func data(forKey key: String) -> Data?
     func set(_ data: Data, forKey key: String)
-    @discardableResult func synchronize() -> Bool
+    @discardableResult func synchronize() async -> Bool
     func observeExternalChanges(
         _ handler: @escaping @MainActor @Sendable (ICloudSettingsStoreChange) -> Void
     ) -> NSObjectProtocol
     func removeExternalChangeObserver(_ observer: NSObjectProtocol)
+}
+
+extension ICloudSettingsKeyValueStore {
+    func refreshAccountAvailability() async -> Bool {
+        isAccountAvailable
+    }
 }
 
 /// Live adapter for Apple's iCloud key-value store. The protocol boundary keeps
@@ -42,34 +50,36 @@ protocol ICloudSettingsKeyValueStore: AnyObject {
 /// entitlements on the machine running them.
 @MainActor
 final class NSUbiquitousSettingsKeyValueStore: ICloudSettingsKeyValueStore {
-    private let store: NSUbiquitousKeyValueStore
     private let notificationCenter: NotificationCenter
-    private let fileManager: FileManager
+    private(set) var isAccountAvailable = false
 
-    init(
-        store: NSUbiquitousKeyValueStore = .default,
-        notificationCenter: NotificationCenter = .default,
-        fileManager: FileManager = .default
-    ) {
-        self.store = store
+    init(notificationCenter: NotificationCenter = .default) {
         self.notificationCenter = notificationCenter
-        self.fileManager = fileManager
     }
 
     var isAvailable: Bool { true }
-    var isAccountAvailable: Bool { fileManager.ubiquityIdentityToken != nil }
+
+    func refreshAccountAvailability() async -> Bool {
+        let isAvailable = await Task.detached(priority: .utility) {
+            FileManager.default.ubiquityIdentityToken != nil
+        }.value
+        isAccountAvailable = isAvailable
+        return isAvailable
+    }
 
     func data(forKey key: String) -> Data? {
-        store.data(forKey: key)
+        NSUbiquitousKeyValueStore.default.data(forKey: key)
     }
 
     func set(_ data: Data, forKey key: String) {
-        store.set(data, forKey: key)
+        NSUbiquitousKeyValueStore.default.set(data, forKey: key)
     }
 
     @discardableResult
-    func synchronize() -> Bool {
-        store.synchronize()
+    func synchronize() async -> Bool {
+        await Task.detached(priority: .utility) {
+            NSUbiquitousKeyValueStore.default.synchronize()
+        }.value
     }
 
     func observeExternalChanges(
@@ -77,7 +87,7 @@ final class NSUbiquitousSettingsKeyValueStore: ICloudSettingsKeyValueStore {
     ) -> NSObjectProtocol {
         notificationCenter.addObserver(
             forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
-            object: store,
+            object: NSUbiquitousKeyValueStore.default,
             queue: .main
         ) { notification in
             let rawReason = notification.userInfo?[NSUbiquitousKeyValueStoreChangeReasonKey]
@@ -475,6 +485,7 @@ final class ICloudSettingsSyncService {
     private var mergeHandler: MergeHandler?
     private var statusHandler: StatusHandler?
     private var isStarted = false
+    private var startToken: UUID?
 
     private(set) var status: ICloudSettingsSyncStatus = .disabled {
         didSet { statusHandler?(status, lastErrorDescription) }
@@ -529,7 +540,7 @@ final class ICloudSettingsSyncService {
         enabled: Bool = true,
         onMerge: @escaping MergeHandler,
         onStatusChange: StatusHandler? = nil
-    ) {
+    ) async {
         stop()
         mergeHandler = onMerge
         statusHandler = onStatusChange
@@ -540,21 +551,27 @@ final class ICloudSettingsSyncService {
         }
 
         isStarted = true
-        externalChangeObserver = store.observeExternalChanges { [weak self] change in
-            self?.handleExternalChange(change)
-        }
+        let token = UUID()
+        startToken = token
 
         guard store.isAvailable else {
             updateStatus(.unavailable, error: ICloudSettingsSyncError.unavailable)
             return
         }
-        guard store.isAccountAvailable else {
+        externalChangeObserver = store.observeExternalChanges { [weak self] change in
+            self?.handleExternalChange(change)
+        }
+        let isAccountAvailable = await store.refreshAccountAvailability()
+        guard !Task.isCancelled, isStarted, startToken == token else { return }
+        guard isAccountAvailable else {
             updateStatus(.account, error: ICloudSettingsSyncError.accountUnavailable)
             return
         }
 
         updateStatus(.syncing)
-        guard store.synchronize() else {
+        let synchronized = await store.synchronize()
+        guard !Task.isCancelled, isStarted, startToken == token else { return }
+        guard synchronized else {
             updateStatus(.unavailable, error: ICloudSettingsSyncError.unavailable)
             return
         }
@@ -569,6 +586,7 @@ final class ICloudSettingsSyncService {
         mergeHandler = nil
         statusHandler = nil
         isStarted = false
+        startToken = nil
         lastErrorDescription = nil
         status = .disabled
     }
@@ -577,9 +595,12 @@ final class ICloudSettingsSyncService {
     func push(
         _ payload: ICloudSettingsSyncPayload,
         writtenAt: Date = Date()
-    ) throws -> ICloudSettingsSyncEnvelope {
+    ) async throws -> ICloudSettingsSyncEnvelope {
         do {
             try requireAvailableStore()
+            guard let token = startToken else {
+                throw ICloudSettingsSyncError.disabled
+            }
             updateStatus(.syncing)
             try payload.validate()
             let storedEnvelope = try decodeStoredEnvelopeIfPresent()
@@ -607,13 +628,19 @@ final class ICloudSettingsSyncService {
             )
             let encoded = try encode(envelope)
             store.set(encoded, forKey: storeKey)
-            guard store.synchronize() else {
+            let synchronized = await store.synchronize()
+            guard !Task.isCancelled, isStarted, startToken == token else {
+                throw CancellationError()
+            }
+            guard synchronized else {
                 throw ICloudSettingsSyncError.unavailable
             }
 
             acceptedEnvelope = envelope
             updateStatus(.synced)
             return envelope
+        } catch let error as CancellationError {
+            throw error
         } catch {
             record(error)
             throw error
@@ -670,16 +697,25 @@ final class ICloudSettingsSyncService {
             // a newly signed-in account against an envelope accepted from the
             // previous account.
             acceptedEnvelope = nil
-            guard store.isAccountAvailable else {
-                updateStatus(.account, error: ICloudSettingsSyncError.accountUnavailable)
-                return
+            let token = UUID()
+            startToken = token
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let isAccountAvailable = await self.store.refreshAccountAvailability()
+                guard !Task.isCancelled, self.isStarted, self.startToken == token else { return }
+                guard isAccountAvailable else {
+                    self.updateStatus(.account, error: ICloudSettingsSyncError.accountUnavailable)
+                    return
+                }
+                self.updateStatus(.syncing)
+                let synchronized = await self.store.synchronize()
+                guard !Task.isCancelled, self.isStarted, self.startToken == token else { return }
+                guard synchronized else {
+                    self.updateStatus(.unavailable, error: ICloudSettingsSyncError.unavailable)
+                    return
+                }
+                self.mergeExternalValueReportingErrors()
             }
-            updateStatus(.syncing)
-            guard store.synchronize() else {
-                updateStatus(.unavailable, error: ICloudSettingsSyncError.unavailable)
-                return
-            }
-            mergeExternalValueReportingErrors()
         case .server, .initialSync, .unknown:
             guard change.changedKeys.isEmpty || change.changedKeys.contains(storeKey) else {
                 return
