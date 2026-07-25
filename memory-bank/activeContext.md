@@ -2,16 +2,20 @@
 
 ## Current Focus
 - The One Base release was implementation/QA approved on 2026-07-25. One native `glas.sh` application target and scheme now serve iPhone, iPad, visionOS, and native Apple Silicon macOS.
-- One `@main` application composes the existing native platform scenes. `glas.sh-mac` remains a guarded AppKit/local-PTY implementation boundary; the duplicate Mac application/test targets and scheme are retired.
+- One `@main` application composes the existing native platform scenes. `Platforms/macOS` is the guarded AppKit/local-PTY implementation boundary; the duplicate Mac application/test targets and scheme are retired.
+- The public repository structure was implementation/QA approved on 2026-07-25: Mac sources/resources moved from the misleading `glas.sh-mac` name to `Platforms/macOS`, Mac tests moved beneath `glas.shTests/macOS`, and every moved file retained its original Git blob content.
 - Product identity is unified as `sh.glas.app`; SDK-specific plist, entitlements, icons, and widget filtering preserve shared GlassSecretStore, app-group, Keychain, iCloud, terminal, and platform behavior.
 - The approved release is published on `agent/one-base` through PR [#30](https://github.com/msitarzewski/glas.sh/pull/30); GitHub is the canonical merge-status record.
 - This completion is not an App Store distribution decision. Physical Vision Pro, distribution certificate trust/notarization, final hosted Mac XCTest after the render-only delta, and external dependency-advisory querying retain explicit evidence boundaries in the release dashboard.
-- Working branch: `agent/one-base`.
+- Working branch: `codex/public-repo-platform-cleanup`.
 
 ## What's Next
 - **Complete and preserve the One Base publication.**
   - PR [#30](https://github.com/msitarzewski/glas.sh/pull/30) is the canonical review and merge record.
   - Retain baseline `c9f7a406` and the approved single-diff governance variance.
+- **Continue native terminal UX work from the public platform boundary.**
+  - Keep Mac-only titlebar, sidebar, AppKit window, local PTY, tab, and split behavior in `Platforms/macOS`.
+  - Keep shared connection, credential, trust, terminal, workgroup, theme, and appearance behavior in the unified application core.
 - **Close remaining distribution/device evidence.**
   - Run the physical Vision Pro interaction matrix and distribution-signing/notarization checks when hardware and credentials are available.
   - Re-run final hosted Mac unit/UI tests after the protected stale `testmanagerd` state clears.
@@ -26,6 +30,7 @@
   - Output-only recording default, protected/bounded storage, fail-closed deletion, redacted diagnostics, SFTP no-clobber transfer, and deterministic AI confirmation.
   - SharePlay and unused AI summaries removed, HTML Preview Debug-only, unsupported SSH Agent/inert settings absent, and forwarding backed by the shared manager.
 - **Current automated evidence.**
+  - Public platform-boundary cleanup passes 251/251 Mac tests, iPhone 17 Pro and Vision Pro 27 simulator builds, and simulator install/launch smokes on both products.
   - iPhone and iPad iOS 27 unit suites pass 232/232 each; iPad full UI passes 2/2 and final compact iPhone smoke passes 1/1 with zero runtime warnings.
   - visionOS 26.4 and 27 unit suites pass 229/229 each; 26.4 app smoke passes and 27 UI completes with one pass plus one explicit simulator-input skip.
   - A fresh exact-current native arm64 Mac Release archive and direct launch pass with zero compiler/analyzer warnings. The immediately preceding unified-host suite passes 251/251; final hosted XCTest is blocked by protected stale `testmanagerd`.

@@ -18,11 +18,11 @@ Complete the One Base release by consolidating glas.sh into one native multiplat
 
 - `glas.sh.xcodeproj/project.pbxproj` — unified native app/test configuration, one identity, SDK-specific settings, widget filtering, and duplicate-target retirement.
 - `glas.sh/glas_shApp.swift` — single multiplatform application authority and native scene composition.
-- `glas.sh-mac/*.swift` — retained AppKit workspace, local PTY, state, commands, and secure-keyboard behavior behind complete macOS boundaries.
+- `Platforms/macOS/*.swift` — retained AppKit workspace, local PTY, state, commands, and secure-keyboard behavior behind complete macOS boundaries.
 - `glas.sh/Constants.swift` — safe idempotent migration of readable non-secret values from the old development Mac defaults domain.
 - `glas.sh/KeychainManager.swift`, `glas.sh/ServerManager.swift` — shared credential compatibility cleanup and exact UI-fixture lifecycle.
 - `glas.sh/ConnectionManagerView.swift`, `glas.sh/TerminalWindowView.swift` — native search exposure and render-transaction-safe terminal ingest.
-- `glas.shTests/glas_shTests.swift`, `glas.sh-macTests/MacWorkspaceTests.swift`, `glas.shUITests/ConnectionLibraryUITests.swift` — unified platform, identity, credential, workspace, lifecycle, and UI regression coverage.
+- `glas.shTests/glas_shTests.swift`, `glas.shTests/macOS/MacWorkspaceTests.swift`, `glas.shUITests/ConnectionLibraryUITests.swift` — unified platform, identity, credential, workspace, lifecycle, and UI regression coverage.
 - `glasWidgets/ServerHealthWidget.swift` and platform entitlements — unified identity and shared-group extension behavior.
 
 ## Patterns Applied

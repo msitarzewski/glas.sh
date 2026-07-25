@@ -21,7 +21,7 @@ Phase 05 and passing focused validation from Phases 01–05.
 - `glas.sh.xcodeproj/project.pbxproj`
 - `glas.sh.xcodeproj/xcshareddata/xcschemes/glas.sh Mac.xcscheme`
 
-The `glas.sh-mac` source folder is retained.
+The native Mac implementation is retained under the public `Platforms/macOS` boundary.
 
 ## Preconditions
 
@@ -34,12 +34,12 @@ The `glas.sh-mac` source folder is retained.
 ## Work items
 
 1. Remove the `glas.sh Mac` application target.
-2. Remove `glas.sh-macTests`.
+2. Remove the standalone `glas.sh-macTests` group after preserving its sources beneath `glas.shTests/macOS`.
 3. Remove `glas.sh-macUITests`.
 4. Remove their product references, target dependencies, container proxies, build phases, build configurations, configuration lists, and target attributes.
 5. Remove obsolete framework build-file entries used only by deleted targets.
 6. Remove the shared `glas.sh Mac.xcscheme`.
-7. Preserve `glas.sh-mac` source, plist, entitlement, icon, and resource files still selected by the unified target.
+7. Preserve the `Platforms/macOS` source, plist, entitlement, icon, and resource files selected by the unified target.
 8. Preserve widget and unified test targets.
 9. Search for stale target names, bundle IDs, product references, test hosts, and scheme references.
 10. Run Xcode project parsing after each logical removal group to localize any corruption.
@@ -67,6 +67,6 @@ The duplicate Mac targets and scheme are absent, all required source/resources r
 
 - The old Mac application, unit-test, and UI-test target objects and their products, dependencies, build configurations, target attributes, and proxies are absent.
 - `glas.sh.xcodeproj/xcshareddata/xcschemes/glas.sh Mac.xcscheme` is removed; only the intended `glas.sh` app and `glasWidgets` extension schemes remain shared.
-- The retained `glas.sh-mac` folder continues to supply native Mac source, plist, entitlement, and icon resources to the unified target.
+- The retained `Platforms/macOS` folder continues to supply native Mac source, plist, entitlement, and icon resources to the unified target.
 - The project contains four native targets: app, unit tests, UI tests, and widget. No Swift source file was deleted.
 - Project parsing, plist/entitlement linting, target/scheme/product scans, destination discovery, and all final builds pass without orphan references.
