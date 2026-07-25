@@ -63,3 +63,5 @@
 {"timestamp":"2026-07-25T14:43:47Z","session_id":"codex-one-base","event":"state_transition","from":"APPROVAL","to":"APPLY"}
 {"timestamp":"2026-07-25T14:43:48Z","session_id":"codex-one-base","event":"state_transition","from":"APPLY","to":"DOCS"}
 {"timestamp":"2026-07-25T14:43:49Z","session_id":"codex-one-base","event":"documentation_complete","release":"memory-bank/releases/one-base/README.md","task":"memory-bank/tasks/2026-07/250726_one-base-release.md","publication":"not authorized"}
+{"timestamp":"2026-07-25T15:26:48Z","session_id":"codex-one-base","event":"publication_authorized","branch":"agent/one-base","commits":["904ae0af","47b23f12"]}
+{"timestamp":"2026-07-25T15:30:00Z","session_id":"codex-one-base","event":"pull_request_opened","pull_request":30,"url":"https://github.com/msitarzewski/glas.sh/pull/30","base":"main","head":"agent/one-base"}

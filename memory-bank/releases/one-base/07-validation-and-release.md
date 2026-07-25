@@ -113,4 +113,6 @@ One native app target and one app scheme build, run, test, sign, and archive acr
 - The dashboard and all phase evidence are current.
 - `memory-bank/systemPatterns.md`, `decisions.md`, `activeContext.md`, `progress.md`, and `toc.md` record the unified-target architecture and completion.
 - Completion task record: `memory-bank/tasks/2026-07/250726_one-base-release.md`.
-- No commit, PR, merge, screenshot, or externally hosted archive was created at this gate because the user authorized documentation but did not separately authorize version-control publication.
+- Publication commits: `904ae0af` and `47b23f12`.
+- Pull request and canonical merge-status record: [#30 — Unify glas.sh with One Base](https://github.com/msitarzewski/glas.sh/pull/30).
+- No destination screenshot or externally hosted archive was created; local artifact paths and the accepted Computer Use limitation remain recorded above.

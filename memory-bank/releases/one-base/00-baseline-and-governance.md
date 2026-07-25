@@ -55,4 +55,4 @@ The baseline is committed; architecture, reuse rules, coordination rules, accept
 
 - Baseline commit `c9f7a406` remains the rollback authority and no history was rewritten.
 - Existing primary app, Mac platform sources, shared managers, GlassSecretStore integration, resources, widget, tests, and schemes were extended; no new production or test source file was created.
-- The user approved one final working-tree release diff in place of the planned phase-boundary commits. No commit, PR, or merge was created without separate authorization.
+- The user approved one final release diff in place of the planned phase-boundary commits. It is published through PR [#30](https://github.com/msitarzewski/glas.sh/pull/30); no synthetic phase history was created.

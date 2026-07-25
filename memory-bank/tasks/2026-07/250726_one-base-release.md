@@ -59,6 +59,8 @@ Complete the One Base release by consolidating glas.sh into one native multiplat
 
 ## Validation Artifacts
 
+- Publication commits: `904ae0af`, `47b23f12`
+- PR and canonical merge-status record: [#30](https://github.com/msitarzewski/glas.sh/pull/30)
 - iPhone units: `/tmp/glas-onebase-iphone/Logs/Test/Test-glas.sh-2026.07.25_02-59-28--0500.xcresult`
 - iPhone compact UI: `/tmp/glas-onebase-iphone/Logs/Test/Test-glas.sh-2026.07.25_03-10-55--0500.xcresult`
 - iPad units: `/tmp/glas-onebase-ipad/Logs/Test/Test-glas.sh-2026.07.25_03-03-00--0500.xcresult`
@@ -81,4 +83,4 @@ Complete the One Base release by consolidating glas.sh into one native multiplat
 - The final Mac hosted XCTest process could not start because SIP-protected stale `testmanagerd` state invalidated its control connection. Exact-current compile/archive/launch pass; the last unified-host suite passed before the final render-boundary-only delta.
 - Local strict signature verification reports `CSSMERR_TP_NOT_TRUSTED`; distribution signing/notarization was not claimed.
 - Computer Use visual capture and online OSV advisory lookup were unavailable and are not claimed as passes.
-- No commit, PR, or merge was created because version-control publication was not separately authorized.
+- Publication is tracked by PR [#30](https://github.com/msitarzewski/glas.sh/pull/30); its GitHub state is the canonical merge record.

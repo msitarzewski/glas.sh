@@ -17,6 +17,7 @@ This release is build-architecture consolidation. It must reduce duplicated targ
 - The commit preserves the completed Connection Library, native terminal navigation, cursor scrub accessory, focus ownership, iCloud/shared-secret changes, and GitHub GlasSecretStore transition.
 - `default.profraw` is a generated untracked coverage artifact and is outside the release baseline.
 - The historical separate `glas.sh Mac` target is preserved by baseline commit `c9f7a406`; Phase 06 removed it from the current project after the unified target passed.
+- Publication branch: `agent/one-base`.
 
 ## Product invariants
 
@@ -161,7 +162,14 @@ glasWidgets     ---- separate extension, embedded only where supported
 - Local strict signature validation reports only `CSSMERR_TP_NOT_TRUSTED`, reflecting the untrusted local development certificate chain rather than a malformed signature.
 - Computer Use visual capture was unavailable because its Sky service did not start. `xcodebuild -showdestinations` supplied the destination inventory instead.
 - OSV online dependency scanning was not run because it would transmit dependency metadata and no offline database was available. Package tests, pinned resolution, Gitleaks, and static security review passed.
-- The plan called for a commit at every phase boundary, but implementation remained one reviewable working-tree diff after baseline `c9f7a406`. The approved release accepts that governance variance; no history was rewritten and no commit, PR, or merge was created without separate authorization.
+- The plan called for a commit at every phase boundary, but implementation remained one reviewable release diff after baseline `c9f7a406`. The approved release accepts that governance variance; no phase history was fabricated.
+
+## Publication
+
+- Post-Connection-Library polish commit: `904ae0af`.
+- One Base implementation and release documentation commit: `47b23f12`.
+- Pull request: [#30 — Unify glas.sh with One Base](https://github.com/msitarzewski/glas.sh/pull/30).
+- The pull request is the canonical merge-status record.
 
 ## Release acceptance criteria
 
