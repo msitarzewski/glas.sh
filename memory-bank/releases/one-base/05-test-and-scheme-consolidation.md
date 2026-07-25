@@ -21,7 +21,7 @@ Phases 01–04.
 - `glas.sh.xcodeproj/project.pbxproj`
 - `glas.sh.xcodeproj/xcshareddata/xcschemes/glas.sh.xcscheme`
 - `glas.shTests/*`
-- `glas.sh-macTests/MacWorkspaceTests.swift`
+- `glas.shTests/macOS/MacWorkspaceTests.swift`
 - `glas.shUITests/ConnectionLibraryUITests.swift`
 
 Only one agent may edit `project.pbxproj` during this phase.
@@ -29,7 +29,7 @@ Only one agent may edit `project.pbxproj` during this phase.
 ## Work items
 
 1. Expand `glas.shTests` to support iOS, macOS, and visionOS with SDK-appropriate deployment settings and a unified test host.
-2. Add the existing `glas.sh-macTests` source group to `glas.shTests`.
+2. Add the existing Mac workspace tests beneath the unified `glas.shTests/macOS` source tree.
 3. Wrap Mac-only test imports and suites in `#if os(macOS)`.
 4. Audit shared tests for mobile/vision-only imports and guard only true platform boundaries.
 5. Expand `glas.shUITests` to support every application destination.

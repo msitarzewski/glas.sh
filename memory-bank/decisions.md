@@ -10,7 +10,7 @@
 - Decision:
   - Use the existing `glas.sh` target and scheme as the sole application product across iPhone, iPad, visionOS, and native Apple Silicon macOS.
   - Keep one `@main` application and compose the existing native scene graphs through platform boundaries.
-  - Retain `glas.sh-mac` as guarded platform source/resources, not as an application target.
+  - Retain the native Mac implementation under `Platforms/macOS` as guarded platform source/resources, not as an application target.
   - Use one bundle identifier, `sh.glas.app`, with SDK-specific plist, entitlement, icon, architecture, and extension filtering.
   - Keep the widget as a separate extension binary and keep unit/UI tests as separate test bundles hosted by the unified app.
 - Alternatives:
@@ -21,6 +21,7 @@
   - One scheme exposes My Mac, iPhone, iPad, and Vision Pro destinations.
   - Shared credentials, defaults, themes, trust, servers, and workgroups retain one product identity and shared storage contract.
   - Platform-only source must maintain complete compile-time guards and one scene/command registration authority.
+  - Public source organization mirrors the target graph: shared application code in `glas.sh`, native Mac adaptations in `Platforms/macOS`, and Mac-only tests in `glas.shTests/macOS`.
   - The historical separate target remains recoverable from baseline commit `c9f7a406`, but is absent from the current project.
 - References: `memory-bank/releases/one-base/README.md`, `memory-bank/tasks/2026-07/250726_one-base-release.md`
 
@@ -306,4 +307,4 @@
   - macOS gains native local/SSH multiwindow workspaces without forking security or appearance policy.
   - ANSI glyph colors remain independent of the transparent/blurred terminal canvas.
   - iPadOS/iOS shells, a comparative engine spike, and App Store distribution remain separately tracked work.
-- References: `glas.sh-mac/glas_shMacApp.swift`, `glas.sh-mac/MacWorkspaceView.swift`, `Packages/RealityKitContent/Sources/RealityKitContent/SwiftTermHostView.swift`, `memory-bank/releases/codex-completions/06-native-platform-foundation.md`
+- References: `Platforms/macOS/MacTerminalWindowPolicy.swift`, `Platforms/macOS/MacWorkspaceView.swift`, `Packages/RealityKitContent/Sources/RealityKitContent/SwiftTermHostView.swift`, `memory-bank/releases/codex-completions/06-native-platform-foundation.md`

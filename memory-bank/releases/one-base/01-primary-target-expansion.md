@@ -19,7 +19,7 @@ Phase 00.
 ## Primary files
 
 - `glas.sh.xcodeproj/project.pbxproj`
-- `glas.sh-mac/*.swift`
+- `Platforms/macOS/*.swift`
 - `glas.sh/glas_shApp.swift`
 
 Only one agent may edit `project.pbxproj` during this phase.
@@ -31,7 +31,7 @@ Only one agent may edit `project.pbxproj` during this phase.
 3. Set `SUPPORTS_MACCATALYST = NO`.
 4. Preserve iPhone/iPad and visionOS deployment floors and add the current macOS deployment floor.
 5. Keep macOS `ARCHS = arm64` without narrowing mobile or vision destinations incorrectly.
-6. Add the existing `glas.sh-mac` synchronized source group to the primary target.
+6. Add the existing native Mac synchronized source group, now `Platforms/macOS`, to the primary target.
 7. Wrap every Mac-only source file in a complete `#if os(macOS)` boundary before it can enter mobile builds.
 8. Continue using the current conditional entry points temporarily:
    - `glas_shApp` on iOS/visionOS;
@@ -76,5 +76,5 @@ The existing primary target builds and launches a native Apple Silicon Mac app a
 
 - `glas.sh.xcodeproj/project.pbxproj` now defines one native application target with automatic SDK selection, iOS/visionOS/macOS supported platforms, Catalyst disabled, and SDK-conditional settings.
 - Mac builds resolve as native macOS arm64 with minimum macOS 26.0; mobile and vision destinations retain their native architectures and deployment floors.
-- Existing `glas.sh-mac` sources compile through complete macOS guards; AppKit/Carbon symbols do not enter iOS or visionOS products.
+- Existing `Platforms/macOS` sources compile through complete macOS guards; AppKit/Carbon symbols do not enter iOS or visionOS products.
 - Exact-current iPhone/iPad/visionOS builds and the fresh Mac Release archive pass. The old Mac target remained available until Phase 06 retirement.

@@ -54,3 +54,4 @@
 - [2026-07](./tasks/2026-07/README.md)
   - [Connection Library Release Completion](./tasks/2026-07/210726_connection-library-release.md)
   - [One Base Release Completion](./tasks/2026-07/250726_one-base-release.md)
+  - [Public Repository Platform Cleanup](./tasks/2026-07/250726_public-repo-platform-cleanup.md)

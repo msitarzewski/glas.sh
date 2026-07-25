@@ -41,3 +41,9 @@
 - Verified 232/232 units on both iPhone and iPad, 229/229 on both visionOS 26.4 and 27, iPad UI 2/2, platform smokes, a clean native arm64 Mac archive/direct launch, GlasSecretStore 69/69, and final static/security gates.
 - Approved simulator, hosted-test-service, physical-device, local certificate-trust, visual-capture, and advisory-database evidence boundaries are recorded in the release program.
 - See: [250726_one-base-release.md](./250726_one-base-release.md)
+
+### 2026-07-25: Public repository platform cleanup
+- Renamed the retained native Mac implementation boundary from `glas.sh-mac` to `Platforms/macOS` without changing source/resource contents.
+- Moved Mac-only workspace tests beneath `glas.shTests/macOS` and removed the misleading standalone test-source root.
+- Preserved the single One Base application/test target graph and verified 251/251 Mac tests, iOS/visionOS simulator builds, and simulator install/launch smokes.
+- See: [250726_public-repo-platform-cleanup.md](./250726_public-repo-platform-cleanup.md)

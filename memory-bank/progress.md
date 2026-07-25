@@ -1,5 +1,13 @@
 # Progress
 
+- Public repository platform cleanup approved (2026-07-25):
+  - Renamed the retained native Mac implementation boundary from `glas.sh-mac` to `Platforms/macOS`; renamed the misleading former app-entry filename to `MacTerminalWindowPolicy.swift`.
+  - Moved Mac-only workspace tests beneath `glas.shTests/macOS`, matching the existing single unit-test target.
+  - Preserved the One Base graph: one application target, one application `@main`, one shared application scheme, and native platform-specific implementation boundaries.
+  - Git blob verification found zero content mismatches across all moved sources/resources.
+  - QA: native Apple Silicon macOS 251/251; iPhone 17 Pro and Vision Pro 27 simulator builds pass; both simulator products install and launch as `sh.glas.app`.
+  - Project parsing, diff whitespace, live legacy-path, and source-content checks pass.
+
 - One Base release approved (2026-07-25):
   - Consolidated iPhone, iPad, visionOS, and native Apple Silicon macOS into one `glas.sh` application target, product identity, `@main`, and shared application scheme; Catalyst remains disabled.
   - Preserved native platform scenes, Mac local PTY/workspaces/tabs/splits/commands, Vision Pro ornaments and transparent terminal appearance, iOS/iPad navigation, and shared GlassSecretStore credentials/trust.

@@ -23,7 +23,7 @@ Codex agent team
 ## Reuse analysis
 
 - Extend the existing primary `glas.sh` application target.
-- Reuse every Mac workspace, PTY, command, and window source in `glas.sh-mac`.
+- Reuse every Mac workspace, PTY, command, and window source now located in `Platforms/macOS` (historically `glas.sh-mac` at the release baseline).
 - Reuse the existing shared app core and package products.
 - Reuse platform Info.plists, entitlements, and icons with SDK-conditional build settings.
 - Reuse shared unit/UI-test sources and existing test targets as the consolidation destination.

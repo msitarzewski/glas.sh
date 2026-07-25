@@ -22,19 +22,19 @@
 			remoteGlobalIDString = 4C24514F2E71897700F37CC4;
 			remoteInfo = glas.sh;
 		};
-		DD0000010000000000000001 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 4C2451482E71897700F37CC4 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 4C24514F2E71897700F37CC4;
-			remoteInfo = glas.sh;
-		};
 		AA00000100000000000000A0 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 4C2451482E71897700F37CC4 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = AA00000100000000000000A3;
 			remoteInfo = glasWidgets;
+		};
+		DD0000010000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4C2451482E71897700F37CC4 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 4C24514F2E71897700F37CC4;
+			remoteInfo = glas.sh;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -56,9 +56,9 @@
 		4C2451502E71897700F37CC4 /* glas.sh.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = glas.sh.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4C2451542E71897700F37CC4 /* RealityKitContent */ = {isa = PBXFileReference; lastKnownFileType = wrapper; path = RealityKitContent; sourceTree = "<group>"; };
 		4C2451622E71897900F37CC4 /* glas.shTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = glas.shTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		DD0000010000000000000002 /* glas.shUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = glas.shUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA000001000000000000000E /* glasWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = glasWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-		BB0000010000000000000025 /* Mac Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = "Mac Assets.xcassets"; path = "glas.sh-mac/Assets.xcassets"; sourceTree = SOURCE_ROOT; };
+		BB0000010000000000000025 /* Mac Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = "Mac Assets.xcassets"; path = Platforms/macOS/Assets.xcassets; sourceTree = SOURCE_ROOT; };
+		DD0000010000000000000002 /* glas.shUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = glas.shUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -77,7 +77,7 @@
 			);
 			target = AA00000100000000000000A3 /* glasWidgets */;
 		};
-		BB0000010000000000000023 /* Exceptions for "glas.sh-mac" folder in "glas.sh" target */ = {
+		BB0000010000000000000023 /* Exceptions for "macOS" folder in "glas.sh" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Assets.xcassets,
@@ -109,17 +109,12 @@
 			path = glasWidgets;
 			sourceTree = "<group>";
 		};
-		BB0000010000000000000022 /* glas.sh-mac */ = {
+		BB0000010000000000000022 /* macOS */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				BB0000010000000000000023 /* Exceptions for "glas.sh-mac" folder in "glas.sh" target */,
+				BB0000010000000000000023 /* Exceptions for "macOS" folder in "glas.sh" target */,
 			);
-			path = "glas.sh-mac";
-			sourceTree = "<group>";
-		};
-		CC0000010000000000000003 /* glas.sh-macTests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "glas.sh-macTests";
+			path = Platforms/macOS;
 			sourceTree = "<group>";
 		};
 		DD0000010000000000000003 /* glas.shUITests */ = {
@@ -168,9 +163,8 @@
 			isa = PBXGroup;
 			children = (
 				4C2451522E71897700F37CC4 /* glas.sh */,
-				BB0000010000000000000022 /* glas.sh-mac */,
+				BB0000010000000000000022 /* macOS */,
 				BB0000010000000000000025 /* Mac Assets.xcassets */,
-				CC0000010000000000000003 /* glas.sh-macTests */,
 				4C2451532E71897700F37CC4 /* Packages */,
 				AA00000100000000000000A2 /* glasWidgets */,
 				4C2451652E71897900F37CC4 /* glas.shTests */,
@@ -217,7 +211,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				4C2451522E71897700F37CC4 /* glas.sh */,
-				BB0000010000000000000022 /* glas.sh-mac */,
+				BB0000010000000000000022 /* macOS */,
 			);
 			name = glas.sh;
 			packageProductDependencies = (
@@ -244,7 +238,6 @@
 			);
 			fileSystemSynchronizedGroups = (
 				4C2451652E71897900F37CC4 /* glas.shTests */,
-				CC0000010000000000000003 /* glas.sh-macTests */,
 			);
 			name = glas.shTests;
 			packageProductDependencies = (
@@ -438,36 +431,36 @@
 /* Begin XCBuildConfiguration section */
 		4C24516A2E71897900F37CC4 /* Debug */ = {
 			isa = XCBuildConfiguration;
-				buildSettings = {
-					"ARCHS[sdk=macosx*]" = arm64;
-					ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-					ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-					CODE_SIGN_ENTITLEMENTS = glas.sh/glas.sh.entitlements;
-					"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "glas.sh-mac/glas.sh-mac.entitlements";
-					CODE_SIGN_STYLE = Automatic;
+			buildSettings = {
+				"ARCHS[sdk=macosx*]" = arm64;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = glas.sh/glas.sh.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = Platforms/macOS/macOS.entitlements;
+				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
-					ENABLE_PREVIEWS = YES;
-					GENERATE_INFOPLIST_FILE = YES;
-					INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
-					"INFOPLIST_FILE[sdk=macosx*]" = "glas.sh-mac/Info.plist";
-					LD_RUNPATH_SEARCH_PATHS = (
-						"$(inherited)",
-						"@executable_path/Frameworks",
-					);
-					"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
-						"$(inherited)",
-						"@executable_path/../Frameworks",
-					);
-					MACOSX_DEPLOYMENT_TARGET = 26.0;
-					MARKETING_VERSION = 1.0;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
+				"INFOPLIST_FILE[sdk=macosx*]" = Platforms/macOS/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-					SDKROOT = auto;
-					SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
-					SUPPORTS_MACCATALYST = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SUPPORTS_MACCATALYST = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -482,37 +475,37 @@
 		};
 		4C24516B2E71897900F37CC4 /* Release */ = {
 			isa = XCBuildConfiguration;
-				buildSettings = {
-					"ARCHS[sdk=macosx*]" = arm64;
-					ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-					ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-					CODE_SIGN_ENTITLEMENTS = glas.sh/glas.sh.entitlements;
-					"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "glas.sh-mac/glas.sh-mac.entitlements";
-					CODE_SIGN_STYLE = Automatic;
+			buildSettings = {
+				"ARCHS[sdk=macosx*]" = arm64;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = glas.sh/glas.sh.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = Platforms/macOS/macOS.entitlements;
+				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
 				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				ENABLE_PREVIEWS = YES;
-					GENERATE_INFOPLIST_FILE = YES;
-					INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
-					"INFOPLIST_FILE[sdk=macosx*]" = "glas.sh-mac/Info.plist";
-					LD_RUNPATH_SEARCH_PATHS = (
-						"$(inherited)",
-						"@executable_path/Frameworks",
-					);
-					"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
-						"$(inherited)",
-						"@executable_path/../Frameworks",
-					);
-					MACOSX_DEPLOYMENT_TARGET = 26.0;
-					MARKETING_VERSION = 1.0;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
+				"INFOPLIST_FILE[sdk=macosx*]" = Platforms/macOS/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-					SDKROOT = auto;
-					SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
-					SUPPORTS_MACCATALYST = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SUPPORTS_MACCATALYST = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -649,18 +642,18 @@
 		4C24516F2E71897900F37CC4 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				"ARCHS[sdk=macosx*]" = arm64;
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
 				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.appTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				"ARCHS[sdk=macosx*]" = arm64;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
@@ -679,18 +672,18 @@
 		4C2451702E71897900F37CC4 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				"ARCHS[sdk=macosx*]" = arm64;
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
 				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.appTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				"ARCHS[sdk=macosx*]" = arm64;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
@@ -717,6 +710,7 @@
 				INFOPLIST_FILE = glasWidgets/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = glasWidgets;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -726,7 +720,6 @@
 				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.app.glasWidgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -750,6 +743,7 @@
 				INFOPLIST_FILE = glasWidgets/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = glasWidgets;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -759,7 +753,6 @@
 				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.app.glasWidgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -775,17 +768,17 @@
 		DD0000010000000000000009 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				"ARCHS[sdk=macosx*]" = arm64;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.appUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				"ARCHS[sdk=macosx*]" = arm64;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -802,17 +795,17 @@
 		DD000001000000000000000A /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				"ARCHS[sdk=macosx*]" = arm64;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.appUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				"ARCHS[sdk=macosx*]" = arm64;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
