@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import RealityKitContent
 import SwiftUI
@@ -791,3 +792,4 @@ private struct MacTerminalPasteReviewSheet: View {
         .interactiveDismissDisabled()
     }
 }
+#endif

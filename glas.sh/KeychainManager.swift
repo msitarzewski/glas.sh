@@ -422,6 +422,24 @@ enum KeychainManager {
         }
     }
 
+    /// Removes only the endpoint-scoped compatibility record shared with
+    /// other Glass apps. Normal profile deletion deliberately does not call
+    /// this because the record may still be owned by glassdb.
+    static func deleteSharedCompatibilityPassword(
+        for server: ServerConfiguration,
+        store: ServerCredentialStore = .live
+    ) throws {
+        guard let location = sharedSSHPasswordLocation(for: server) else { return }
+        do {
+            try store.delete(location.account, location.service)
+        } catch SecretStoreError.notFound {
+            // Absence is the requested state; verify it below.
+        }
+        guard try store.read(location.account, location.service) == nil else {
+            throw ServerCredentialError.readbackMismatch
+        }
+    }
+
     /// Stable per-profile namespace. Deliberately does not use the legacy
     /// `username@host:port` tuple because that account may belong to glassdb in
     /// the shared Keychain service.

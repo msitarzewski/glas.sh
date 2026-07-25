@@ -32,6 +32,15 @@ struct ConnectionManagerView: View {
     #endif
 
     private var serverManager: ServerManager { sessionManager.serverManager }
+    private var showsExplicitSearchAction: Bool {
+        #if os(visionOS)
+        true
+        #elseif os(iOS)
+        horizontalSizeClass == .regular
+        #else
+        false
+        #endif
+    }
 
     @State private var selectedMode: ConnectionLibraryMode = .library
     @State private var selectedScope: ConnectionLibraryScope = .allConnections
@@ -42,6 +51,7 @@ struct ConnectionManagerView: View {
     @State private var editingServer: ServerConfiguration?
     @State private var viewingServer: ServerConfiguration?
     @State private var searchQuery: String = ""
+    @FocusState private var searchIsFocused: Bool
     @State private var pendingTrustSession: TerminalSession?
     @State private var pendingTrustChallenge: HostKeyTrustChallenge?
     @State private var connectionFailureMessage: String?
@@ -658,6 +668,7 @@ struct ConnectionManagerView: View {
         .accessibilityIdentifier("connection-library-results-connections")
         .navigationTitle(resultTitle(connectionLibrary: connectionLibrary))
         .searchable(text: $searchQuery, prompt: "Search connections...")
+        .searchFocused($searchIsFocused)
         .onSubmit(of: .search) {
             if let config = quickConnectConfig {
                 quickConnectPasswordPrompt = config
@@ -670,6 +681,16 @@ struct ConnectionManagerView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
+                if showsExplicitSearchAction {
+                    Button {
+                        searchIsFocused = true
+                    } label: {
+                        Image(systemName: "magnifyingglass")
+                    }
+                    .accessibilityLabel("Search")
+                    .accessibilityIdentifier("connection-library-search")
+                }
+
                 Button {
                     showingAddServer = true
                 } label: {
@@ -805,6 +826,7 @@ struct ConnectionManagerView: View {
         .accessibilityIdentifier("connection-library-results-workgroups")
         .navigationTitle("Workgroups")
         .searchable(text: $searchQuery, prompt: "Search workgroups...")
+        .searchFocused($searchIsFocused)
         .onChange(of: visibleSelections) { _, visibleSelections in
             if let selectedWorkgroupSelection,
                !visibleSelections.contains(selectedWorkgroupSelection) {
@@ -813,6 +835,16 @@ struct ConnectionManagerView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
+                if showsExplicitSearchAction {
+                    Button {
+                        searchIsFocused = true
+                    } label: {
+                        Image(systemName: "magnifyingglass")
+                    }
+                    .accessibilityLabel("Search")
+                    .accessibilityIdentifier("connection-library-search")
+                }
+
                 Button {
                     editCurrentSessionsAsWorkgroup()
                 } label: {
@@ -878,6 +910,9 @@ struct ConnectionManagerView: View {
                     }
                 }
                 .formStyle(.grouped)
+                .accessibilityIdentifier(
+                    "connection-library-detail-server-\(server.id.uuidString.lowercased())"
+                )
 
                 HStack {
                     Button("Details", systemImage: "info.circle") {
@@ -900,9 +935,6 @@ struct ConnectionManagerView: View {
                 .background(.bar)
             }
             .navigationTitle(server.name)
-            .accessibilityIdentifier(
-                "connection-library-detail-server-\(server.id.uuidString.lowercased())"
-            )
         } else {
             ContentUnavailableView {
                 Label("Select a Connection", systemImage: "server.rack")
@@ -2254,7 +2286,7 @@ private struct ServerListRow: View {
 
     var body: some View {
         Group {
-            #if os(iOS)
+            #if os(iOS) || os(visionOS)
             compactContent
             #else
             wideContent
@@ -2299,7 +2331,7 @@ private struct ServerListRow: View {
         }
     }
 
-    #if os(iOS)
+    #if os(iOS) || os(visionOS)
     private var compactContent: some View {
         HStack(spacing: 10) {
             Circle()
@@ -2370,6 +2402,7 @@ private struct ServerListRow: View {
         Text(server.name)
             .font(.subheadline.weight(.semibold))
             .lineLimit(1)
+            .accessibilityLabel(server.name)
             .accessibilityIdentifier(
                 "connection-library-server-name-\(server.id.uuidString.lowercased())"
             )

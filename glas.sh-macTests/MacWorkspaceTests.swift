@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import Darwin
 import Foundation
@@ -13,6 +14,110 @@ import Testing
 struct MacWorkspaceTests {
     private static let hostKeyValidationFixture =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJfkNV4OS33ImTXvorZr72q4v5XhVEQKfvqsxOEJ/XaR"
+
+    @Test func legacyMacDefaultsMigrationCopiesOnlyAllowlistedNonsecretValues() throws {
+        let suiteName = "sh.glas.legacy-migration-tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.removePersistentDomain(forName: suiteName)
+
+        var legacyServer = ServerConfiguration(
+            name: "Legacy",
+            host: "legacy.test",
+            username: "tester"
+        )
+        legacyServer.trustedHostKeys = [
+            TrustedHostKeyEntry(
+                host: "legacy.test",
+                port: 22,
+                algorithm: "ssh-ed25519",
+                fingerprintSHA256: "SHA256:test",
+                keyDataBase64: "dGVzdA==",
+                addedAt: Date()
+            )
+        ]
+        let workspaceKey = "\(UserDefaultsKeys.macWorkspaceRestoration).workspace"
+        let legacyDomain: [String: Any] = [
+            UserDefaultsKeys.servers: try JSONEncoder().encode([legacyServer]),
+            UserDefaultsKeys.windowOpacity: 0.42,
+            workspaceKey: Data("workspace".utf8),
+            UserDefaultsKeys.trustedHostKeys: Data("global-trust".utf8),
+            "password": "must-not-migrate",
+            "unexpectedKey": "must-not-migrate",
+        ]
+
+        SharedDefaults.migrateLegacyMacDomainIfNeeded(
+            legacyDomain: legacyDomain,
+            destination: defaults
+        )
+
+        let migratedData = try #require(defaults.data(forKey: UserDefaultsKeys.servers))
+        let migratedServers = try JSONDecoder().decode([ServerConfiguration].self, from: migratedData)
+        #expect(migratedServers.count == 1)
+        #expect(migratedServers[0].name == "Legacy")
+        #expect(migratedServers[0].trustedHostKeys == nil)
+        #expect(defaults.double(forKey: UserDefaultsKeys.windowOpacity) == 0.42)
+        #expect(defaults.data(forKey: workspaceKey) == Data("workspace".utf8))
+        #expect(defaults.object(forKey: UserDefaultsKeys.trustedHostKeys) == nil)
+        #expect(defaults.object(forKey: "password") == nil)
+        #expect(defaults.object(forKey: "unexpectedKey") == nil)
+        #expect(defaults.bool(forKey: SharedDefaults.legacyMacDomainMigrationSentinel))
+    }
+
+    @Test func legacyMacDefaultsMigrationPreservesExistingDestinationValuesAndRunsOnce() throws {
+        let suiteName = "sh.glas.legacy-migration-tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.removePersistentDomain(forName: suiteName)
+        defaults.set(0.75, forKey: UserDefaultsKeys.windowOpacity)
+
+        SharedDefaults.migrateLegacyMacDomainIfNeeded(
+            legacyDomain: [UserDefaultsKeys.windowOpacity: 0.25],
+            destination: defaults
+        )
+        SharedDefaults.migrateLegacyMacDomainIfNeeded(
+            legacyDomain: [UserDefaultsKeys.windowOpacity: 0.10],
+            destination: defaults
+        )
+
+        #expect(defaults.double(forKey: UserDefaultsKeys.windowOpacity) == 0.75)
+        #expect(defaults.bool(forKey: SharedDefaults.legacyMacDomainMigrationSentinel))
+    }
+
+    @Test func legacyMacDefaultsMigrationRetriesAnUnreadableServerCatalog() throws {
+        let suiteName = "sh.glas.legacy-migration-tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.removePersistentDomain(forName: suiteName)
+
+        SharedDefaults.migrateLegacyMacDomainIfNeeded(
+            legacyDomain: [UserDefaultsKeys.servers: Data("not-json".utf8)],
+            destination: defaults
+        )
+
+        #expect(defaults.data(forKey: UserDefaultsKeys.servers) == nil)
+        #expect(!defaults.bool(forKey: SharedDefaults.legacyMacDomainMigrationSentinel))
+
+        let recoveredServer = ServerConfiguration(
+            name: "Recovered",
+            host: "recovered.test",
+            username: "tester"
+        )
+        SharedDefaults.migrateLegacyMacDomainIfNeeded(
+            legacyDomain: [
+                UserDefaultsKeys.servers: try JSONEncoder().encode([recoveredServer])
+            ],
+            destination: defaults
+        )
+
+        let migratedData = try #require(defaults.data(forKey: UserDefaultsKeys.servers))
+        let migratedServers = try JSONDecoder().decode(
+            [ServerConfiguration].self,
+            from: migratedData
+        )
+        #expect(migratedServers.map(\.name) == ["Recovered"])
+        #expect(defaults.bool(forKey: SharedDefaults.legacyMacDomainMigrationSentinel))
+    }
 
     @Test func restorationStateRoundTripsEveryPaneIntentAndSplitProperty() throws {
         let workspaceID = UUID()
@@ -1097,6 +1202,7 @@ struct MacWorkspaceTests {
         )
         window.isReleasedWhenClosed = false
         window.contentView = hostingView
+        await Task.yield()
 
         model.ingest(data: Data("\u{1B}]52;c;SGVs".utf8), nonce: 1)
         model.ingest(data: Data("bG8=\u{07}".utf8), nonce: 2)
@@ -1187,3 +1293,4 @@ private func waitForCondition(
     }
     return condition()
 }
+#endif

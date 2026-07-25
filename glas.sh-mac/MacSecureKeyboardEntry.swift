@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import Carbon.HIToolbox
 import Observation
@@ -78,3 +79,4 @@ final class MacSecureKeyboardEntry {
         lastError = nil
     }
 }
+#endif

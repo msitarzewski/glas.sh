@@ -12,9 +12,9 @@ import GlasSecretStore
 import NIOCore
 import NIOSSH
 import RealityKitContent
+import SwiftUI
 #if canImport(UIKit)
 import Combine
-import SwiftUI
 import UIKit
 #endif
 
@@ -198,6 +198,12 @@ private final class SharedServerCredentialProbe {
             },
             deletePublished: { [unowned self] server in
                 try KeychainManager.deletePublishedPassword(for: server, store: store)
+            },
+            deleteSharedCompatibility: { [unowned self] server in
+                try KeychainManager.deleteSharedCompatibilityPassword(
+                    for: server,
+                    store: store
+                )
             },
             prepareRollback: { [unowned self] server in
                 try KeychainManager.passwordRollback(for: server, store: store)
@@ -1411,6 +1417,29 @@ struct glas_shTests {
         #expect(probe.values[sharedKey] == Data("glassdb-secret".utf8))
     }
 
+    @Test func sharedCompatibilityCleanupRetainsTheGlasProfileCredential() throws {
+        let server = migrationServer(host: "bastion.example.com")
+        let probe = SharedServerCredentialProbe()
+        try KeychainManager.savePassword("shared-secret", for: server, store: probe.store)
+
+        let primaryKey = probe.key(
+            account: KeychainManager.serverPasswordAccount(for: server.id),
+            service: KeychainManager.config.passwordsService
+        )
+        let sharedKey = probe.key(
+            account: try #require(KeychainManager.sharedSSHPasswordAccount(for: server)),
+            service: KeychainManager.config.sshPasswordsService
+        )
+
+        try KeychainManager.deleteSharedCompatibilityPassword(
+            for: server,
+            store: probe.store
+        )
+
+        #expect(probe.values[primaryKey] == Data("shared-secret".utf8))
+        #expect(probe.values[sharedKey] == nil)
+    }
+
     @Test func sharedCredentialPartialWriteRestoresBothPreviousRecords() throws {
         let server = migrationServer(host: "bastion.example.com")
         let probe = SharedServerCredentialProbe()
@@ -2001,6 +2030,112 @@ struct glas_shTests {
         let restoredData = try #require(defaults.data(forKey: UserDefaultsKeys.servers))
         #expect(try JSONDecoder().decode([ServerConfiguration].self, from: restoredData) == [server])
     }
+
+    #if DEBUG
+    @Test func uiTestFixturePurgeRemovesProfileAndSharedCredentialOnly() throws {
+        let suiteName = "sh.glas.test.ui-fixture-purge.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let probe = SharedServerCredentialProbe()
+        let fixture = ServerConfiguration(
+            name: "\(ServerManager.connectionLibraryUITestNamePrefix)ABC123",
+            host: "192.0.2.1",
+            port: 22,
+            username: "ui-test",
+            authMethod: .password
+        )
+        let retained = migrationServer(
+            id: UUID(uuidString: "BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF")!,
+            host: "retained.example.com"
+        )
+        let similarlyNamedRealServer = ServerConfiguration(
+            id: UUID(uuidString: "CCCCCCCC-DDDD-EEEE-FFFF-AAAAAAAAAAAA")!,
+            name: "\(ServerManager.connectionLibraryUITestNamePrefix)Production",
+            host: "similarly-named.example.com",
+            username: "operator",
+            authMethod: .password
+        )
+        let similarlyNamedKeyServer = ServerConfiguration(
+            id: UUID(uuidString: "DDDDDDDD-EEEE-FFFF-AAAA-BBBBBBBBBBBB")!,
+            name: "\(ServerManager.connectionLibraryUITestNamePrefix)Key",
+            host: ServerManager.connectionLibraryUITestHost,
+            username: ServerManager.connectionLibraryUITestUsername,
+            authMethod: .sshKey
+        )
+        let manager = ServerManager(
+            loadImmediately: false,
+            defaults: defaults,
+            passwordStore: probe.passwordStore
+        )
+        manager.servers = [
+            fixture,
+            retained,
+            similarlyNamedRealServer,
+            similarlyNamedKeyServer,
+        ]
+        try manager.persistServersOrThrow()
+        try KeychainManager.savePassword(
+            "fixture-secret",
+            for: fixture,
+            store: probe.store
+        )
+        try KeychainManager.savePassword(
+            "retained-secret",
+            for: retained,
+            store: probe.store
+        )
+        try KeychainManager.savePassword(
+            "similarly-named-secret",
+            for: similarlyNamedRealServer,
+            store: probe.store
+        )
+
+        try manager.purgeConnectionLibraryUITestFixtures()
+        try manager.purgeConnectionLibraryUITestFixtures()
+
+        let fixturePrimary = probe.key(
+            account: KeychainManager.serverPasswordAccount(for: fixture.id),
+            service: KeychainManager.config.passwordsService
+        )
+        let fixtureShared = probe.key(
+            account: try #require(KeychainManager.sharedSSHPasswordAccount(for: fixture)),
+            service: KeychainManager.config.sshPasswordsService
+        )
+        let retainedPrimary = probe.key(
+            account: KeychainManager.serverPasswordAccount(for: retained.id),
+            service: KeychainManager.config.passwordsService
+        )
+        let retainedShared = probe.key(
+            account: try #require(KeychainManager.sharedSSHPasswordAccount(for: retained)),
+            service: KeychainManager.config.sshPasswordsService
+        )
+        let similarlyNamedPrimary = probe.key(
+            account: KeychainManager.serverPasswordAccount(
+                for: similarlyNamedRealServer.id
+            ),
+            service: KeychainManager.config.passwordsService
+        )
+        let similarlyNamedShared = probe.key(
+            account: try #require(
+                KeychainManager.sharedSSHPasswordAccount(
+                    for: similarlyNamedRealServer
+                )
+            ),
+            service: KeychainManager.config.sshPasswordsService
+        )
+        #expect(manager.servers == [
+            retained,
+            similarlyNamedRealServer,
+            similarlyNamedKeyServer,
+        ])
+        #expect(probe.values[fixturePrimary] == nil)
+        #expect(probe.values[fixtureShared] == nil)
+        #expect(probe.values[retainedPrimary] == Data("retained-secret".utf8))
+        #expect(probe.values[retainedShared] == Data("retained-secret".utf8))
+        #expect(probe.values[similarlyNamedPrimary] == Data("similarly-named-secret".utf8))
+        #expect(probe.values[similarlyNamedShared] == Data("similarly-named-secret".utf8))
+    }
+    #endif
 
     @Test func serverPasswordCreateRestoresExactPriorUUIDSecretWhenMetadataReadbackFails() throws {
         let suiteName = "sh.glas.test.server-create-rollback.\(UUID().uuidString)"

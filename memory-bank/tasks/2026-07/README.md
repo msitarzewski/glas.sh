@@ -33,3 +33,11 @@
 - Verified 211/211 iOS 27, 208/208 on both visionOS 26.4 and 27, and 32/32 macOS 27 tests; all current Release builds and touched package gates passed.
 - Direct Mac/iPhone/iPad smokes, physical Vision Pro signed build/install, final marker/orphan scans, and Gitleaks passed. Approved Apple beta-tooling limitations are recorded in the release program.
 - See: [210726_connection-library-release.md](./210726_connection-library-release.md)
+
+### 2026-07-25: One Base release completion
+- Consolidated iPhone, iPad, visionOS, and native Apple Silicon macOS behind one application target, product identity, `@main`, and shared scheme while retaining each platform’s native UI and terminal behavior.
+- Preserved shared GlassSecretStore credentials/trust, app-group defaults, themes, workgroups, true terminal transparency, ANSI fidelity, and native Mac PTY/workspace features.
+- Retained the widget as a platform-filtered extension and removed obsolete Mac app/test targets and scheme without deleting Swift source.
+- Verified 232/232 units on both iPhone and iPad, 229/229 on both visionOS 26.4 and 27, iPad UI 2/2, platform smokes, a clean native arm64 Mac archive/direct launch, GlasSecretStore 69/69, and final static/security gates.
+- Approved simulator, hosted-test-service, physical-device, local certificate-trust, visual-capture, and advisory-database evidence boundaries are recorded in the release program.
+- See: [250726_one-base-release.md](./250726_one-base-release.md)
