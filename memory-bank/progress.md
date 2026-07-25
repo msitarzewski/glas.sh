@@ -7,7 +7,7 @@
   - Final QA: iPhone 232/232, iPad 232/232 plus UI 2/2, visionOS 26.4 229/229 plus smoke, visionOS 27 229/229 plus one UI pass/one explicit simulator-input skip, and a fresh clean native arm64 Mac Release archive/direct launch. The immediately preceding unified-host Mac suite passed 251/251.
   - GlasSecretStore 69/69 and RealityKitContent build pass; project, metadata, entitlement, incomplete-marker, orphan, duplicate-entry, Release-symbol, and tracked-diff secret scans pass.
   - Approved evidence boundaries remain for physical Vision Pro, distribution trust/notarization, final hosted Mac XCTest after protected `testmanagerd` clears, Computer Use capture, and online dependency-advisory lookup.
-  - Implementation and documentation remain uncommitted on `agent/connection-library`; publication requires a separate request.
+  - Publication commits `904ae0af` and `47b23f12` are tracked by PR [#30](https://github.com/msitarzewski/glas.sh/pull/30), the canonical merge-status record.
 
 - Connection Library release approved (2026-07-21):
   - Added one deterministic transient projection for saved profiles, Favorites, Recent, normalized tag Collections, workgroup recipes, selection, filtering, and optional configured Network data.

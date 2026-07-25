@@ -4,15 +4,14 @@
 - The One Base release was implementation/QA approved on 2026-07-25. One native `glas.sh` application target and scheme now serve iPhone, iPad, visionOS, and native Apple Silicon macOS.
 - One `@main` application composes the existing native platform scenes. `glas.sh-mac` remains a guarded AppKit/local-PTY implementation boundary; the duplicate Mac application/test targets and scheme are retired.
 - Product identity is unified as `sh.glas.app`; SDK-specific plist, entitlements, icons, and widget filtering preserve shared GlassSecretStore, app-group, Keychain, iCloud, terminal, and platform behavior.
-- The implementation and documentation remain an approved working-tree diff on `agent/connection-library`. No commit, push, PR, or merge is authorized by the documentation approval.
+- The approved release is published on `agent/one-base` through PR [#30](https://github.com/msitarzewski/glas.sh/pull/30); GitHub is the canonical merge-status record.
 - This completion is not an App Store distribution decision. Physical Vision Pro, distribution certificate trust/notarization, final hosted Mac XCTest after the render-only delta, and external dependency-advisory querying retain explicit evidence boundaries in the release dashboard.
-- Working branch: `agent/connection-library`.
+- Working branch: `agent/one-base`.
 
 ## What's Next
-- **Review and publish One Base only when separately requested.**
-  - Preserve the current diff and release evidence.
-  - If authorized, commit intentionally, push, open a pull request, run required checks, and merge through branch protection.
-  - Do not rewrite phase history; retain baseline `c9f7a406` and the approved single-diff governance variance.
+- **Complete and preserve the One Base publication.**
+  - PR [#30](https://github.com/msitarzewski/glas.sh/pull/30) is the canonical review and merge record.
+  - Retain baseline `c9f7a406` and the approved single-diff governance variance.
 - **Close remaining distribution/device evidence.**
   - Run the physical Vision Pro interaction matrix and distribution-signing/notarization checks when hardware and credentials are available.
   - Re-run final hosted Mac unit/UI tests after the protected stale `testmanagerd` state clears.
