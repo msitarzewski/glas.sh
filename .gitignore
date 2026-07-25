@@ -21,6 +21,8 @@ DerivedData/
 build/
 .build/
 **/.build/
+*.profraw
+*.profdata
 
 # Claude Code local settings
 .claude/

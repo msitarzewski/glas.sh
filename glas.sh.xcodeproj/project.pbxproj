@@ -7,13 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		4C157833300D73440083F5D4 /* RealityKitContent in Frameworks */ = {isa = PBXBuildFile; productRef = 4C2451552E71897700F37CC4 /* RealityKitContent */; };
 		4C2451562E71897700F37CC4 /* RealityKitContent in Frameworks */ = {isa = PBXBuildFile; productRef = 4C2451552E71897700F37CC4 /* RealityKitContent */; };
-		AA000001000000000000000D /* glasWidgets.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = AA000001000000000000000E /* glasWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		BB0000010000000000000001 /* RealityKitContent in Frameworks */ = {isa = PBXBuildFile; productRef = 4C2451552E71897700F37CC4 /* RealityKitContent */; };
-		BB0000010000000000000002 /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = E2A2B3C4E5F6789000AABB02 /* Citadel */; };
-		BB0000010000000000000003 /* GlasSecretStore in Frameworks */ = {isa = PBXBuildFile; productRef = D1A2B3C4E5F6789000AABB02 /* GlasSecretStore */; };
-		CC0000010000000000000015 /* RealityKitContent in Frameworks */ = {isa = PBXBuildFile; productRef = 4C2451552E71897700F37CC4 /* RealityKitContent */; };
+		AA000001000000000000000D /* glasWidgets.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = AA000001000000000000000E /* glasWidgets.appex */; platformFilters = (ios, xros, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		BB0000010000000000000024 /* Mac Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000025 /* Mac Assets.xcassets */; platformFilter = macos; };
 		D1A2B3C4E5F6789000AABB01 /* GlasSecretStore in Frameworks */ = {isa = PBXBuildFile; productRef = D1A2B3C4E5F6789000AABB02 /* GlasSecretStore */; };
 		E2A2B3C4E5F6789000AABB01 /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = E2A2B3C4E5F6789000AABB02 /* Citadel */; };
 /* End PBXBuildFile section */
@@ -33,26 +29,12 @@
 			remoteGlobalIDString = 4C24514F2E71897700F37CC4;
 			remoteInfo = glas.sh;
 		};
-		EE0000010000000000000001 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 4C2451482E71897700F37CC4 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = BB0000010000000000000040;
-			remoteInfo = "glas.sh Mac";
-		};
 		AA00000100000000000000A0 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 4C2451482E71897700F37CC4 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = AA00000100000000000000A3;
 			remoteInfo = glasWidgets;
-		};
-		CC0000010000000000000001 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 4C2451482E71897700F37CC4 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = BB0000010000000000000040;
-			remoteInfo = "glas.sh Mac";
 		};
 /* End PBXContainerItemProxy section */
 
@@ -75,10 +57,8 @@
 		4C2451542E71897700F37CC4 /* RealityKitContent */ = {isa = PBXFileReference; lastKnownFileType = wrapper; path = RealityKitContent; sourceTree = "<group>"; };
 		4C2451622E71897900F37CC4 /* glas.shTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = glas.shTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		DD0000010000000000000002 /* glas.shUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = glas.shUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		EE0000010000000000000002 /* glas.sh-macUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "glas.sh-macUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA000001000000000000000E /* glasWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = glasWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-		BB0000010000000000000010 /* glas.sh.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = glas.sh.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		CC0000010000000000000002 /* glas.sh-macTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "glas.sh-macTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB0000010000000000000025 /* Mac Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = "Mac Assets.xcassets"; path = "glas.sh-mac/Assets.xcassets"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -86,6 +66,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				README.md,
 			);
 			target = 4C24514F2E71897700F37CC4 /* glas.sh */;
 		};
@@ -96,22 +77,13 @@
 			);
 			target = AA00000100000000000000A3 /* glasWidgets */;
 		};
-		BB0000010000000000000020 /* Exceptions for "glas.sh" folder in "glas.sh Mac" target */ = {
+		BB0000010000000000000023 /* Exceptions for "glas.sh-mac" folder in "glas.sh" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Assets.xcassets,
-				FocusEnvironmentView.swift,
 				Info.plist,
 			);
-			target = BB0000010000000000000040 /* glas.sh Mac */;
-		};
-		BB0000010000000000000021 /* Exceptions for "glas.sh-mac" folder in "glas.sh Mac" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				AppIcon.icon,
-				Info.plist,
-			);
-			target = BB0000010000000000000040 /* glas.sh Mac */;
+			target = 4C24514F2E71897700F37CC4 /* glas.sh */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -120,7 +92,6 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				4C2451682E71897900F37CC4 /* Exceptions for "glas.sh" folder in "glas.sh" target */,
-				BB0000010000000000000020 /* Exceptions for "glas.sh" folder in "glas.sh Mac" target */,
 			);
 			path = glas.sh;
 			sourceTree = "<group>";
@@ -141,7 +112,7 @@
 		BB0000010000000000000022 /* glas.sh-mac */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				BB0000010000000000000021 /* Exceptions for "glas.sh-mac" folder in "glas.sh Mac" target */,
+				BB0000010000000000000023 /* Exceptions for "glas.sh-mac" folder in "glas.sh" target */,
 			);
 			path = "glas.sh-mac";
 			sourceTree = "<group>";
@@ -173,7 +144,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				4C157833300D73440083F5D4 /* RealityKitContent in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -184,32 +154,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		BB0000010000000000000030 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				BB0000010000000000000001 /* RealityKitContent in Frameworks */,
-				BB0000010000000000000002 /* Citadel in Frameworks */,
-				BB0000010000000000000003 /* GlasSecretStore in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		CC0000010000000000000004 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				CC0000010000000000000015 /* RealityKitContent in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		DD0000010000000000000004 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		EE0000010000000000000004 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -224,6 +169,7 @@
 			children = (
 				4C2451522E71897700F37CC4 /* glas.sh */,
 				BB0000010000000000000022 /* glas.sh-mac */,
+				BB0000010000000000000025 /* Mac Assets.xcassets */,
 				CC0000010000000000000003 /* glas.sh-macTests */,
 				4C2451532E71897700F37CC4 /* Packages */,
 				AA00000100000000000000A2 /* glasWidgets */,
@@ -239,10 +185,7 @@
 				4C2451502E71897700F37CC4 /* glas.sh.app */,
 				4C2451622E71897900F37CC4 /* glas.shTests.xctest */,
 				DD0000010000000000000002 /* glas.shUITests.xctest */,
-				EE0000010000000000000002 /* glas.sh-macUITests.xctest */,
 				AA000001000000000000000E /* glasWidgets.appex */,
-				BB0000010000000000000010 /* glas.sh.app */,
-				CC0000010000000000000002 /* glas.sh-macTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -274,6 +217,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				4C2451522E71897700F37CC4 /* glas.sh */,
+				BB0000010000000000000022 /* glas.sh-mac */,
 			);
 			name = glas.sh;
 			packageProductDependencies = (
@@ -300,10 +244,10 @@
 			);
 			fileSystemSynchronizedGroups = (
 				4C2451652E71897900F37CC4 /* glas.shTests */,
+				CC0000010000000000000003 /* glas.sh-macTests */,
 			);
 			name = glas.shTests;
 			packageProductDependencies = (
-				4C2451552E71897700F37CC4 /* RealityKitContent */,
 			);
 			productName = glas.shTests;
 			productReference = 4C2451622E71897900F37CC4 /* glas.shTests.xctest */;
@@ -331,56 +275,6 @@
 			productReference = AA000001000000000000000E /* glasWidgets.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
-		BB0000010000000000000040 /* glas.sh Mac */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = BB0000010000000000000052 /* Build configuration list for PBXNativeTarget "glas.sh Mac" */;
-			buildPhases = (
-				BB0000010000000000000031 /* Sources */,
-				BB0000010000000000000030 /* Frameworks */,
-				BB0000010000000000000032 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			fileSystemSynchronizedGroups = (
-				4C2451522E71897700F37CC4 /* glas.sh */,
-				BB0000010000000000000022 /* glas.sh-mac */,
-			);
-			name = "glas.sh Mac";
-			packageProductDependencies = (
-				4C2451552E71897700F37CC4 /* RealityKitContent */,
-				E2A2B3C4E5F6789000AABB02 /* Citadel */,
-				D1A2B3C4E5F6789000AABB02 /* GlasSecretStore */,
-			);
-			productName = "glas.sh Mac";
-			productReference = BB0000010000000000000010 /* glas.sh.app */;
-			productType = "com.apple.product-type.application";
-		};
-		CC0000010000000000000005 /* glas.sh-macTests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = CC000001000000000000000C /* Build configuration list for PBXNativeTarget "glas.sh-macTests" */;
-			buildPhases = (
-				CC0000010000000000000006 /* Sources */,
-				CC0000010000000000000004 /* Frameworks */,
-				CC0000010000000000000007 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				CC0000010000000000000009 /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				CC0000010000000000000003 /* glas.sh-macTests */,
-			);
-			name = "glas.sh-macTests";
-			packageProductDependencies = (
-				4C2451552E71897700F37CC4 /* RealityKitContent */,
-			);
-			productName = "glas.sh-macTests";
-			productReference = CC0000010000000000000002 /* glas.sh-macTests.xctest */;
-			productType = "com.apple.product-type.bundle.unit-test";
-		};
 		DD0000010000000000000005 /* glas.shUITests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = DD000001000000000000000B /* Build configuration list for PBXNativeTarget "glas.shUITests" */;
@@ -404,29 +298,6 @@
 			productReference = DD0000010000000000000002 /* glas.shUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
-		EE0000010000000000000005 /* glas.sh-macUITests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = EE000001000000000000000B /* Build configuration list for PBXNativeTarget "glas.sh-macUITests" */;
-			buildPhases = (
-				EE0000010000000000000006 /* Sources */,
-				EE0000010000000000000004 /* Frameworks */,
-				EE0000010000000000000007 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				EE0000010000000000000008 /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				DD0000010000000000000003 /* glas.shUITests */,
-			);
-			name = "glas.sh-macUITests";
-			packageProductDependencies = (
-			);
-			productName = "glas.sh-macUITests";
-			productReference = EE0000010000000000000002 /* glas.sh-macUITests.xctest */;
-			productType = "com.apple.product-type.bundle.ui-testing";
-		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -447,20 +318,9 @@
 					AA00000100000000000000A3 = {
 						CreatedOnToolsVersion = 26.0;
 					};
-					BB0000010000000000000040 = {
-						CreatedOnToolsVersion = 27.0;
-					};
-					CC0000010000000000000005 = {
-						CreatedOnToolsVersion = 27.0;
-						TestTargetID = BB0000010000000000000040;
-					};
 					DD0000010000000000000005 = {
 						CreatedOnToolsVersion = 27.0;
 						TestTargetID = 4C24514F2E71897700F37CC4;
-					};
-					EE0000010000000000000005 = {
-						CreatedOnToolsVersion = 27.0;
-						TestTargetID = BB0000010000000000000040;
 					};
 				};
 			};
@@ -485,10 +345,7 @@
 				4C24514F2E71897700F37CC4 /* glas.sh */,
 				4C2451612E71897900F37CC4 /* glas.shTests */,
 				AA00000100000000000000A3 /* glasWidgets */,
-				BB0000010000000000000040 /* glas.sh Mac */,
-				CC0000010000000000000005 /* glas.sh-macTests */,
 				DD0000010000000000000005 /* glas.shUITests */,
-				EE0000010000000000000005 /* glas.sh-macUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -498,6 +355,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BB0000010000000000000024 /* Mac Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -515,28 +373,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		BB0000010000000000000032 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		CC0000010000000000000007 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		DD0000010000000000000007 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		EE0000010000000000000007 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -567,28 +404,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		BB0000010000000000000031 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		CC0000010000000000000006 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		DD0000010000000000000006 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		EE0000010000000000000006 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -605,49 +421,53 @@
 		};
 		AA00000100000000000000B0 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
+			platformFilters = (
+				ios,
+				xros,
+			);
 			target = AA00000100000000000000A3 /* glasWidgets */;
 			targetProxy = AA00000100000000000000A0 /* PBXContainerItemProxy */;
-		};
-		CC0000010000000000000009 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = BB0000010000000000000040 /* glas.sh Mac */;
-			targetProxy = CC0000010000000000000001 /* PBXContainerItemProxy */;
 		};
 		DD0000010000000000000008 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 4C24514F2E71897700F37CC4 /* glas.sh */;
 			targetProxy = DD0000010000000000000001 /* PBXContainerItemProxy */;
 		};
-		EE0000010000000000000008 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = BB0000010000000000000040 /* glas.sh Mac */;
-			targetProxy = EE0000010000000000000001 /* PBXContainerItemProxy */;
-		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		4C24516A2E71897900F37CC4 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = glas.sh/glas.sh.entitlements;
-				CODE_SIGN_STYLE = Automatic;
+				buildSettings = {
+					"ARCHS[sdk=macosx*]" = arm64;
+					ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+					ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+					CODE_SIGN_ENTITLEMENTS = glas.sh/glas.sh.entitlements;
+					"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "glas.sh-mac/glas.sh-mac.entitlements";
+					CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
-				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
+					ENABLE_PREVIEWS = YES;
+					GENERATE_INFOPLIST_FILE = YES;
+					INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
+					"INFOPLIST_FILE[sdk=macosx*]" = "glas.sh-mac/Info.plist";
+					LD_RUNPATH_SEARCH_PATHS = (
+						"$(inherited)",
+						"@executable_path/Frameworks",
+					);
+					"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+						"$(inherited)",
+						"@executable_path/../Frameworks",
+					);
+					MACOSX_DEPLOYMENT_TARGET = 26.0;
+					MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
+					SDKROOT = auto;
+					SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+					SUPPORTS_MACCATALYST = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -662,26 +482,37 @@
 		};
 		4C24516B2E71897900F37CC4 /* Release */ = {
 			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = glas.sh/glas.sh.entitlements;
-				CODE_SIGN_STYLE = Automatic;
+				buildSettings = {
+					"ARCHS[sdk=macosx*]" = arm64;
+					ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+					ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+					CODE_SIGN_ENTITLEMENTS = glas.sh/glas.sh.entitlements;
+					"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "glas.sh-mac/glas.sh-mac.entitlements";
+					CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
+				"ENABLE_HARDENED_RUNTIME[sdk=macosx*]" = YES;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
+					GENERATE_INFOPLIST_FILE = YES;
+					INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
+					"INFOPLIST_FILE[sdk=macosx*]" = "glas.sh-mac/Info.plist";
+					LD_RUNPATH_SEARCH_PATHS = (
+						"$(inherited)",
+						"@executable_path/Frameworks",
+					);
+					"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+						"$(inherited)",
+						"@executable_path/../Frameworks",
+					);
+					MACOSX_DEPLOYMENT_TARGET = 26.0;
+					MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
+					SDKROOT = auto;
+					SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+					SUPPORTS_MACCATALYST = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -828,8 +659,11 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				"ARCHS[sdk=macosx*]" = arm64;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 6.0;
@@ -855,8 +689,11 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				"ARCHS[sdk=macosx*]" = arm64;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 6.0;
@@ -935,119 +772,6 @@
 			};
 			name = Release;
 		};
-		BB0000010000000000000050 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ARCHS = arm64;
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = "glas.sh-mac/glas.sh-mac.entitlements";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
-				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
-				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "glas.sh-mac/Info.plist";
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-				);
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.mac;
-				PRODUCT_NAME = glas.sh;
-				SDKROOT = macosx;
-				SUPPORTED_PLATFORMS = macosx;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 6.0;
-			};
-			name = Debug;
-		};
-		BB0000010000000000000051 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ARCHS = arm64;
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = "glas.sh-mac/glas.sh-mac.entitlements";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
-				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
-				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "glas.sh-mac/Info.plist";
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-				);
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.mac;
-				PRODUCT_NAME = glas.sh;
-				SDKROOT = macosx;
-				SUPPORTED_PLATFORMS = macosx;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 6.0;
-			};
-			name = Release;
-		};
-		CC000001000000000000000A /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ARCHS = arm64;
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
-				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
-				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.macTests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = macosx;
-				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SUPPORTED_PLATFORMS = macosx;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 6.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/glas.sh.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/glas.sh";
-			};
-			name = Debug;
-		};
-		CC000001000000000000000B /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ARCHS = arm64;
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
-				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
-				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.macTests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = macosx;
-				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SUPPORTED_PLATFORMS = macosx;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 6.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/glas.sh.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/glas.sh";
-			};
-			name = Release;
-		};
 		DD0000010000000000000009 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1060,7 +784,9 @@
 				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.appUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				"ARCHS[sdk=macosx*]" = arm64;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 6.0;
@@ -1085,7 +811,9 @@
 				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.appUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				"ARCHS[sdk=macosx*]" = arm64;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 6.0;
@@ -1095,50 +823,6 @@
 				"TARGETED_DEVICE_FAMILY[sdk=xrsimulator*]" = 7;
 				TEST_TARGET_NAME = glas.sh;
 				XROS_DEPLOYMENT_TARGET = 26.0;
-			};
-			name = Release;
-		};
-		EE0000010000000000000009 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ARCHS = arm64;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
-				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
-				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.macUITests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = macosx;
-				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SUPPORTED_PLATFORMS = macosx;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 6.0;
-				TEST_TARGET_NAME = "glas.sh Mac";
-			};
-			name = Debug;
-		};
-		EE000001000000000000000A /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ARCHS = arm64;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
-				DEVELOPMENT_TEAM = 7JQGQ7CRH8;
-				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = sh.glas.macUITests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = macosx;
-				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SUPPORTED_PLATFORMS = macosx;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 6.0;
-				TEST_TARGET_NAME = "glas.sh Mac";
 			};
 			name = Release;
 		};
@@ -1181,38 +865,11 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		BB0000010000000000000052 /* Build configuration list for PBXNativeTarget "glas.sh Mac" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				BB0000010000000000000050 /* Debug */,
-				BB0000010000000000000051 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		CC000001000000000000000C /* Build configuration list for PBXNativeTarget "glas.sh-macTests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				CC000001000000000000000A /* Debug */,
-				CC000001000000000000000B /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 		DD000001000000000000000B /* Build configuration list for PBXNativeTarget "glas.shUITests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				DD0000010000000000000009 /* Debug */,
 				DD000001000000000000000A /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		EE000001000000000000000B /* Build configuration list for PBXNativeTarget "glas.sh-macUITests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				EE0000010000000000000009 /* Debug */,
-				EE000001000000000000000A /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

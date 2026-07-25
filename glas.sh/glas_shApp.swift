@@ -6,8 +6,8 @@
 //
 
 import SwiftUI
+import os
 
-#if os(visionOS) || os(iOS)
 @MainActor
 struct PlatformNewTerminalAction {
     let title: String
@@ -54,7 +54,61 @@ struct glas_shApp: App {
     @State private var settingsManager = SettingsManager(loadImmediately: false)
     @State private var windowRecoveryManager = WindowRecoveryManager()
     var body: some Scene {
-        #if os(visionOS)
+        #if os(macOS)
+        Window("Connections", id: "main") {
+            MainBootstrapView()
+                .environment(sessionManager)
+                .environment(settingsManager)
+                .frame(minWidth: 900, minHeight: 560)
+        }
+        .defaultSize(width: 1180, height: 720)
+        .defaultLaunchBehavior(.presented)
+        .commands { MacWorkspaceCommands() }
+
+        WindowGroup("Terminal", id: "workspace", for: MacWorkspaceLaunchRequest.self) { $request in
+            MacWorkspaceSceneRoot(request: request)
+                .environment(sessionManager)
+                .environment(settingsManager)
+        }
+        .defaultSize(width: 1180, height: 760)
+        .defaultLaunchBehavior(.suppressed)
+        .windowToolbarStyle(.unifiedCompact)
+
+        WindowGroup(id: "sftp", for: SFTPBrowserContext.self) { $context in
+            if let context, sessionManager.session(for: context.sessionID) != nil {
+                SFTPBrowserView(sessionID: context.sessionID)
+                    .environment(sessionManager)
+                    .environment(settingsManager)
+            } else {
+                SFTPBrowserNotFoundView(context: context)
+            }
+        }
+        .defaultSize(width: 820, height: 620)
+
+        Window("Port Forwarding", id: "port-forwarding") {
+            PortForwardingManagerView()
+                .environment(sessionManager)
+        }
+        .defaultSize(width: 700, height: 560)
+
+        Settings {
+            SettingsView()
+                .environment(sessionManager)
+                .environment(settingsManager)
+        }
+
+        #if DEBUG
+        WindowGroup(id: "html-preview", for: HTMLPreviewContext.self) { $context in
+            if let context {
+                HTMLPreviewWindow(context: context)
+                    .environment(sessionManager)
+            } else {
+                HTMLPreviewNotFoundView(context: context)
+            }
+        }
+        .defaultSize(width: 1000, height: 760)
+        #endif
+        #elseif os(visionOS)
         // Connection manager - PRIMARY WINDOW (single instance)
         Window("Connections", id: "main") {
             MainBootstrapView()
@@ -182,7 +236,6 @@ struct glas_shApp: App {
         #endif
     }
 }
-#endif
 
 #if os(iOS)
 @MainActor
@@ -321,13 +374,31 @@ struct MainBootstrapView: View {
     @State private var pendingDeepLinkTrustSession: TerminalSession?
     @State private var pendingDeepLinkTrustChallenge: HostKeyTrustChallenge?
     @State private var deepLinkFailureMessage: String?
+    #if DEBUG
+    @State private var uiTestCredentialCleanupComplete = false
+    #endif
 
     var body: some View {
         ConnectionManagerView()
+        #if DEBUG
+        .overlay(alignment: .topLeading) {
+            if uiTestCredentialCleanupComplete {
+                Text("UI test credential cleanup complete")
+                    .font(.caption2)
+                    .foregroundStyle(.clear)
+                    .frame(width: 1, height: 1)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("ui-test-credential-cleanup-complete")
+            }
+        }
+        #endif
         .task {
             guard !didBootstrap else { return }
             didBootstrap = true
             loadPersistentState()
+            #if DEBUG
+            purgeUITestCredentialsIfRequested()
+            #endif
             #if os(iOS)
             consumePendingDeepLinkIfNeeded()
             #endif
@@ -402,6 +473,22 @@ struct MainBootstrapView: View {
         sessionManager.preloadPersistentStateIfNeeded()
         settingsManager.loadPersistentStateIfNeeded()
     }
+
+    #if DEBUG
+    private func purgeUITestCredentialsIfRequested() {
+        guard ProcessInfo.processInfo.environment[
+            "GLAS_UI_TEST_CREDENTIAL_CLEANUP"
+        ] == "1" else { return }
+        do {
+            try sessionManager.serverManager.purgeConnectionLibraryUITestFixtures()
+            uiTestCredentialCleanupComplete = true
+        } catch {
+            Logger.keychain.error(
+                "UI test credential cleanup failed: \(error.localizedDescription)"
+            )
+        }
+    }
+    #endif
 
     #if os(iOS)
     private func consumePendingDeepLinkIfNeeded() {

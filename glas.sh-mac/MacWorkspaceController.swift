@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import Observation
 import os
@@ -364,3 +365,4 @@ final class MacWorkspaceController {
         "\(UserDefaultsKeys.macWorkspaceRestoration).\(workspaceID.uuidString.lowercased())"
     }
 }
+#endif

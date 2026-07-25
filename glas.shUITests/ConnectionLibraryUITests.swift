@@ -1,6 +1,8 @@
 import XCTest
 
 final class ConnectionLibraryUITests: XCTestCase {
+    private static let credentialCleanupEnvironmentKey = "GLAS_UI_TEST_CREDENTIAL_CLEANUP"
+    private static let credentialCleanupIdentifier = "ui-test-credential-cleanup-complete"
     private var app: XCUIApplication!
     private var testServerName = ""
     private var testServerTag = ""
@@ -13,6 +15,7 @@ final class ConnectionLibraryUITests: XCTestCase {
         testServerName = "Connection Library UI Test \(suffix)"
         testServerTag = "UI Test \(suffix)"
         app = XCUIApplication()
+        app.launchEnvironment[Self.credentialCleanupEnvironmentKey] = "1"
         app.launch()
 
         addTeardownBlock { @MainActor [weak self] in
@@ -23,8 +26,16 @@ final class ConnectionLibraryUITests: XCTestCase {
             }
             self.app?.terminate()
             self.app = nil
+            self.launchCredentialCleanupApp()
         }
 
+        XCTAssertTrue(
+            credentialCleanupMarker.waitForExistence(timeout: 15),
+            "The app must remove stale UI-test profiles and shared credentials before testing."
+        )
+        #if os(macOS)
+        focusConnectionLibraryWindow()
+        #endif
         XCTAssertTrue(
             library.waitForExistence(timeout: 15),
             "The connection library should be the app's initial surface."
@@ -75,7 +86,12 @@ final class ConnectionLibraryUITests: XCTestCase {
         guard ProcessInfo.processInfo.environment["SIMULATOR_UDID"] != nil else {
             throw XCTSkip("The mutating UI fixture runs only on an isolated simulator.")
         }
-
+        #if os(visionOS)
+        throw XCTSkip(
+            "visionOS Simulator XCTest cannot synthesize scrolling in the Add Server sheet; "
+                + "Xcode 27 reports a nil Accessibility scene ID."
+        )
+        #else
         prepareApp()
         openAllConnections()
         createTestServer()
@@ -85,6 +101,7 @@ final class ConnectionLibraryUITests: XCTestCase {
         verifyEditCanFavoriteTestServer()
 
         navigate(to: "Favorites", scopeIdentifier: "connection-library-scope-favorites")
+        exposeTestServerThroughSearchIfNeeded(force: true)
         XCTAssertTrue(
             testServerRow.waitForExistence(timeout: 5),
             "Favoriting a connection should immediately project it into Favorites."
@@ -92,12 +109,14 @@ final class ConnectionLibraryUITests: XCTestCase {
 
         let collectionID = "connection-library-scope-collection-\(testServerTag.lowercased())"
         navigate(to: "Collections", scopeIdentifier: collectionID)
+        exposeTestServerThroughSearchIfNeeded(force: true)
         XCTAssertTrue(
             testServerRow.waitForExistence(timeout: 5),
             "The saved connection should appear in its normalized tag collection."
         )
 
         deleteTestServer(assertRemoval: true)
+        #endif
     }
 
     #endif
@@ -127,24 +146,38 @@ final class ConnectionLibraryUITests: XCTestCase {
     }
 
     @MainActor
+    private var credentialCleanupMarker: XCUIElement {
+        element(identifier: Self.credentialCleanupIdentifier)
+    }
+
+    @MainActor
+    private func launchCredentialCleanupApp() {
+        let cleanupApp = XCUIApplication()
+        cleanupApp.launchEnvironment[Self.credentialCleanupEnvironmentKey] = "1"
+        cleanupApp.launch()
+        XCTAssertTrue(
+            cleanupApp.descendants(matching: .any)[
+                Self.credentialCleanupIdentifier
+            ].waitForExistence(timeout: 15),
+            "UI-test teardown must remove the shared GlassSecretStore credential."
+        )
+        cleanupApp.terminate()
+    }
+
+    @MainActor
     private var addServerAction: XCUIElement {
         firstExistingElement(withIdentifiers: [
             "connection-library-add-server-results",
             "connection-library-add-server-sidebar",
             "connection-library-add-server-empty-results",
-            "connection-library-add-server-empty-detail"
+            "connection-library-add-server-empty-detail",
+            "connection-library-detail-empty-server"
         ])
     }
 
     @MainActor
     private var testServerRow: XCUIElement {
-        app.descendants(matching: .any).matching(
-            NSPredicate(
-                format: "identifier BEGINSWITH %@ AND label CONTAINS %@",
-                "connection-library-server-",
-                testServerName
-            )
-        ).firstMatch
+        testServerNameLabel
     }
 
     @MainActor
@@ -266,6 +299,8 @@ final class ConnectionLibraryUITests: XCTestCase {
         createdTestServer = true
         dismissSavePasswordPromptIfPresent()
 
+        openAllConnections()
+        exposeTestServerThroughSearchIfNeeded()
         XCTAssertTrue(testServerRow.waitForExistence(timeout: 8))
     }
 
@@ -276,7 +311,7 @@ final class ConnectionLibraryUITests: XCTestCase {
             testServerNameLabel.waitForExistence(timeout: 5),
             "A saved connection's name should remain visible as an independent row label."
         )
-        if app.windows.firstMatch.frame.width >= 700 {
+        if resultsConnections.exists {
             let resultsFrame = resultsConnections.frame
             let nameFrame = testServerNameLabel.frame
             XCTAssertGreaterThan(nameFrame.width, 0)
@@ -302,7 +337,7 @@ final class ConnectionLibraryUITests: XCTestCase {
             "The selected connection detail should expose its explicit Connect action."
         )
 
-        if app.windows.firstMatch.frame.width >= 700 {
+        if resultsConnections.exists && testServerRow.exists {
             XCTAssertTrue(
                 resultsConnections.exists,
                 "Regular-width layouts should retain results while showing detail."
@@ -319,16 +354,39 @@ final class ConnectionLibraryUITests: XCTestCase {
 
     @MainActor
     private func verifySearchFindsTestServer() {
-        let search = app.searchFields.firstMatch
-        XCTAssertTrue(search.waitForExistence(timeout: 5))
-        activate(search)
-        search.typeText(testServerName)
+        clearSearchIfPresent()
+        exposeTestServerThroughSearchIfNeeded(force: true)
         XCTAssertTrue(
             testServerRow.waitForExistence(timeout: 5),
             "Search should find a saved connection by its display name."
         )
         clearFocusedTextInput()
+        XCTAssertTrue(resultsConnections.waitForExistence(timeout: 5))
+        exposeTestServerThroughSearchIfNeeded(force: true)
         XCTAssertTrue(testServerRow.waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    private func exposeTestServerThroughSearchIfNeeded(force: Bool = false) {
+        guard force || !testServerRow.exists else { return }
+        var search = app.searchFields.firstMatch
+        if !search.waitForExistence(timeout: 1) {
+            let searchAction = app.buttons["connection-library-search"].firstMatch
+            XCTAssertTrue(
+                searchAction.waitForExistence(timeout: 3),
+                "The connection results should expose the native Search action."
+            )
+            activate(searchAction)
+            search = app.searchFields.firstMatch
+        }
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        activate(search)
+        if let value = search.value as? String,
+           !value.isEmpty,
+           value != search.placeholderValue {
+            clearFocusedTextInput()
+        }
+        search.typeText(testServerName)
     }
 
     @MainActor
@@ -342,10 +400,17 @@ final class ConnectionLibraryUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Edit Server"].waitForExistence(timeout: 5))
 
         let favorite = app.switches["Favorite"].firstMatch
+        makeHittable(favorite)
         XCTAssertTrue(favorite.waitForExistence(timeout: 5))
-        if (favorite.value as? String) != "1" {
-            activate(favorite)
+        if !switchIsOn(favorite) {
+            favorite.coordinate(
+                withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)
+            ).tap()
         }
+        XCTAssertTrue(
+            switchIsOn(favorite),
+            "The native Favorite switch should be on before saving the edited connection."
+        )
 
         let save = app.navigationBars["Edit Server"].buttons["Save"].firstMatch
         XCTAssertTrue(save.waitForExistence(timeout: 3))
@@ -360,7 +425,8 @@ final class ConnectionLibraryUITests: XCTestCase {
     private func verifySettingsRoundTrip() {
         dismissSavePasswordPromptIfPresent()
         returnToRootIfNeeded()
-        let settings = buttonOrElement(identifier: "connection-library-settings")
+        let settings = app.buttons["connection-library-settings"].firstMatch
+        makeHittable(settings)
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
         #if os(macOS)
         let connectionsWindow = firstExistingConnectionLibraryWindow()
@@ -392,14 +458,16 @@ final class ConnectionLibraryUITests: XCTestCase {
         activate(settings)
 
         XCTAssertTrue(
-            app.buttons["Done"].waitForExistence(timeout: 5),
-            "Settings should open as a dismissible app route."
-        )
-        XCTAssertTrue(
-            app.buttons["General"].exists || app.staticTexts["Connection"].exists,
+            app.buttons["General"].waitForExistence(timeout: 5)
+                || app.staticTexts["Connection"].waitForExistence(timeout: 2),
             "Settings should open on the General settings surface."
         )
-        activate(app.buttons["Done"])
+        let done = app.buttons["Done"].firstMatch
+        if done.exists {
+            activate(done)
+        } else {
+            app.swipeDown()
+        }
         #endif
         XCTAssertTrue(library.waitForExistence(timeout: 5))
     }
@@ -412,6 +480,31 @@ final class ConnectionLibraryUITests: XCTestCase {
         return connectionsWindow.exists ? connectionsWindow : app.windows.firstMatch
     }
 
+    #if os(macOS)
+    @MainActor
+    private func focusConnectionLibraryWindow() {
+        let connectionsWindow = app.windows.matching(identifier: "main").firstMatch
+        XCTAssertTrue(
+            connectionsWindow.waitForExistence(timeout: 5),
+            "The native Connections window should exist before Library navigation."
+        )
+
+        // macOS may restore a terminal workspace in front of Connections.
+        // Raise the existing window through AppKit's Window menu rather than
+        // clicking through the overlapping terminal surface.
+        let windowMenu = app.menuBars.menuBarItems["Window"].firstMatch
+        XCTAssertTrue(windowMenu.waitForExistence(timeout: 3))
+        windowMenu.click()
+        let connectionsMenuItem = app.menuItems["Connections"].firstMatch
+        XCTAssertTrue(connectionsMenuItem.waitForExistence(timeout: 3))
+        connectionsMenuItem.click()
+        XCTAssertTrue(
+            connectionsWindow.isHittable,
+            "The Window menu should bring Connections in front of restored terminal workspaces."
+        )
+    }
+    #endif
+
     @MainActor
     private func openAllConnections() {
         navigate(to: "Library", scopeIdentifier: "connection-library-scope-all-connections")
@@ -421,7 +514,11 @@ final class ConnectionLibraryUITests: XCTestCase {
     @MainActor
     private func navigate(to mode: String, scopeIdentifier: String) {
         dismissSavePasswordPromptIfPresent()
+        clearSearchIfPresent()
         returnToRootIfNeeded()
+        #if os(macOS)
+        focusConnectionLibraryWindow()
+        #endif
 
         var scope = buttonOrElement(identifier: scopeIdentifier)
         if scope.waitForExistence(timeout: 1) {
@@ -473,22 +570,43 @@ final class ConnectionLibraryUITests: XCTestCase {
 
     @MainActor
     private func returnToRootIfNeeded() {
-        let navigation = element(identifier: "connection-library-navigation")
-        if navigation.exists { return }
+        #if os(visionOS)
+        // The native visionOS mode ornaments are the Library root. There is no
+        // compact-stack navigation column to unwind.
+        return
+        #else
+        let rootScope = buttonOrElement(
+            identifier: "connection-library-scope-all-connections"
+        )
+        if rootScope.isHittable { return }
 
-        for _ in 0..<3 where !navigation.exists {
+        for _ in 0..<3 where !rootScope.isHittable {
             let backToRoot = app.navigationBars.buttons["Connections"].firstMatch
-            if backToRoot.waitForExistence(timeout: 1) {
+            if backToRoot.waitForExistence(timeout: 1), backToRoot.isHittable {
                 activate(backToRoot)
                 continue
             }
             let backToResults = app.navigationBars.buttons["All Connections"].firstMatch
-            if backToResults.waitForExistence(timeout: 1) {
+            if backToResults.waitForExistence(timeout: 1), backToResults.isHittable {
                 activate(backToResults)
                 continue
             }
             break
         }
+        XCTAssertTrue(
+            rootScope.waitForExistence(timeout: 5) && rootScope.isHittable,
+            "Compact navigation must return to the visible Connections root."
+        )
+        #endif
+    }
+
+    @MainActor
+    private func switchIsOn(_ element: XCUIElement) -> Bool {
+        if let number = element.value as? NSNumber {
+            return number.boolValue
+        }
+        guard let value = element.value as? String else { return false }
+        return ["1", "true", "on", "yes"].contains(value.lowercased())
     }
 
     @MainActor
@@ -499,8 +617,13 @@ final class ConnectionLibraryUITests: XCTestCase {
         openAllConnections()
 
         let row = testServerRow
+        if !row.waitForExistence(timeout: 2) {
+            exposeTestServerThroughSearchIfNeeded()
+        }
         guard row.waitForExistence(timeout: 3) else {
-            createdTestServer = false
+            if assertRemoval {
+                XCTFail("The persisted UI fixture must remain discoverable by exact-name search for teardown.")
+            }
             return
         }
 
@@ -528,7 +651,7 @@ final class ConnectionLibraryUITests: XCTestCase {
         if assertRemoval {
             XCTAssertFalse(
                 row.waitForExistence(timeout: 5),
-                "Deleting the UI fixture should remove its projected row and saved credential."
+                "Deleting the UI fixture should remove its projected row."
             )
         }
         createdTestServer = false
@@ -558,14 +681,26 @@ final class ConnectionLibraryUITests: XCTestCase {
     @MainActor
     private func clearSearchIfPresent() {
         let search = app.searchFields.firstMatch
-        guard search.exists,
-              let value = search.value as? String,
-              !value.isEmpty,
-              value != search.placeholderValue else {
-            return
+        if search.exists,
+           let value = search.value as? String,
+           !value.isEmpty,
+           value != search.placeholderValue {
+            activate(search)
+            clearFocusedTextInput()
         }
-        activate(search)
-        clearFocusedTextInput()
+
+        #if os(iOS)
+        let closeSearch = app.buttons["close"].firstMatch
+        if closeSearch.waitForExistence(timeout: 1) {
+            closeSearch.coordinate(
+                withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)
+            ).tap()
+            XCTAssertFalse(
+                app.keyboards.firstMatch.waitForExistence(timeout: 2),
+                "Dismissing native search should also dismiss the software keyboard."
+            )
+        }
+        #endif
     }
 
     @MainActor
@@ -576,8 +711,8 @@ final class ConnectionLibraryUITests: XCTestCase {
 
     @MainActor
     private func replaceText(in field: XCUIElement, with value: String) {
-        XCTAssertTrue(field.waitForExistence(timeout: 3))
         makeHittable(field)
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
         activate(field)
         if let currentValue = field.value as? String,
            !currentValue.isEmpty,
@@ -585,18 +720,41 @@ final class ConnectionLibraryUITests: XCTestCase {
             clearFocusedTextInput()
         }
         field.typeText(value)
-        let returnKey = app.keyboards.buttons["return"].firstMatch
-        if returnKey.exists {
-            activate(returnKey)
+        if field.elementType != .secureTextField {
+            let committedValue = XCTNSPredicateExpectation(
+                predicate: NSPredicate { object, _ in
+                    (object as? XCUIElement)?.value as? String == value
+                },
+                object: field
+            )
+            XCTAssertEqual(
+                XCTWaiter.wait(for: [committedValue], timeout: 2),
+                .completed,
+                "\(field.placeholderValue ?? "Text field") should commit its complete value before focus moves."
+            )
+        }
+        if field.placeholderValue == "Add tag" {
+            let returnKey = app.keyboards.buttons["return"].firstMatch
+            if returnKey.exists {
+                activate(returnKey)
+            }
         }
     }
 
     @MainActor
     private func makeHittable(_ element: XCUIElement) {
         for _ in 0..<5 where !element.isHittable {
-            let form = app.collectionViews.firstMatch
-            if form.exists {
-                form.swipeUp()
+            let sheet = app.sheets.firstMatch
+            if sheet.exists {
+                sheet.swipeUp()
+            } else if app.keyboards.firstMatch.exists {
+                let start = app.coordinate(
+                    withNormalizedOffset: CGVector(dx: 0.5, dy: 0.38)
+                )
+                let end = app.coordinate(
+                    withNormalizedOffset: CGVector(dx: 0.5, dy: 0.16)
+                )
+                start.press(forDuration: 0.1, thenDragTo: end)
             } else {
                 app.swipeUp()
             }

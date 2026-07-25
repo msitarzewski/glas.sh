@@ -1,67 +1,6 @@
+#if os(macOS)
 import AppKit
 import SwiftUI
-
-@main
-struct GlasShMacApp: App {
-    @State private var sessionManager = SessionManager(loadImmediately: false)
-    @State private var settingsManager = SettingsManager(loadImmediately: false)
-
-    var body: some Scene {
-        Window("Connections", id: "main") {
-            MainBootstrapView()
-                .environment(sessionManager)
-                .environment(settingsManager)
-                .frame(minWidth: 900, minHeight: 560)
-        }
-        .defaultSize(width: 1180, height: 720)
-        .defaultLaunchBehavior(.presented)
-        .commands { MacWorkspaceCommands() }
-
-        WindowGroup("Terminal", id: "workspace", for: MacWorkspaceLaunchRequest.self) { $request in
-            MacWorkspaceSceneRoot(request: request)
-                .environment(sessionManager)
-                .environment(settingsManager)
-        }
-        .defaultSize(width: 1180, height: 760)
-        .defaultLaunchBehavior(.suppressed)
-        .windowToolbarStyle(.unifiedCompact)
-
-        WindowGroup(id: "sftp", for: SFTPBrowserContext.self) { $context in
-            if let context, sessionManager.session(for: context.sessionID) != nil {
-                SFTPBrowserView(sessionID: context.sessionID)
-                    .environment(sessionManager)
-                    .environment(settingsManager)
-            } else {
-                SFTPBrowserNotFoundView(context: context)
-            }
-        }
-        .defaultSize(width: 820, height: 620)
-
-        Window("Port Forwarding", id: "port-forwarding") {
-            PortForwardingManagerView()
-                .environment(sessionManager)
-        }
-        .defaultSize(width: 700, height: 560)
-
-        Settings {
-            SettingsView()
-                .environment(sessionManager)
-                .environment(settingsManager)
-        }
-
-        #if DEBUG
-        WindowGroup(id: "html-preview", for: HTMLPreviewContext.self) { $context in
-            if let context {
-                HTMLPreviewWindow(context: context)
-                    .environment(sessionManager)
-            } else {
-                HTMLPreviewNotFoundView(context: context)
-            }
-        }
-        .defaultSize(width: 1000, height: 760)
-        #endif
-    }
-}
 
 struct MacTerminalWindowReader: NSViewRepresentable {
     let tabbingIdentifier: String
@@ -218,3 +157,4 @@ enum MacTerminalWindowPolicy {
         // opaque while theme fill and blur vary independently behind them.
     }
 }
+#endif

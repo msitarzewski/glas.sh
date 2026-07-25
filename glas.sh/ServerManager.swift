@@ -50,6 +50,7 @@ struct ServerPasswordStore {
     let retrieve: (ServerConfiguration) throws -> String
     let save: (String, ServerConfiguration) throws -> Void
     let delete: (UUID) throws -> Void
+    let deleteSharedCompatibility: (ServerConfiguration) throws -> Void
     let prepareRollback: (ServerConfiguration) throws -> ServerCredentialRollback
 
     init(
@@ -57,6 +58,7 @@ struct ServerPasswordStore {
         save: @escaping (String, ServerConfiguration) throws -> Void,
         delete: @escaping (UUID) throws -> Void,
         deletePublished: ((ServerConfiguration) throws -> Void)? = nil,
+        deleteSharedCompatibility: ((ServerConfiguration) throws -> Void)? = nil,
         prepareRollback: ((ServerConfiguration) throws -> ServerCredentialRollback)? = nil
     ) {
         self.retrieve = retrieve
@@ -65,6 +67,7 @@ struct ServerPasswordStore {
         let resolvedDeletePublished = deletePublished ?? { server in
             try delete(server.id)
         }
+        self.deleteSharedCompatibility = deleteSharedCompatibility ?? resolvedDeletePublished
         self.prepareRollback = prepareRollback ?? { server in
             let snapshot: String?
             do {
@@ -107,6 +110,9 @@ struct ServerPasswordStore {
         },
         deletePublished: { server in
             try KeychainManager.deletePublishedPassword(for: server)
+        },
+        deleteSharedCompatibility: { server in
+            try KeychainManager.deleteSharedCompatibilityPassword(for: server)
         },
         prepareRollback: { server in
             try KeychainManager.passwordRollback(for: server)
@@ -404,6 +410,38 @@ class ServerManager {
         servers = remainingServers
         WidgetCenter.shared.reloadAllTimelines()
     }
+
+    #if DEBUG
+    /// Removes the isolated UI-test fixture and its cross-app compatibility
+    /// credential. The fixed documentation-only endpoint prevents this test
+    /// hook from matching a real host.
+    func purgeConnectionLibraryUITestFixtures() throws {
+        try ensureServerCatalogAvailable()
+        let fixtures = servers.filter {
+            $0.name.hasPrefix(Self.connectionLibraryUITestNamePrefix)
+                && $0.host == Self.connectionLibraryUITestHost
+                && $0.port == 22
+                && $0.username == Self.connectionLibraryUITestUsername
+                && $0.authMethod == .password
+        }
+        for server in fixtures {
+            try deleteServer(server)
+        }
+
+        let compatibilityReference = ServerConfiguration(
+            name: Self.connectionLibraryUITestNamePrefix,
+            host: Self.connectionLibraryUITestHost,
+            port: 22,
+            username: Self.connectionLibraryUITestUsername,
+            authMethod: .password
+        )
+        try passwordStore.deleteSharedCompatibility(compatibilityReference)
+    }
+
+    static let connectionLibraryUITestNamePrefix = "Connection Library UI Test "
+    static let connectionLibraryUITestHost = "192.0.2.1"
+    static let connectionLibraryUITestUsername = "ui-test"
+    #endif
 
     func updateLastConnected(_ serverID: UUID) {
         do {

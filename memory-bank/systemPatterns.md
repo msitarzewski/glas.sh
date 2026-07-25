@@ -1,5 +1,15 @@
 # System Patterns
 
+## One Native Multiplatform Application Target
+
+- `glas.sh` is the sole application target and shared scheme for iPhone, iPad, visionOS, and native Apple Silicon macOS. Use automatic SDK selection, platform-specific deployment settings, and `SUPPORTS_MACCATALYST = NO`; do not create a platform application target to solve a source-boundary problem.
+- Keep one application `@main` in `glas.sh/glas_shApp.swift`. Compose native scenes inside that authority with compile-time platform branches so AppKit, UIKit, and visionOS each retain their native navigation, windowing, ornaments, and commands.
+- Keep the `glas.sh-mac` directory as a platform implementation boundary, not a product boundary. Complete-file `#if os(macOS)` guards allow its AppKit workspace, local PTY, focused commands, resources, plist, and entitlements to participate in the unified target without leaking into mobile/vision products.
+- Select plist, entitlements, icons, architectures, and embedded extensions with SDK-conditional build settings. Reuse one application bundle identifier and shared GlassSecretStore access groups across app platforms.
+- The widget remains a separate extension target because it is a separate executable. Unit and UI tests remain separate test bundles, but both host the unified application target.
+- Register package products, synchronized source groups, application commands, and scene identifiers once. Platform-specific presentation may branch; shared connection, credential, trust, settings, workgroup, terminal, and appearance authority must not.
+- Retire duplicate targets, products, schemes, test hosts, proxies, and configuration lists only after the unified target passes every available destination and bundle inspection confirms no hidden resource or dependency authority.
+
 ## Connection Library Projection and Native Shell Boundary
 
 - Build `ConnectionLibraryProjection` transiently from authoritative `ServerManager.servers`, `SettingsManager.layoutPresets`, and cached optional-network availability. Do not persist Library modes, scopes, normalized collections, counts, or selection-repair state.

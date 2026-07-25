@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 
 @MainActor
@@ -133,3 +134,4 @@ struct MacWorkspaceCommands: Commands {
         }
     }
 }
+#endif

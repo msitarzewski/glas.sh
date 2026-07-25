@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import SwiftUI
 
@@ -572,3 +573,4 @@ final class MacWorkspaceWindowRegistry {
         init(_ value: NSWindow) { self.value = value }
     }
 }
+#endif
