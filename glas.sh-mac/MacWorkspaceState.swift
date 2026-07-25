@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 enum MacWorkspaceSplitAxis: String, Codable, CaseIterable, Hashable, Sendable {
@@ -575,3 +576,4 @@ enum MacWorkspaceStateError: LocalizedError, Equatable {
         }
     }
 }
+#endif

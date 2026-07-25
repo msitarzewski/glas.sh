@@ -51,6 +51,9 @@ nonisolated enum UserDefaultsKeys {
 nonisolated enum SharedDefaults {
     static let suiteName = "group.sh.glas.shared"
     #if os(macOS)
+    static let legacyMacBundleIdentifier = "sh.glas.mac"
+    static let legacyMacDomainMigrationSentinel = "legacyMacDomainMigrationComplete"
+
     // The Mac terminal must remain outside App Sandbox so it can launch the
     // user's shell and PTYs. App Group containers require sandbox membership,
     // so Mac metadata belongs in its bundle-scoped defaults domain instead.
@@ -66,6 +69,12 @@ nonisolated enum SharedDefaults {
 
     static func migrateIfNeeded() {
         let standard = UserDefaults.standard
+        #if os(macOS)
+        migrateLegacyMacDomainIfNeeded(
+            legacyDomain: standard.persistentDomain(forName: legacyMacBundleIdentifier),
+            destination: standard
+        )
+        #endif
         guard !standard.bool(forKey: migrationSentinel) else { return }
 
         for key in [UserDefaultsKeys.servers, UserDefaultsKeys.sshKeys, UserDefaultsKeys.trustedHostKeys] {
@@ -76,4 +85,82 @@ nonisolated enum SharedDefaults {
 
         standard.set(true, forKey: migrationSentinel)
     }
+
+    #if os(macOS)
+    private static let legacyMacNonSecretKeys: Set<String> = [
+        UserDefaultsKeys.servers,
+        UserDefaultsKeys.sshKeys,
+        UserDefaultsKeys.autoReconnect,
+        UserDefaultsKeys.confirmBeforeClosing,
+        UserDefaultsKeys.saveScrollback,
+        UserDefaultsKeys.maxScrollbackLines,
+        UserDefaultsKeys.bellEnabled,
+        UserDefaultsKeys.visualBell,
+        UserDefaultsKeys.hostKeyVerificationMode,
+        UserDefaultsKeys.cursorStyle,
+        UserDefaultsKeys.blinkingCursor,
+        UserDefaultsKeys.windowOpacity,
+        UserDefaultsKeys.blurBackground,
+        UserDefaultsKeys.interactiveGlassEffects,
+        UserDefaultsKeys.glassTint,
+        UserDefaultsKeys.glassFrost,
+        UserDefaultsKeys.backgroundFill,
+        UserDefaultsKeys.interactiveGlass,
+        UserDefaultsKeys.sessionOverrides,
+        UserDefaultsKeys.theme,
+        UserDefaultsKeys.themeLibrary,
+        UserDefaultsKeys.iCloudSettingsSyncEnabled,
+        UserDefaultsKeys.iCloudSettingsWriterID,
+        UserDefaultsKeys.snippets,
+        UserDefaultsKeys.layoutPresets,
+        UserDefaultsKeys.macWorkspaceRestoration,
+        UserDefaultsKeys.tailscaleTailnet,
+        UserDefaultsKeys.tailscaleAuthMethod,
+        UserDefaultsKeys.focusEnvironmentStyle,
+        UserDefaultsKeys.notificationOverlaysEnabled,
+        UserDefaultsKeys.glassMaterialStyle,
+    ]
+
+    static func migrateLegacyMacDomainIfNeeded(
+        legacyDomain: [String: Any]?,
+        destination: UserDefaults
+    ) {
+        guard !destination.bool(forKey: legacyMacDomainMigrationSentinel),
+              let legacyDomain else { return }
+
+        var copiedEveryPendingValue = true
+        for (key, value) in legacyDomain
+        where isLegacyMacNonSecretKey(key) && destination.object(forKey: key) == nil {
+            if key == UserDefaultsKeys.servers {
+                guard let sanitizedServers = sanitizedLegacyServerCatalog(value) else {
+                    copiedEveryPendingValue = false
+                    continue
+                }
+                destination.set(sanitizedServers, forKey: key)
+            } else {
+                destination.set(value, forKey: key)
+            }
+        }
+
+        if copiedEveryPendingValue {
+            destination.set(true, forKey: legacyMacDomainMigrationSentinel)
+        }
+    }
+
+    private static func isLegacyMacNonSecretKey(_ key: String) -> Bool {
+        legacyMacNonSecretKeys.contains(key)
+            || key.hasPrefix("\(UserDefaultsKeys.macWorkspaceRestoration).")
+    }
+
+    private static func sanitizedLegacyServerCatalog(_ value: Any) -> Data? {
+        guard let data = value as? Data,
+              var servers = try? JSONDecoder().decode([ServerConfiguration].self, from: data) else {
+            return nil
+        }
+        for index in servers.indices {
+            servers[index].trustedHostKeys = nil
+        }
+        return try? JSONEncoder().encode(servers)
+    }
+    #endif
 }

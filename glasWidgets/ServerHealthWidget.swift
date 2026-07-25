@@ -19,6 +19,21 @@ struct WidgetServerInfo: Codable, Identifiable, Hashable {
     let isFavorite: Bool
     let colorTag: String
 
+    var color: Color {
+        switch colorTag.lowercased() {
+        case "blue": return .blue
+        case "purple": return .purple
+        case "pink": return .pink
+        case "red": return .red
+        case "orange": return .orange
+        case "yellow": return .yellow
+        case "green": return .green
+        case "cyan": return .cyan
+        case "gray": return .gray
+        default: return .secondary
+        }
+    }
+
     var lastSeenText: String {
         guard let lastConnected else { return "Never" }
         let formatter = RelativeDateTimeFormatter()
@@ -31,17 +46,7 @@ struct WidgetServerInfo: Codable, Identifiable, Hashable {
 
 struct ServerHealthTimelineProvider: TimelineProvider {
     func placeholder(in context: Context) -> ServerHealthEntry {
-        ServerHealthEntry(date: Date(), servers: [
-            WidgetServerInfo(
-                id: UUID(),
-                name: "Example Server",
-                host: "example.com",
-                username: "user",
-                lastConnected: Date(),
-                isFavorite: true,
-                colorTag: "Blue"
-            )
-        ])
+        ServerHealthEntry(date: Date(), servers: [])
     }
 
     func getSnapshot(in context: Context, completion: @escaping (ServerHealthEntry) -> Void) {
@@ -119,7 +124,7 @@ struct ServerHealthSmallView: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(.secondary)
+                        .fill(server.color)
                         .frame(width: 8, height: 8)
                     Text(server.name)
                         .font(.headline)
@@ -152,7 +157,7 @@ struct ServerHealthMediumView: View {
                     Link(destination: URL(string: "glassh://connect?serverID=\(server.id.uuidString)")!) {
                         HStack(spacing: 8) {
                             Circle()
-                                .fill(.secondary)
+                                .fill(server.color)
                                 .frame(width: 8, height: 8)
 
                             VStack(alignment: .leading, spacing: 2) {

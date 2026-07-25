@@ -1,5 +1,29 @@
 # Decisions
 
+## 2026-07-25: One native multiplatform app target supersedes the separate Mac app target
+- Status: Approved
+- Supersedes: the separate-target portion of `2026-07-19: Native macOS shell reuses the shared terminal core`
+- Context:
+  - The native Mac shell proved its AppKit workspace, local PTY, tabs, splits, focused commands, and window-material behavior, but a second application target duplicated product identity, scheme, test host, resource, entitlement, and scene configuration.
+  - glassdb demonstrates that one native application target can select iOS, macOS, and visionOS SDK behavior without Catalyst.
+  - Credentials and trust must remain visible across glass apps through GlassSecretStore and the shared Keychain/app-group contract.
+- Decision:
+  - Use the existing `glas.sh` target and scheme as the sole application product across iPhone, iPad, visionOS, and native Apple Silicon macOS.
+  - Keep one `@main` application and compose the existing native scene graphs through platform boundaries.
+  - Retain `glas.sh-mac` as guarded platform source/resources, not as an application target.
+  - Use one bundle identifier, `sh.glas.app`, with SDK-specific plist, entitlement, icon, architecture, and extension filtering.
+  - Keep the widget as a separate extension binary and keep unit/UI tests as separate test bundles hosted by the unified app.
+- Alternatives:
+  - Keep the separate Mac app target — rejected because it duplicates build and product authority.
+  - Use Mac Catalyst — rejected because the product requires native AppKit windowing, commands, tabs, local PTY behavior, and Apple Silicon-only delivery.
+  - Rewrite the native shells into one identical cross-platform view tree — rejected because feature parity requires shared capability with Apple-native presentation.
+- Consequences:
+  - One scheme exposes My Mac, iPhone, iPad, and Vision Pro destinations.
+  - Shared credentials, defaults, themes, trust, servers, and workgroups retain one product identity and shared storage contract.
+  - Platform-only source must maintain complete compile-time guards and one scene/command registration authority.
+  - The historical separate target remains recoverable from baseline commit `c9f7a406`, but is absent from the current project.
+- References: `memory-bank/releases/one-base/README.md`, `memory-bank/tasks/2026-07/250726_one-base-release.md`
+
 ## 2026-07-21: Shared Connection Library projection with native platform shells
 - Status: Approved
 - Context:

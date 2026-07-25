@@ -614,7 +614,10 @@ struct TerminalWindowView: View {
                 let chunks = session.drainTerminalInputChunks()
                 if !chunks.isEmpty {
                     let data = chunks.reduce(into: Data()) { $0.append($1) }
-                    terminalHostModel.ingest(data: data, nonce: session.terminalInputNonce)
+                    ingestAfterCurrentViewUpdate(
+                        data,
+                        nonce: session.terminalInputNonce
+                    )
                 }
             }
         }
@@ -622,7 +625,7 @@ struct TerminalWindowView: View {
             let chunks = session.drainTerminalInputChunks()
             if !chunks.isEmpty {
                 let data = chunks.reduce(into: Data()) { $0.append($1) }
-                terminalHostModel.ingest(data: data, nonce: nonce)
+                ingestAfterCurrentViewUpdate(data, nonce: nonce)
             }
 
             // Debounced error detection for AI explainer
@@ -682,6 +685,16 @@ struct TerminalWindowView: View {
             aiAssistant.checkAvailability()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// SwiftTerm synchronously reports scroll and semantic updates while it
+    /// ingests a chunk. Schedule the ordered feed after SwiftUI completes the
+    /// current appearance/change transaction so those model publications do
+    /// not occur from inside a view update.
+    private func ingestAfterCurrentViewUpdate(_ data: Data, nonce: UInt64) {
+        DispatchQueue.main.async {
+            terminalHostModel.ingest(data: data, nonce: nonce)
+        }
     }
 
     private var swiftTermTheme: SwiftTermTheme {

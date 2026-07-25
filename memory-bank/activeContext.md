@@ -1,17 +1,22 @@
 # Active Context
 
 ## Current Focus
-- The cross-platform Connection Library release was implementation/QA approved on 2026-07-21. Its complete dashboard and accepted Apple beta-tooling limitations are recorded in `memory-bank/releases/connection-library/README.md` and Phase 06.
-- One deterministic transient projection now serves native visionOS ornament navigation, Apple Silicon macOS/iPadOS three-column shells, and compact iPhone drill-down without a second persisted connection, collection, workgroup, or session-opening model.
-- The current publishing branch is `agent/connection-library`; documentation, PR validation, and merge are the active handoff.
-- The current checkpoint is not an App Store go decision. Physical-device, matching-toolchain, conformance, cross-repository, and distribution gates remain open.
+- The One Base release was implementation/QA approved on 2026-07-25. One native `glas.sh` application target and scheme now serve iPhone, iPad, visionOS, and native Apple Silicon macOS.
+- One `@main` application composes the existing native platform scenes. `glas.sh-mac` remains a guarded AppKit/local-PTY implementation boundary; the duplicate Mac application/test targets and scheme are retired.
+- Product identity is unified as `sh.glas.app`; SDK-specific plist, entitlements, icons, and widget filtering preserve shared GlassSecretStore, app-group, Keychain, iCloud, terminal, and platform behavior.
+- The implementation and documentation remain an approved working-tree diff on `agent/connection-library`. No commit, push, PR, or merge is authorized by the documentation approval.
+- This completion is not an App Store distribution decision. Physical Vision Pro, distribution certificate trust/notarization, final hosted Mac XCTest after the render-only delta, and external dependency-advisory querying retain explicit evidence boundaries in the release dashboard.
 - Working branch: `agent/connection-library`.
 
 ## What's Next
-- **Publish the approved Connection Library release.**
-  - Commit the approved source and documentation on `agent/connection-library`.
-  - Push, open the pull request, run required GitHub checks, and merge after the branch protections pass.
-  - Retain the Xcode 27 UI-runner and physical CoreDevice launch-capture limitations as explicit evidence boundaries.
+- **Review and publish One Base only when separately requested.**
+  - Preserve the current diff and release evidence.
+  - If authorized, commit intentionally, push, open a pull request, run required checks, and merge through branch protection.
+  - Do not rewrite phase history; retain baseline `c9f7a406` and the approved single-diff governance variance.
+- **Close remaining distribution/device evidence.**
+  - Run the physical Vision Pro interaction matrix and distribution-signing/notarization checks when hardware and credentials are available.
+  - Re-run final hosted Mac unit/UI tests after the protected stale `testmanagerd` state clears.
+  - Run an approved dependency-advisory service or provision an offline OSV database.
 - **Close the remaining codex-completions release gates.**
   - Finish physical IME/dictation, hardware-keyboard/accessibility, representative TUI, terminal conformance, and performance evidence.
   - Finish recording export/device policy and cross-repository glassdb acceptance.
@@ -22,13 +27,11 @@
   - Output-only recording default, protected/bounded storage, fail-closed deletion, redacted diagnostics, SFTP no-clobber transfer, and deterministic AI confirmation.
   - SharePlay and unused AI summaries removed, HTML Preview Debug-only, unsupported SSH Agent/inert settings absent, and forwarding backed by the shared manager.
 - **Current automated evidence.**
-  - Connection Library candidate: 211/211 app tests pass on iOS 27; 208/208 pass on both visionOS 26.4 and visionOS 27.0 arm64 simulators; native Apple Silicon macOS tests pass 32/32.
-  - NIOSSH passes 331/331; Citadel executes 44 tests with 39 passed and five expected environment-dependent skips.
-  - GlasSecretStore passes 76 tests across 13 suites.
-  - Exact-current-tree Release builds pass for Apple Silicon macOS, generic iOS, and generic visionOS; direct Mac/iPhone/iPad application smokes pass.
-  - Physical Vision Pro signed build/install pass. Xcode UI-runner finalization and CoreDevice launch/render capture remain explicitly approved tooling limitations, not claimed passes.
-  - Independent post-fix audits, `git diff --check`, and the production stub scan pass. The sibling glassdb repair still needs its own current suite and cross-repository acceptance.
-  - The final UUID-isolated Gitleaks scan reports zero actionable production credentials; classified raw findings are non-production generated dependencies, vendored fixtures, synthetic tests, or documentation phrases.
+  - iPhone and iPad iOS 27 unit suites pass 232/232 each; iPad full UI passes 2/2 and final compact iPhone smoke passes 1/1 with zero runtime warnings.
+  - visionOS 26.4 and 27 unit suites pass 229/229 each; 26.4 app smoke passes and 27 UI completes with one pass plus one explicit simulator-input skip.
+  - A fresh exact-current native arm64 Mac Release archive and direct launch pass with zero compiler/analyzer warnings. The immediately preceding unified-host suite passes 251/251; final hosted XCTest is blocked by protected stale `testmanagerd`.
+  - GlasSecretStore passes 69/69 at revision `1ffaa96312b8e4b4d6b82eb82cc40c8f6df6317f`; RealityKitContent builds.
+  - Final diff, project/plist/entitlement, production incomplete-marker, target/scheme/product, duplicate-entry, and tracked-diff Gitleaks scans pass.
 - Resume provisioning, TestFlight, and App Store submission only after the Functional release gates in `release-checklist.md` pass.
 
 ## Historical Version Zero Audit Snapshot (2026-06-12; superseded by codex-completions)
