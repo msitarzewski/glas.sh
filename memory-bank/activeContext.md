@@ -7,7 +7,7 @@
 - Product identity is unified as `sh.glas.app`; SDK-specific plist, entitlements, icons, and widget filtering preserve shared GlassSecretStore, app-group, Keychain, iCloud, terminal, and platform behavior.
 - The approved release is published on `agent/one-base` through PR [#30](https://github.com/msitarzewski/glas.sh/pull/30); GitHub is the canonical merge-status record.
 - This completion is not an App Store distribution decision. Physical Vision Pro, distribution certificate trust/notarization, final hosted Mac XCTest after the render-only delta, and external dependency-advisory querying retain explicit evidence boundaries in the release dashboard.
-- Working branch: `codex/public-repo-platform-cleanup`.
+- Working branch: `codex/native-mac-terminal-chrome`.
 
 ## What's Next
 - **Complete and preserve the One Base publication.**
@@ -16,6 +16,19 @@
 - **Continue native terminal UX work from the public platform boundary.**
   - Keep Mac-only titlebar, sidebar, AppKit window, local PTY, tab, and split behavior in `Platforms/macOS`.
   - Keep shared connection, credential, trust, terminal, workgroup, theme, and appearance behavior in the unified application core.
+  - The approved model-owned `.sidebarAdaptable` terminal workspace now replaces
+    the former AppKit tab-group mirror. `SessionManager` and the workspace model
+    own selection, lifetime, explicit close, restoration, and transactional
+    movement between windows.
+  - Connections and terminal windows use one native automatic sidebar control,
+    full-height sidebar material, and matching unified compact titlebars.
+    Terminal identity and separate global/terminal tool clusters remain stable
+    as the sidebar opens, closes, or adapts at compact widths.
+  - The same authoritative workgroup/session intentions drive the system
+    visionOS tab ornament and session sidebar, native iPad top-tab/sidebar
+    adaptation, and compact iPhone switching.
+  - Preserve independent spatial windows, one bottom tools ornament per window,
+    fully transparent terminal canvases, and fully opaque terminal glyphs.
 - **Close remaining distribution/device evidence.**
   - Run the physical Vision Pro interaction matrix and distribution-signing/notarization checks when hardware and credentials are available.
   - Re-run final hosted Mac unit/UI tests after the protected stale `testmanagerd` state clears.
@@ -30,6 +43,8 @@
   - Output-only recording default, protected/bounded storage, fail-closed deletion, redacted diagnostics, SFTP no-clobber transfer, and deterministic AI confirmation.
   - SharePlay and unused AI summaries removed, HTML Preview Debug-only, unsupported SSH Agent/inert settings absent, and forwarding backed by the shared manager.
 - **Current automated evidence.**
+  - The 2026-07-30 adaptive-workspace publication checkpoint passes 274/274 native Mac unit tests with zero failures, skips, or runtime warnings. Exact-current visionOS 27, iPadOS 27, and iOS 27 simulator builds also pass.
+  - The final native-chrome diff check and production incomplete-marker scan are clean. User visual review approved the Connections and terminal layouts. The unbounded Mac UI harness was stopped after its host runner stalled between app launches; no UI-suite pass is claimed for that run.
   - Public platform-boundary cleanup passes 251/251 Mac tests, iPhone 17 Pro and Vision Pro 27 simulator builds, and simulator install/launch smokes on both products.
   - iPhone and iPad iOS 27 unit suites pass 232/232 each; iPad full UI passes 2/2 and final compact iPhone smoke passes 1/1 with zero runtime warnings.
   - visionOS 26.4 and 27 unit suites pass 229/229 each; 26.4 app smoke passes and 27 UI completes with one pass plus one explicit simulator-input skip.

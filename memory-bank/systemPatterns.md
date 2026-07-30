@@ -58,10 +58,41 @@
 
 ## UI Structure
 - Multi-window app model with terminal-focused windows.
-- Terminal window ornament layout:
-  - **Top ornament**: Connection label (server name + user@host:port) as a glass capsule — informational only, outside the window.
-  - **Bottom ornament**: Status indicator + server list button + gear tools menu (search/clear/preview/duplicate/reconnect/settings) as a glass capsule.
+- Terminal window adaptive presentation and ornament ownership:
+  - **Tabbed visionOS workgroup**: SwiftUI's `.sidebarAdaptable` `TabView` owns
+    the system leading ornament. Selecting a workgroup `TabSection` reveals that
+    same window's native session sidebar. Do not duplicate the ornament modes in
+    a custom rail or first in-window column.
+  - **Standalone visionOS terminal**: retain the informational top connection
+    ornament (server name + `user@host:port`) until the session is represented
+    by the shared workgroup shell.
+  - **Bottom ornament**: each terminal window owns its own status and tools
+    ornament. An ornament never controls multiple independent spatial windows.
+  - **macOS/iPadOS**: use the same model-owned adaptive tabs with native
+    platform presentation. Do not mirror AppKit tab groups into a custom
+    SwiftUI sidebar or show duplicate tab interfaces.
+  - **macOS ownership**: `TabView(.sidebarAdaptable)` is authoritative for
+    terminal sessions, while the Connections library keeps its existing
+    `NavigationSplitView`. Use Apple's automatic sidebar toolbar item in both
+    surfaces; never suppress it, duplicate it, or add a second custom toggle.
+  - **macOS titlebars**: Connections and terminal scenes use
+    `.windowToolbarStyle(.unifiedCompact)`. Keep global actions and terminal
+    tools as separate native toolbar groups; outer icon `HStack`s use six points
+    of horizontal edge padding so capsule edges and inter-icon spacing remain
+    visually balanced.
+  - **AppKit boundary**: the terminal window coordinator may configure supported
+    `NSWindow` material/full-size-content behavior and native toolbar
+    flexible-space placement. It must not introduce a custom titlebar accessory,
+    duplicate sidebar button, alternate tab registry, or presentation-lifetime
+    authority.
   - Ornament buttons use standard `.buttonStyle(.borderless)` — let the system handle sizing per visionOS conventions. Do not hardcode icon frame sizes in ornaments.
+- Terminal presentation is not terminal lifetime:
+  - `SessionManager` and workspace models own session ordering, selection, live
+    SSH/local-process lifetime, explicit close, and transactional window moves.
+  - `onDisappear`, sidebar visibility, size-class transitions, and `TabView`
+    reconstruction must never close sessions or workgroups.
+  - Window restoration persists reconnectable intentions and stable IDs, not
+    sockets or view-owned live transport state.
 - Terminal-local settings presented via system `.sheet()` (not custom modal overlays) for Liquid Glass styling, gesture dismissal, and accessibility.
 - Composition boundary: keep outer frame/chrome stable while applying tint/translucency at terminal display layer.
 - Liquid Glass material strategy:

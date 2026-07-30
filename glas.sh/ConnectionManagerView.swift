@@ -9,6 +9,11 @@ import SwiftUI
 import GlasSecretStore
 import os
 
+#if os(macOS)
+import AppKit
+import Observation
+#endif
+
 private enum ConnectionWorkgroupSelection: Hashable {
     case live(UUID)
     case preset(UUID)
@@ -68,6 +73,9 @@ struct ConnectionManagerView: View {
     @State private var tailscaleIsConfigured = false
     #if os(iOS)
     @State private var compactNavigationPath: [ConnectionCompactDestination] = []
+    #elseif os(macOS)
+    @State private var connectionLibraryColumnVisibility:
+        NavigationSplitViewVisibility = .all
     #endif
     @Environment(\.openWindow) private var openWindow
     
@@ -155,6 +163,7 @@ struct ConnectionManagerView: View {
                     serverPendingDeletion = nil
                 }
             }
+            .accessibilityIdentifier("connection-library-confirm-delete-server")
             Button("Cancel", role: .cancel) {
                 serverPendingDeletion = nil
             }
@@ -280,12 +289,42 @@ struct ConnectionManagerView: View {
         connectionLibrary: ConnectionLibraryProjection
     ) -> some View {
         #if os(macOS)
-        NavigationSplitView {
+        NavigationSplitView(
+            columnVisibility: $connectionLibraryColumnVisibility
+        ) {
             libraryNavigation(connectionLibrary: connectionLibrary)
         } content: {
             libraryResults(connectionLibrary: connectionLibrary)
         } detail: {
             libraryDetail(connectionLibrary: connectionLibrary)
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                HStack {
+                    Button {
+                        showingAddServer = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .help("Add Connection")
+                    .accessibilityLabel("Add connection")
+                    .accessibilityIdentifier(
+                        "connection-library-add-server-toolbar"
+                    )
+
+                    Button {
+                        openLocalTerminal()
+                    } label: {
+                        Image(systemName: "apple.terminal")
+                    }
+                    .help("Local Terminal")
+                    .accessibilityLabel("Local terminal")
+                    .accessibilityIdentifier(
+                        "connection-library-local-terminal-toolbar"
+                    )
+                }
+                .padding(.horizontal, 6)
+            }
         }
         #elseif os(visionOS)
         TabView(selection: visionModeSelection(in: connectionLibrary)) {
@@ -436,6 +475,7 @@ struct ConnectionManagerView: View {
                 libraryNavigationButton(
                     mode: .library,
                     scope: .allConnections,
+                    title: "All Connections",
                     count: connectionLibrary.itemCount(in: .allConnections)
                 )
                 libraryNavigationButton(
@@ -495,31 +535,22 @@ struct ConnectionManagerView: View {
         .listStyle(.sidebar)
         .navigationTitle("Connections")
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
+        #if os(iOS)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            HStack(spacing: 8) {
-                #if os(macOS)
-                Button("Local Terminal", systemImage: "apple.terminal") {
-                    openLocalTerminal()
-                }
-                #endif
-                #if os(iOS)
-                if iOSRouter.resumableWorkgroupID(in: sessionManager) != nil {
+            if iOSRouter.resumableWorkgroupID(in: sessionManager) != nil {
+                HStack(spacing: 8) {
                     Button("Return to Terminal", systemImage: "arrow.uturn.backward.circle") {
                         resumeMostRecentTerminal()
                     }
                     .accessibilityIdentifier("connection-library-return-to-terminal")
+                    Spacer(minLength: 0)
                 }
-                #endif
-                Button("Add Server", systemImage: "plus") {
-                    showingAddServer = true
-                }
-                .accessibilityIdentifier("connection-library-add-server-sidebar")
-                Spacer(minLength: 0)
+                .controlSize(.small)
+                .padding(8)
+                .background(.bar)
             }
-            .controlSize(.small)
-            .padding(8)
-            .background(.bar)
         }
+        #endif
     }
 
     private func collectionNavigation(
@@ -622,16 +653,6 @@ struct ConnectionManagerView: View {
                         Label("No Connections", systemImage: "server.rack")
                     } description: {
                         Text("Add a saved host to begin.")
-                    } actions: {
-                        #if os(macOS)
-                        Button("Local Terminal", systemImage: "apple.terminal") {
-                            openLocalTerminal()
-                        }
-                        #endif
-                        Button("Add Server", systemImage: "plus") {
-                            showingAddServer = true
-                        }
-                        .accessibilityIdentifier("connection-library-add-server-empty-results")
                     }
                     .accessibilityIdentifier("connection-library-empty-results")
                 } else {
@@ -653,11 +674,20 @@ struct ConnectionManagerView: View {
                     )
                     .contentShape(Rectangle())
                     #if os(macOS)
-                    .onTapGesture(count: 2) {
+                    .onTapGesture {
                         selectedServerID = server.id
-                        connectToServer(server)
                     }
+                    .simultaneousGesture(
+                        TapGesture(count: 2).onEnded {
+                            selectedServerID = server.id
+                            connectToServer(server)
+                        }
+                    )
                     #elseif os(iOS)
+                    .onTapGesture {
+                        selectedServerID = server.id
+                    }
+                    #else
                     .onTapGesture {
                         selectedServerID = server.id
                     }
@@ -680,6 +710,7 @@ struct ConnectionManagerView: View {
             }
         }
         .toolbar {
+            #if !os(macOS)
             ToolbarItemGroup(placement: .primaryAction) {
                 if showsExplicitSearchAction {
                     Button {
@@ -698,16 +729,8 @@ struct ConnectionManagerView: View {
                 }
                 .accessibilityLabel("Add connection")
                 .accessibilityIdentifier("connection-library-add-server-results")
-
-                #if os(macOS)
-                Button {
-                    openLocalTerminal()
-                } label: {
-                    Image(systemName: "apple.terminal")
-                }
-                .accessibilityLabel("Local terminal")
-                #endif
             }
+            #endif
         }
     }
 
@@ -935,23 +958,35 @@ struct ConnectionManagerView: View {
                 .background(.bar)
             }
             .navigationTitle(server.name)
-        } else {
+        } else if connectionLibrary.servers.isEmpty {
             ContentUnavailableView {
-                Label("Select a Connection", systemImage: "server.rack")
+                Label("No Connections", systemImage: "server.rack")
             } description: {
-                Text("Choose a saved host to inspect it without connecting.")
+                #if os(macOS)
+                Text("Add a saved host or open a local terminal to begin.")
+                #else
+                Text("Add a saved host to begin.")
+                #endif
             } actions: {
                 #if os(macOS)
                 Button("Local Terminal", systemImage: "apple.terminal") {
                     openLocalTerminal()
                 }
+                .accessibilityIdentifier("connection-library-local-terminal-empty-detail")
                 #endif
-                Button("Add Server", systemImage: "plus") {
+
+                Button("Add Connection", systemImage: "plus") {
                     showingAddServer = true
                 }
                 .accessibilityIdentifier("connection-library-add-server-empty-detail")
             }
             .accessibilityIdentifier("connection-library-detail-empty-server")
+        } else {
+            Text("Select a connection to get started.")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityIdentifier("connection-library-detail-empty-server")
         }
     }
 
@@ -1518,6 +1553,7 @@ struct ConnectionManagerView: View {
     private func openLocalTerminal() {
         openWindow(id: "workspace", value: MacWorkspaceLaunchRequest())
     }
+
     #endif
 
     private func showSettings() {
@@ -2266,10 +2302,6 @@ private struct ServerListRow: View {
         "\(server.username)@\(server.host):\(server.port)"
     }
 
-    private var shouldTruncateConnection: Bool {
-        rawConnection.count > 128
-    }
-
     private var displayConnection: String {
         let raw = rawConnection
         guard raw.count > 128 else { return raw }
@@ -2285,13 +2317,11 @@ private struct ServerListRow: View {
     }
 
     var body: some View {
-        Group {
-            #if os(iOS) || os(visionOS)
+        ViewThatFits(in: .horizontal) {
             compactContent
-            #else
-            wideContent
-            #endif
+            minimalContent
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 4)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(server.name), \(server.username) at \(server.host), \(server.authMethod.displayName)")
@@ -2331,7 +2361,6 @@ private struct ServerListRow: View {
         }
     }
 
-    #if os(iOS) || os(visionOS)
     private var compactContent: some View {
         HStack(spacing: 10) {
             Circle()
@@ -2360,41 +2389,29 @@ private struct ServerListRow: View {
             lastConnectedLabel
                 .lineLimit(1)
 
-            actionsMenu
         }
     }
-    #endif
 
-    private var wideContent: some View {
-        HStack(spacing: 16) {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(server.colorTag.color)
-                    .frame(width: 10, height: 10)
+    private var minimalContent: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(server.colorTag.color)
+                .frame(width: 10, height: 10)
 
-                serverName
-                favoriteIndicator
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    serverName
+                    favoriteIndicator
+                }
+
+                Text(displayConnection)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
-            .frame(minWidth: 180, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text(displayConnection)
-                .font(.subheadline.monospaced())
-                .lineLimit(shouldTruncateConnection ? 1 : 2)
-                .truncationMode(.tail)
-                .minimumScaleFactor(shouldTruncateConnection ? 0.82 : 1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            Image(systemName: server.authMethod.icon)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .frame(width: 24, alignment: .center)
-                .accessibilityLabel(server.authMethod.displayName)
-
-            lastConnectedLabel
-                .frame(width: 90, alignment: .leading)
-
-            actionsMenu
-                .frame(width: 32, alignment: .trailing)
         }
     }
 
@@ -2430,36 +2447,6 @@ private struct ServerListRow: View {
         .foregroundStyle(.secondary)
     }
 
-    private var actionsMenu: some View {
-        Menu {
-            Button {
-                onView()
-            } label: {
-                Label("View", systemImage: "eye")
-            }
-
-            Button {
-                onEdit()
-            } label: {
-                Label("Edit", systemImage: "pencil")
-            }
-
-            Divider()
-
-            Button(role: .destructive) {
-                onDelete()
-            } label: {
-                Label("Delete", systemImage: "trash")
-            }
-        } label: {
-            Image(systemName: "ellipsis.circle")
-                .font(.title3)
-        }
-        .accessibilityLabel("Actions for \(server.name)")
-        .accessibilityIdentifier(
-            "connection-library-actions-server-\(server.id.uuidString.lowercased())"
-        )
-    }
 }
 
 private struct ServerInfoView: View {

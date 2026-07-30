@@ -172,6 +172,23 @@ struct MacWorkspaceTests {
         #expect(legacyRequest.liveSessionTicketID == nil)
     }
 
+    @Test func launchRequestRejectsMoreThanThirtyTwoTabsDuringDecode() throws {
+        let tabs = (0...MacWorkspaceWindowRestorationState.maximumTabCount).map { _ in
+            MacWorkspaceTabRequest(startsEmpty: true)
+        }
+        let tabsObject = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(tabs)
+        )
+        let data = try JSONSerialization.data(withJSONObject: [
+            "windowID": UUID().uuidString,
+            "tabs": tabsObject,
+        ])
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(MacWorkspaceLaunchRequest.self, from: data)
+        }
+    }
+
     @Test @MainActor func workgroupLaunchRequestCarriesOnlyDisplayMetadataAndOpaqueTicket() throws {
         let broker = MacStartupCommandBroker(capacity: 4)
         let secretCommand = "printf launch-secret-7f36"
@@ -389,8 +406,9 @@ struct MacWorkspaceTests {
             openWindow: { opened.append($0) }
         )
 
-        #expect(requests == opened)
+        #expect(opened.count == 1)
         let request = try #require(requests.first)
+        #expect(opened[0].tabs.map(\.workspaceID) == [request.workspaceID])
         #expect(request.workgroupName == "Operations")
         #expect(request.tabLabel == "Local")
         #expect(request.workgroupColor == .orange)
@@ -474,42 +492,344 @@ struct MacWorkspaceTests {
         #expect(changedBox.take()?.reason == .changed)
     }
 
-    @Test @MainActor func workspaceWindowRegistryRemovesOrphanedPendingTabs() {
-        let registry = MacWorkspaceWindowRegistry()
-        let sourceID = UUID()
-        let destinationID = UUID()
-        let sourceWindow = NSWindow()
-
-        registry.register(sourceWindow, workspaceID: sourceID)
-        registry.prepareTab(
-            sourceWorkspaceID: sourceID,
-            destinationWorkspaceID: destinationID
+    @Test @MainActor func windowControllerOwnsStableOrderedTabsAndSelection() throws {
+        let fixture = try WorkspaceDefaultsFixture()
+        defer { fixture.cleanup() }
+        let secondID = UUID()
+        let request = MacWorkspaceLaunchRequest(
+            windowID: fixture.workspaceID,
+            tabs: [
+                MacWorkspaceTabRequest(
+                    workspaceID: fixture.workspaceID,
+                    initialPaneIntent: .local,
+                    tabLabel: "Local"
+                ),
+                MacWorkspaceTabRequest(
+                    workspaceID: secondID,
+                    startsEmpty: true,
+                    tabLabel: "SSH"
+                ),
+            ]
         )
-        #expect(registry.pendingTabCount == 1)
+        let controller = MacWorkspaceWindowController(
+            request: request,
+            defaults: fixture.defaults
+        )
 
-        registry.unregister(sourceID)
-        #expect(registry.pendingTabCount == 0)
+        #expect(controller.tabs.map(\.workspaceID) == [fixture.workspaceID, secondID])
+        #expect(controller.selectedTabID == fixture.workspaceID)
+        controller.select(secondID)
+        #expect(controller.selectedTab.workspaceID == secondID)
     }
 
-    @Test @MainActor func workspaceWindowRegistryAssemblesBatchInSavedOrder() {
-        let registry = MacWorkspaceWindowRegistry()
-        let workspaceIDs = [UUID(), UUID(), UUID()]
-        let windows = ["One", "Two", "Three"].map { title in
-            let window = NSWindow()
-            window.title = title
-            window.isReleasedWhenClosed = false
-            return window
+    @Test @MainActor func windowControllerAddsAndRestoresModelOwnedTabs() throws {
+        let fixture = try WorkspaceDefaultsFixture()
+        defer { fixture.cleanup() }
+        let controller = MacWorkspaceWindowController(
+            request: MacWorkspaceLaunchRequest(
+                workspaceID: fixture.workspaceID,
+                startsEmpty: true
+            ),
+            defaults: fixture.defaults
+        )
+        let added = try #require(
+            controller.addTab(
+                MacWorkspaceTabRequest(startsEmpty: true, tabLabel: "Second")
+            )
+        )
+
+        let restored = MacWorkspaceWindowController(
+            request: MacWorkspaceLaunchRequest(
+                workspaceID: fixture.workspaceID,
+                startsEmpty: true
+            ),
+            defaults: fixture.defaults
+        )
+        #expect(restored.tabs.map(\.workspaceID) == [
+            fixture.workspaceID,
+            added.workspaceID,
+        ])
+        #expect(restored.selectedTabID == added.workspaceID)
+        #expect(restored.tabs[1].tabLabel == "Second")
+    }
+
+    @Test @MainActor func tabTransferPreservesControllerIdentityAndLiveState() throws {
+        let fixture = try WorkspaceDefaultsFixture()
+        defer { fixture.cleanup() }
+        let transferBroker = MacWorkspaceTransferBroker(
+            capacity: 2,
+            expiration: .seconds(30)
+        )
+        let source = MacWorkspaceWindowController(
+            request: MacWorkspaceLaunchRequest(
+                windowID: fixture.workspaceID,
+                tabs: [
+                    MacWorkspaceTabRequest(workspaceID: fixture.workspaceID),
+                    MacWorkspaceTabRequest(startsEmpty: true, tabLabel: "Detached"),
+                ]
+            ),
+            transferBroker: transferBroker,
+            defaults: fixture.defaults
+        )
+        source.select(try #require(source.tabs.last?.workspaceID))
+        let transferred = source.selectedTab
+        let request = try #require(source.transferSelectedTab())
+        #expect(transferBroker.pendingCount == 1)
+        #expect(source.tabs.count == 2)
+
+        let destination = MacWorkspaceWindowController(
+            request: request,
+            transferBroker: transferBroker,
+            defaults: fixture.defaults
+        )
+        #expect(destination.selectedTab === transferred)
+        #expect(source.tabs.count == 1)
+        #expect(transferBroker.pendingCount == 0)
+    }
+
+    @Test @MainActor func expiredTabTransferLeavesSourceUntouched() async throws {
+        let fixture = try WorkspaceDefaultsFixture()
+        defer { fixture.cleanup() }
+        let transferBroker = MacWorkspaceTransferBroker(
+            capacity: 1,
+            expiration: .milliseconds(10)
+        )
+        let source = MacWorkspaceWindowController(
+            request: MacWorkspaceLaunchRequest(
+                windowID: fixture.workspaceID,
+                tabs: [
+                    MacWorkspaceTabRequest(workspaceID: fixture.workspaceID),
+                    MacWorkspaceTabRequest(startsEmpty: true, tabLabel: "Stays Put"),
+                ]
+            ),
+            transferBroker: transferBroker,
+            defaults: fixture.defaults
+        )
+        source.select(try #require(source.tabs.last?.workspaceID))
+        let originalIDs = source.tabs.map(\.workspaceID)
+        let request = try #require(source.transferSelectedTab())
+
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(transferBroker.pendingCount == 0)
+        #expect(source.tabs.map(\.workspaceID) == originalIDs)
+        #expect(source.selectedTabID == originalIDs[1])
+        let destination = MacWorkspaceWindowController(
+            request: request,
+            transferBroker: transferBroker,
+            defaults: fixture.defaults
+        )
+        #expect(destination.selectedTab.isEmpty)
+        #expect(destination.selectedTab.localRuntimesByPaneID.isEmpty)
+        #expect(destination.selectedTab.sessionsByPaneID.isEmpty)
+    }
+
+    @Test @MainActor func rapidDuplicateMoveIsRejectedUntilTransferResolves() throws {
+        let fixture = try WorkspaceDefaultsFixture()
+        defer { fixture.cleanup() }
+        let broker = MacWorkspaceTransferBroker()
+        let source = MacWorkspaceWindowController(
+            request: MacWorkspaceLaunchRequest(
+                windowID: fixture.workspaceID,
+                tabs: [
+                    MacWorkspaceTabRequest(workspaceID: fixture.workspaceID),
+                    MacWorkspaceTabRequest(startsEmpty: true),
+                ]
+            ),
+            transferBroker: broker,
+            defaults: fixture.defaults
+        )
+        source.select(try #require(source.tabs.last?.workspaceID))
+
+        let first = try #require(source.transferSelectedTab())
+        #expect(!source.canTransferSelectedTab)
+        #expect(source.transferSelectedTab() == nil)
+        #expect(broker.pendingCount == 1)
+
+        _ = MacWorkspaceWindowController(
+            request: first,
+            transferBroker: broker,
+            defaults: fixture.defaults
+        )
+        #expect(broker.pendingCount == 0)
+        #expect(source.tabs.count == 1)
+    }
+
+    @Test @MainActor func sourceCloseCancelsPendingTransferAndDestinationFailsClosed() throws {
+        let fixture = try WorkspaceDefaultsFixture()
+        defer { fixture.cleanup() }
+        let broker = MacWorkspaceTransferBroker()
+        let sessionManager = SessionManager(loadImmediately: false)
+        let source = MacWorkspaceWindowController(
+            request: MacWorkspaceLaunchRequest(
+                windowID: fixture.workspaceID,
+                tabs: [
+                    MacWorkspaceTabRequest(workspaceID: fixture.workspaceID),
+                    MacWorkspaceTabRequest(startsEmpty: true),
+                ]
+            ),
+            transferBroker: broker,
+            defaults: fixture.defaults
+        )
+        source.select(try #require(source.tabs.last?.workspaceID))
+        let request = try #require(source.transferSelectedTab())
+
+        source.closeAllSessions(sessionManager: sessionManager)
+        #expect(broker.pendingCount == 0)
+        let destination = MacWorkspaceWindowController(
+            request: request,
+            transferBroker: broker,
+            defaults: fixture.defaults
+        )
+        #expect(destination.tabs.count == 1)
+        #expect(destination.selectedTab.isEmpty)
+        #expect(destination.selectedTab.localRuntimesByPaneID.isEmpty)
+        #expect(destination.selectedTab.sessionsByPaneID.isEmpty)
+    }
+
+    @Test @MainActor func transferCommitFailureKeepsSourceAndFailsClosed() throws {
+        let fixture = try WorkspaceDefaultsFixture()
+        defer { fixture.cleanup() }
+        let broker = MacWorkspaceTransferBroker()
+        let sessionManager = SessionManager(loadImmediately: false)
+        let source = MacWorkspaceWindowController(
+            request: MacWorkspaceLaunchRequest(
+                windowID: fixture.workspaceID,
+                tabs: [
+                    MacWorkspaceTabRequest(workspaceID: fixture.workspaceID),
+                    MacWorkspaceTabRequest(startsEmpty: true),
+                ]
+            ),
+            transferBroker: broker,
+            defaults: fixture.defaults
+        )
+        let nonTransferredID = source.selectedTabID
+        source.select(try #require(source.tabs.last?.workspaceID))
+        let transferredID = source.selectedTabID
+        let request = try #require(source.transferSelectedTab())
+        #expect(
+            !source.removeTab(
+                nonTransferredID,
+                sessionManager: sessionManager
+            )
+        )
+
+        let destination = MacWorkspaceWindowController(
+            request: request,
+            transferBroker: broker,
+            defaults: fixture.defaults
+        )
+        #expect(broker.pendingCount == 0)
+        #expect(source.tabs.map(\.workspaceID) == [transferredID])
+        #expect(source.selectedTabID == transferredID)
+        #expect(destination.selectedTab.isEmpty)
+        #expect(destination.selectedTab.sessionsByPaneID.isEmpty)
+    }
+
+    @Test @MainActor func transferCapacityEvictionLeavesSourceAndFailsClosed() throws {
+        let fixture = try WorkspaceDefaultsFixture()
+        defer { fixture.cleanup() }
+        let broker = MacWorkspaceTransferBroker(capacity: 1)
+        let firstWindowID = UUID()
+        let secondWindowID = UUID()
+        let firstSource = MacWorkspaceWindowController(
+            request: MacWorkspaceLaunchRequest(
+                windowID: firstWindowID,
+                tabs: [
+                    MacWorkspaceTabRequest(workspaceID: firstWindowID),
+                    MacWorkspaceTabRequest(startsEmpty: true),
+                ]
+            ),
+            transferBroker: broker,
+            defaults: fixture.defaults
+        )
+        let secondSource = MacWorkspaceWindowController(
+            request: MacWorkspaceLaunchRequest(
+                windowID: secondWindowID,
+                tabs: [
+                    MacWorkspaceTabRequest(workspaceID: secondWindowID),
+                    MacWorkspaceTabRequest(startsEmpty: true),
+                ]
+            ),
+            transferBroker: broker,
+            defaults: fixture.defaults
+        )
+        firstSource.select(try #require(firstSource.tabs.last?.workspaceID))
+        secondSource.select(try #require(secondSource.tabs.last?.workspaceID))
+        let retainedWorkspaceID = secondSource.selectedTabID
+        let evictedRequest = try #require(firstSource.transferSelectedTab())
+        let retainedRequest = try #require(secondSource.transferSelectedTab())
+
+        #expect(firstSource.tabs.count == 2)
+        #expect(firstSource.canTransferSelectedTab)
+        #expect(broker.pendingCount == 1)
+        let destination = MacWorkspaceWindowController(
+            request: evictedRequest,
+            transferBroker: broker,
+            defaults: fixture.defaults
+        )
+        #expect(destination.selectedTab.isEmpty)
+        #expect(destination.selectedTab.localRuntimesByPaneID.isEmpty)
+        #expect(broker.pendingCount == 1)
+        let retainedDestination = MacWorkspaceWindowController(
+            request: retainedRequest,
+            transferBroker: broker,
+            defaults: fixture.defaults
+        )
+        #expect(retainedDestination.selectedTab.workspaceID == retainedWorkspaceID)
+        #expect(secondSource.tabs.count == 1)
+        #expect(broker.pendingCount == 0)
+    }
+
+    @Test @MainActor func windowTabCapAndLastTabRemovalPreserveInvariants() throws {
+        let fixture = try WorkspaceDefaultsFixture()
+        defer { fixture.cleanup() }
+        let sessionManager = SessionManager(loadImmediately: false)
+        let controller = MacWorkspaceWindowController(
+            request: MacWorkspaceLaunchRequest(
+                workspaceID: fixture.workspaceID,
+                startsEmpty: true
+            ),
+            defaults: fixture.defaults
+        )
+        for _ in 1..<MacWorkspaceWindowRestorationState.maximumTabCount {
+            #expect(controller.addTab() != nil)
         }
-        defer { windows.forEach { $0.close() } }
+        let windowStorageKey = "\(UserDefaultsKeys.macWorkspaceRestoration).window.\(fixture.workspaceID.uuidString.lowercased())"
+        let before = fixture.defaults.data(forKey: windowStorageKey)
+        #expect(!controller.canAddTab)
+        #expect(controller.addTab() == nil)
+        #expect(controller.tabs.count == MacWorkspaceWindowRestorationState.maximumTabCount)
+        #expect(fixture.defaults.data(forKey: windowStorageKey) == before)
 
-        registry.prepareTabBatch(workspaceIDs: workspaceIDs)
-        #expect(registry.pendingBatchCount == 1)
-        registry.register(windows[2], workspaceID: workspaceIDs[2])
-        registry.register(windows[0], workspaceID: workspaceIDs[0])
-        registry.register(windows[1], workspaceID: workspaceIDs[1])
+        let single = MacWorkspaceWindowController(
+            request: MacWorkspaceLaunchRequest(startsEmpty: true),
+            defaults: fixture.defaults
+        )
+        let retainedID = single.selectedTabID
+        #expect(single.removeTab(retainedID, sessionManager: sessionManager))
+        #expect(single.tabs.count == 1)
+        #expect(single.selectedTabID == retainedID)
+        #expect(single.selectedTab.workspaceID == retainedID)
+    }
 
-        #expect(registry.pendingBatchCount == 0)
-        #expect(windows[0].tabbedWindows?.map(\.title) == ["One", "Two", "Three"])
+    @Test @MainActor func workgroupLauncherOpensOneWindowWithOrderedTabs() throws {
+        let broker = MacStartupCommandBroker()
+        var opened: [MacWorkspaceLaunchRequest] = []
+        let returned = MacWorkgroupLauncher.launch(
+            workgroupID: UUID(),
+            name: "Operations",
+            color: .orange,
+            items: [
+                MacWorkgroupLaunchItem(intent: .local, label: "One"),
+                MacWorkgroupLaunchItem(intent: .local, label: "Two"),
+            ],
+            broker: broker,
+            openWindow: { opened.append($0) }
+        )
+
+        #expect(opened.count == 1)
+        #expect(opened[0].tabs.map(\.tabLabel) == ["One", "Two"])
+        #expect(returned.map(\.workspaceID) == opened[0].tabs.map(\.workspaceID))
     }
 
     @Test @MainActor func appleTerminalThemeImporterUsesOnlyAllowlistedVisualFields() throws {
@@ -796,6 +1116,109 @@ struct MacWorkspaceTests {
         }
     }
 
+    @Test @MainActor func controllerWindowIdentityUsesLocalSavedHostAndFocusedSplit() throws {
+        let fixture = try WorkspaceDefaultsFixture()
+        defer { fixture.cleanup() }
+        let server = ServerConfiguration(
+            name: "Build Server",
+            host: "build.internal",
+            port: 2222,
+            username: "builder"
+        )
+        let controller = MacWorkspaceController(
+            workspaceID: fixture.workspaceID,
+            defaults: fixture.defaults
+        )
+        let localPaneID = try #require(controller.focusedPaneID)
+
+        #expect(
+            controller.windowIdentity(
+                servers: [server],
+                localUsername: "local-user"
+            ) == MacWorkspaceWindowIdentity(
+                title: "Local",
+                subtitle: "local-user@localhost"
+            )
+        )
+
+        controller.addPane(
+            intent: .ssh(serverID: server.id),
+            axis: .horizontal
+        )
+        let sshPaneID = try #require(controller.focusedPaneID)
+        #expect(sshPaneID != localPaneID)
+        #expect(
+            controller.windowIdentity(servers: [server])
+                == MacWorkspaceWindowIdentity(
+                    title: "Build Server",
+                    subtitle: "builder@build.internal:2222"
+                )
+        )
+
+        controller.focus(localPaneID)
+        #expect(
+            controller.windowIdentity(
+                servers: [server],
+                localUsername: "local-user"
+            ) == MacWorkspaceWindowIdentity(
+                title: "Local",
+                subtitle: "local-user@localhost"
+            )
+        )
+
+        controller.focus(sshPaneID)
+        #expect(
+            controller.windowIdentity(servers: [server])
+                == MacWorkspaceWindowIdentity(
+                    title: "Build Server",
+                    subtitle: "builder@build.internal:2222"
+                )
+        )
+    }
+
+    @Test @MainActor func controllerWindowIdentityResolvesSavedSSHBeforeSessionStarts() throws {
+        let fixture = try WorkspaceDefaultsFixture()
+        defer { fixture.cleanup() }
+        let server = ServerConfiguration(
+            name: "Umbp",
+            host: "100.98.187.7",
+            username: "michael"
+        )
+        let controller = MacWorkspaceController(
+            request: MacWorkspaceLaunchRequest(
+                workspaceID: fixture.workspaceID,
+                initialPaneIntent: .ssh(serverID: server.id)
+            ),
+            defaults: fixture.defaults
+        )
+
+        #expect(controller.sessionsByPaneID.isEmpty)
+        #expect(
+            controller.windowIdentity(servers: [server])
+                == MacWorkspaceWindowIdentity(
+                    title: "Umbp",
+                    subtitle: "michael@100.98.187.7:22"
+                )
+        )
+    }
+
+    @Test func workspaceWindowIdentitySanitizesUntrustedChromeText() {
+        let identity = MacWorkspaceWindowIdentity(
+            title: "  Build\u{202E}\u{0000}\nServer  ",
+            subtitle: " deploy\t@\rhost " + String(repeating: "x", count: 300)
+        )
+        let empty = MacWorkspaceWindowIdentity(
+            title: "\n\t",
+            subtitle: "\u{0000}"
+        )
+
+        #expect(identity.title == "Build Server")
+        #expect(identity.subtitle?.hasPrefix("deploy @ host") == true)
+        #expect(identity.subtitle?.count == 240)
+        #expect(empty.title == "Terminal")
+        #expect(empty.subtitle == nil)
+    }
+
     @Test @MainActor func controllerSplitsFocusesClampsAndCollapsesPanes() throws {
         let fixture = try WorkspaceDefaultsFixture()
         defer { fixture.cleanup() }
@@ -897,8 +1320,68 @@ struct MacWorkspaceTests {
             defaults: fixture.defaults
         )
         #expect(boundedFallback.workspaceID == fixture.workspaceID)
-        #expect(boundedFallback.state.root?.paneIDs.count == 1)
+        #expect(boundedFallback.state.root == nil)
+        #expect(boundedFallback.localRuntimesByPaneID.isEmpty)
         #expect(fixture.defaults.data(forKey: fixture.storageKey) == oversized)
+    }
+
+    @Test @MainActor func invalidRestorationDataFailsClosedWithoutCreatingAPTY() throws {
+        let fixture = try WorkspaceDefaultsFixture()
+        defer { fixture.cleanup() }
+
+        fixture.defaults.set(Data("{not-json".utf8), forKey: fixture.storageKey)
+        let malformed = MacWorkspaceController(
+            workspaceID: fixture.workspaceID,
+            defaults: fixture.defaults
+        )
+        #expect(malformed.state.root == nil)
+        #expect(malformed.localRuntimesByPaneID.isEmpty)
+
+        var object = try #require(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(MacWorkspaceRestorationState(id: fixture.workspaceID))
+            ) as? [String: Any]
+        )
+        object["schemaVersion"] = MacWorkspaceRestorationState.currentSchemaVersion + 1
+        let futureData = try JSONSerialization.data(withJSONObject: object)
+        fixture.defaults.set(futureData, forKey: fixture.storageKey)
+        let future = MacWorkspaceController(
+            workspaceID: fixture.workspaceID,
+            defaults: fixture.defaults
+        )
+        #expect(future.state.root == nil)
+        #expect(future.localRuntimesByPaneID.isEmpty)
+
+        let windowKey = "\(UserDefaultsKeys.macWorkspaceRestoration).window.\(fixture.workspaceID.uuidString.lowercased())"
+        fixture.defaults.set(Data("{broken-window".utf8), forKey: windowKey)
+        let window = MacWorkspaceWindowController(
+            request: MacWorkspaceLaunchRequest(
+                workspaceID: fixture.workspaceID,
+                startsEmpty: false
+            ),
+            defaults: fixture.defaults
+        )
+        #expect(window.tabs.count == 1)
+        #expect(window.selectedTab.isEmpty)
+        #expect(window.selectedTab.localRuntimesByPaneID.isEmpty)
+    }
+
+    @Test @MainActor func paneOwnedRecorderSurvivesViewReconstructionUntilPaneClose() throws {
+        let fixture = try WorkspaceDefaultsFixture()
+        defer { fixture.cleanup() }
+        let controller = MacWorkspaceController(
+            workspaceID: fixture.workspaceID,
+            defaults: fixture.defaults
+        )
+        let sessionManager = SessionManager(loadImmediately: false)
+        let paneID = try #require(controller.focusedPaneID)
+        let first = controller.recorder(for: paneID)
+        let reconstructed = controller.recorder(for: paneID)
+
+        #expect(first === reconstructed)
+        #expect(controller.recordersByPaneID[paneID] === first)
+        controller.removePane(paneID, sessionManager: sessionManager)
+        #expect(controller.recordersByPaneID[paneID] == nil)
     }
 
     @Test @MainActor func closedWorkspaceRejectsLateOrNewSSHPreparation() async throws {
@@ -974,15 +1457,19 @@ struct MacWorkspaceTests {
         window.backgroundColor = .windowBackgroundColor
         window.alphaValue = 0.73
         window.styleMask.remove(.fullSizeContentView)
+        let toolbar = NSToolbar(identifier: "sh.glas.test-toolbar")
+        window.toolbar = toolbar
         MacTerminalWindowPolicy.apply(window, tabbingIdentifier: "sh.glas.test")
         MacTerminalWindowPolicy.apply(window, tabbingIdentifier: "sh.glas.test")
 
         #expect(!window.isOpaque)
         #expect(window.backgroundColor == .clear)
         #expect(window.alphaValue == 0.73)
-        #expect(window.tabbingIdentifier == "sh.glas.test")
-        #expect(!window.styleMask.contains(.fullSizeContentView))
-        #expect(!window.titlebarAppearsTransparent)
+        #expect(window.tabbingMode == .disallowed)
+        #expect(window.tabbingIdentifier.isEmpty)
+        #expect(window.styleMask.contains(.fullSizeContentView))
+        #expect(window.titlebarAppearsTransparent)
+        #expect(window.toolbarStyle == .unifiedCompact)
     }
 
     @Test func terminalCanvasAppearancePreservesIncreaseContrast() {
@@ -1118,6 +1605,92 @@ struct MacWorkspaceTests {
         #expect(!processIsRunning)
     }
 
+    @Test @MainActor func controllerOwnedLocalPTYSurvivesHostReconstructionUntilExplicitClose()
+        async throws
+    {
+        let pidFile = FileManager.default.temporaryDirectory
+            .appending(path: "glas-retained-local-pty-\(UUID().uuidString).pid")
+        defer { try? FileManager.default.removeItem(at: pidFile) }
+        let configuration = SwiftTermLocalProcessConfiguration(
+            executable: "/bin/sh",
+            arguments: [
+                "-c",
+                "printf '%d' $$ > \"$1\"; while :; do sleep 1; done",
+                "glas-retained-local-pty-test",
+                pidFile.path,
+            ],
+            executableName: "sh",
+            currentDirectory: FileManager.default.temporaryDirectory.path
+        )
+        let runtime = SwiftTermLocalProcessRuntime()
+        let theme = SwiftTermTheme(
+            fontSize: 13,
+            foreground: (1, 1, 1),
+            background: (0, 0, 0, 0),
+            cursor: (1, 1, 1)
+        )
+        let settings = SwiftTermRuntimeSettings(
+            cursorStyle: "block",
+            blinkingCursor: false,
+            scrollbackLines: 100
+        )
+        var hostingView: NSHostingView<SwiftTermLocalProcessHostView>? = NSHostingView(
+            rootView: SwiftTermLocalProcessHostView(
+                runtime: runtime,
+                configuration: configuration,
+                theme: theme,
+                runtimeSettings: settings
+            )
+        )
+        let window = NSWindow()
+        window.isReleasedWhenClosed = false
+        window.contentView = hostingView
+        #expect(await waitForCondition(seconds: 2) {
+            FileManager.default.fileExists(atPath: pidFile.path)
+        })
+        let pidText = try String(contentsOf: pidFile, encoding: .utf8)
+        let processID = try #require(
+            pid_t(pidText.trimmingCharacters(in: .whitespacesAndNewlines))
+        )
+        defer {
+            if kill(processID, 0) == 0 {
+                _ = kill(processID, SIGKILL)
+                var status: Int32 = 0
+                _ = waitpid(processID, &status, 0)
+            }
+        }
+
+        window.contentView = nil
+        hostingView = nil
+        #expect(runtime.hasEngine)
+        #expect(runtime.processState.isRunning)
+        #expect(kill(processID, 0) == 0)
+
+        hostingView = NSHostingView(
+            rootView: SwiftTermLocalProcessHostView(
+                runtime: runtime,
+                configuration: configuration,
+                theme: theme,
+                runtimeSettings: settings
+            )
+        )
+        window.contentView = hostingView
+        #expect(await waitForCondition(seconds: 1) {
+            runtime.processState.isRunning && kill(processID, 0) == 0
+        })
+
+        runtime.terminate()
+        window.contentView = nil
+        hostingView = nil
+        window.close()
+        #expect(await waitForCondition(seconds: 4) {
+            errno = 0
+            return kill(processID, 0) == -1 && errno == ESRCH
+        })
+        #expect(!runtime.hasEngine)
+        #expect(!runtime.processState.isRunning)
+    }
+
     @Test @MainActor func exitedLocalPTYRestartsInTheExistingTerminal() async throws {
         let configuration = SwiftTermLocalProcessConfiguration(
             executable: "/bin/sh",
@@ -1219,6 +1792,7 @@ struct MacWorkspaceTests {
         hostingView = nil
         window.close()
     }
+
 }
 
 private struct WorkspaceDefaultsFixture {

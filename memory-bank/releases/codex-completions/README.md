@@ -67,6 +67,29 @@ Distribution remains blocked on the open ledger items, especially matching-Xcode
 - macOS tests passed 27/27; the complete visionOS suite passed serially; macOS and visionOS Release builds passed; diff, production-marker, and isolated Gitleaks scans were clean.
 - Task evidence: `memory-bank/tasks/2026-07/200726_terminal-settings-section-recovery.md`.
 
+## Approved adaptive workspace and native chrome checkpoint — 2026-07-30
+
+- Model-owned `.sidebarAdaptable` sessions replace the former AppKit tab-group
+  mirror. Session selection, lifetime, explicit close, restoration, and
+  transactional movement between windows remain authoritative in the existing
+  session/workspace models.
+- Connections and terminal windows use one system-owned sidebar control,
+  full-height native sidebar material, and matching unified compact titlebars.
+  The redundant horizontal tab strip, custom sidebar controls, duplicate titles,
+  footer tool surface, and AppKit tab/KVO/menu-probing machinery are absent.
+- Terminal identity uses the active server/workgroup and `user@host:port`.
+  Global actions and terminal tools remain separate compact groups with
+  symmetric edge padding and native overflow behavior.
+- The terminal canvas remains square and independently controls tint, opacity,
+  blur, and true transparency. Terminal glyphs and cursor remain above that
+  composition, and the same shared session/appearance authority continues to
+  serve visionOS, iPadOS, and iOS.
+- User visual review approved the Connections library interaction, native
+  sidebar ownership, local/SSH tab parity, titlebar material, toolbar grouping,
+  compact icon sizing, and narrow-window adaptation. Automated release evidence
+  is recorded in Phases 06 and 07 without closing the still-open physical-device
+  and resumable-shell gates.
+
 ## Status vocabulary
 
 | Status | Meaning |
@@ -98,7 +121,7 @@ Distribution remains blocked on the open ledger items, especially matching-Xcode
 
 ## Current verified baseline
 
-- Branch: `agent/macos-27-terminal`, based on `origin/main`, with the final implementation approved for publication.
+- Branch: `codex/native-mac-terminal-chrome`, based on `origin/main`, with the adaptive workspace and native chrome implementation approved for publication.
 - Toolchain: Xcode 27.0 (27A5209h), SDK 27.0, Metal Toolchain installed.
 - App tests: 183/183 passed on visionOS 26.4 arm64 Simulator and 183/183 passed on visionOS 27.0 arm64 Simulator; native macOS tests pass 20/20.
 - Package tests: NIOSSH 331/331; Citadel 39 passed with five expected live-environment skips; GlasSecretStore 75/75.
@@ -206,7 +229,7 @@ Each item has one owning phase. Cross-cutting phase documents may reference an i
 | `PLAT-006` | Use visionOS 27 for adaptive geometry, toolbar behavior, accessibility, and privacy rather than gratuitous spectacle | `../docs/glas.sh-results.txt:216` | 06 | QA |
 | `WORK-001` | Add iTerm2-style command blocks, working directory, exit status, semantic selection, and file references | `../docs/glas.sh-results.txt:162` | 07 | In progress |
 | `WORK-002` | Add tabs, splits, semantic history, and layout restoration around fresh/recoverable sessions | `../docs/glas.sh-results.txt:274` | 07 | QA |
-| `WORK-003` | Provide tmux/Zellij discovery and attach before considering a custom roaming daemon | `../docs/glas.sh-results.txt:165` | 07 | Not started |
+| `WORK-003` | Provide tmux/Zellij discovery plus explicit detach/resume handoff so a remote process can survive disconnection on Vision Pro and be resumed from glas.sh on Mac, iPad, iPhone, or another Vision Pro before considering a custom roaming daemon | `../docs/glas.sh-results.txt:165`; cross-device persistent-terminal requirement | 07 | Not started |
 | `SYNC-001` | Define a versioned `EndpointProfile` with stable identity, host, port, username, jump chain, and tags | `../docs/glas.sh-results.txt:235` | 08 | Not started |
 | `SYNC-002` | Keep terminal and database settings as app-specific overlays | `../docs/glas.sh-results.txt:236` | 08 | Not started |
 | `SYNC-003` | Store same-device metadata atomically in the App Group instead of replacing whole UserDefaults arrays | `../docs/glas.sh-results.txt:237` | 08 | Not started |

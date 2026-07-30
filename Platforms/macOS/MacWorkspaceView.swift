@@ -1,5 +1,7 @@
 #if os(macOS)
 import AppKit
+import Observation
+import RealityKitContent
 import SwiftUI
 
 struct MacWorkspaceSceneRoot: View {
@@ -15,6 +17,175 @@ struct MacWorkspaceSceneRoot: View {
 }
 
 struct MacWorkspaceView: View {
+    @State private var windowController: MacWorkspaceWindowController
+    @State private var secureKeyboardEntry = MacSecureKeyboardEntry.shared
+    @State private var terminalWindow: NSWindow?
+
+    @Environment(SessionManager.self) private var sessionManager
+    @Environment(SettingsManager.self) private var settingsManager
+    @Environment(\.openWindow) private var openWindow
+
+    init(request: MacWorkspaceLaunchRequest) {
+        _windowController = State(
+            initialValue: MacWorkspaceWindowController(request: request)
+        )
+    }
+
+    var body: some View {
+        let selected = windowController.selectedTab
+        let identity = selected.windowIdentity(
+            servers: sessionManager.serverManager.servers
+        )
+
+        TabView(selection: selectedTabBinding) {
+            ForEach(windowController.tabs, id: \.workspaceID) { controller in
+                let tabIdentity = controller.windowIdentity(
+                    servers: sessionManager.serverManager.servers
+                )
+                Tab(value: controller.workspaceID) {
+                    MacWorkspaceTabContent(
+                        controller: controller,
+                        onNewTab: addTab,
+                        onCloseEmptyTab: { closeTab(controller.workspaceID) }
+                    )
+                } label: {
+                    Label {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(tabIdentity.title)
+                                .lineLimit(1)
+                            if let subtitle = tabIdentity.subtitle {
+                                Text(subtitle)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    } icon: {
+                        Image(systemName: "apple.terminal")
+                            .foregroundStyle(controller.workgroupColor?.color ?? .secondary)
+                    }
+                }
+                .accessibilityLabel(tabIdentity.title)
+                .accessibilityValue(tabIdentity.subtitle ?? "")
+                .accessibilityIdentifier(
+                    "mac-workspace-tab-\(controller.workspaceID.uuidString.lowercased())"
+                )
+            }
+        }
+        .tabViewStyle(.sidebarAdaptable)
+        .accessibilityIdentifier("mac-workspace-tabs")
+        .frame(minWidth: 720, minHeight: 460)
+        .containerBackground(.clear, for: .window)
+        .navigationTitle(identity.title)
+        .navigationSubtitle(identity.subtitle ?? "")
+        .background {
+            MacTerminalWindowReader(
+                tabbingIdentifier: "sh.glas.workspace.\(windowController.windowID.uuidString)",
+                onWindow: { window in
+                    terminalWindow = window
+                    window.title = identity.title
+                    window.subtitle = identity.subtitle ?? ""
+                },
+                onClose: {
+                    windowController.closeAllSessions(sessionManager: sessionManager)
+                    for tab in windowController.tabs {
+                        secureKeyboardEntry.disable(for: tab.workspaceID)
+                    }
+                },
+                shouldConfirmClose: {
+                    settingsManager.confirmBeforeClosing && !windowController.isEmpty
+                }
+            )
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button("New Terminal Tab", systemImage: "plus", action: addTab)
+                    .help("New Terminal Tab")
+                    .disabled(!windowController.canAddTab)
+                    .accessibilityIdentifier("mac-workspace-new-tab")
+            }
+
+            if windowController.canTransferSelectedTab {
+                ToolbarItem(id: MacTerminalToolbarItemID.tabActions) {
+                    Menu("Tab Actions", systemImage: "ellipsis.circle") {
+                        Button("Move Tab to New Window", systemImage: "macwindow.badge.plus") {
+                            moveSelectedTabToNewWindow()
+                        }
+                    }
+                    .help("Tab Actions")
+                }
+                .macOverflowFirstWhenCompact()
+            }
+
+            ToolbarItem(id: MacTerminalToolbarItemID.workspaceTools) {
+                HStack {
+                    Button("New Local Pane", systemImage: "rectangle.split.2x1") {
+                        selected.addPane(intent: .local, axis: .horizontal)
+                    }
+                    .disabled(!selected.canAddPane)
+                    .accessibilityIdentifier("mac-workspace-new-local-pane")
+
+                    Button("Connect Host", systemImage: "network") {
+                        selected.requestSSHPane(axis: .horizontal)
+                    }
+                    .disabled(!selected.canAddPane)
+                    .accessibilityIdentifier("mac-workspace-connect-host")
+
+                    Button(
+                        "Secure Keyboard Entry",
+                        systemImage: secureKeyboardEntry.isEnabled(for: selected.workspaceID)
+                            ? "lock.fill"
+                            : "lock.open"
+                    ) {
+                        secureKeyboardEntry.toggle(for: selected.workspaceID)
+                    }
+                    .disabled(selected.focusedPaneID == nil)
+                    .accessibilityIdentifier("mac-workspace-secure-keyboard-entry")
+                }
+                .padding(.horizontal, 6)
+            }
+            .macOverflowFirstWhenCompact()
+        }
+        .toolbarBackground(.regularMaterial, for: .windowToolbar)
+        .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
+        .focusedSceneValue(
+            \.macNewWorkspaceTabAction,
+            MacNewWorkspaceTabAction(
+                isEnabled: windowController.canAddTab,
+                addTab
+            )
+        )
+    }
+
+    private var selectedTabBinding: Binding<UUID> {
+        Binding(
+            get: { windowController.selectedTabID },
+            set: { windowController.select($0) }
+        )
+    }
+
+    private func addTab() {
+        windowController.addTab()
+    }
+
+    private func closeTab(_ workspaceID: UUID) {
+        let closesWindow = windowController.removeTab(
+            workspaceID,
+            sessionManager: sessionManager
+        )
+        secureKeyboardEntry.disable(for: workspaceID)
+        if closesWindow {
+            terminalWindow?.performClose(nil)
+        }
+    }
+
+    private func moveSelectedTabToNewWindow() {
+        guard let request = windowController.transferSelectedTab() else { return }
+        openWindow(id: "workspace", value: request)
+    }
+}
+
+private struct MacWorkspaceTabContent: View {
     @State private var controller: MacWorkspaceController
     @State private var secureKeyboardEntry = MacSecureKeyboardEntry.shared
     @State private var persistentStateReady = false
@@ -24,38 +195,26 @@ struct MacWorkspaceView: View {
     @Environment(SettingsManager.self) private var settingsManager
     @Environment(\.openWindow) private var openWindow
 
-    init(request: MacWorkspaceLaunchRequest) {
-        _controller = State(initialValue: MacWorkspaceController(request: request))
+    private let onNewTab: () -> Void
+    private let onCloseEmptyTab: () -> Void
+
+    init(
+        controller: MacWorkspaceController,
+        onNewTab: @escaping () -> Void,
+        onCloseEmptyTab: @escaping () -> Void
+    ) {
+        _controller = State(initialValue: controller)
+        self.onNewTab = onNewTab
+        self.onCloseEmptyTab = onCloseEmptyTab
     }
 
     var body: some View {
         workspaceContent
-            .frame(minWidth: 720, minHeight: 460)
-            .background(.clear)
-            .background {
-                MacTerminalWindowReader(
-                    tabbingIdentifier: "sh.glas.workspace",
-                    onWindow: { window in
-                        window.title = controller.windowTitle
-                        MacWorkspaceWindowRegistry.shared.register(
-                            window,
-                            workspaceID: controller.workspaceID
-                        )
-                    },
-                    onClose: {
-                        controller.closeAllSessions(sessionManager: sessionManager)
-                        secureKeyboardEntry.disable(for: controller.workspaceID)
-                        MacWorkspaceWindowRegistry.shared.unregister(controller.workspaceID)
-                    },
-                    shouldConfirmClose: {
-                        settingsManager.confirmBeforeClosing && !controller.isEmpty
-                    }
-                )
-            }
-            .navigationTitle(controller.windowTitle)
-            .toolbar { workspaceToolbar }
+            .frame(minHeight: 460)
+            .containerBackground(.clear, for: .window)
+            .toolbarBackground(.regularMaterial, for: .windowToolbar)
+            .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
             .focusedSceneValue(\.macWorkspaceActions, focusedActions)
-            .focusedSceneValue(\.macNewWorkspaceTabAction, newWorkspaceTabAction)
             .sheet(isPresented: sshPickerPresented) { sshPicker }
             .alert(
                 "Secure Keyboard Entry",
@@ -141,21 +300,26 @@ struct MacWorkspaceView: View {
         let isFocused = controller.focusedPaneID == pane.id
         switch pane.intent.kind {
         case .local:
+            let runtime = controller.localRuntime(for: pane.id)
+            let recorder = controller.recorder(for: pane.id)
             MacLocalTerminalPaneView(
+                runtime: runtime,
+                recorder: recorder,
                 workspaceID: controller.workspaceID,
                 isFocused: isFocused,
                 showsPaneChrome: showsPaneChrome,
                 findRequestNonce: findNonce(for: pane.id),
                 claimStartupCommand: { controller.claimStartupCommand(for: pane.id) },
                 onFocus: { controller.focus(pane.id) },
-                onNewTerminalTab: { newWorkspaceTabAction() },
                 onDisconnect: {
                     let closesWorkspace = controller.state.root?.panes.count == 1
                     controller.removePane(pane.id, sessionManager: sessionManager)
                     if closesWorkspace {
-                        MacWorkspaceWindowRegistry.shared.close(controller.workspaceID)
+                        onCloseEmptyTab()
                     }
-                }
+                },
+                hostModel: runtime.model,
+                processState: runtime.processState
             )
         case .ssh:
             if !persistentStateReady {
@@ -166,8 +330,10 @@ struct MacWorkspaceView: View {
                 TerminalWindowView(
                     session: session,
                     ownsSessionLifecycle: false,
+                    isTerminalActive: isFocused,
+                    showsMacPaneChrome: showsPaneChrome,
                     externalSearchRequestNonce: findNonce(for: pane.id),
-                    onNewTerminalTab: { newWorkspaceTabAction() },
+                    onNewTerminalTab: onNewTab,
                     onSessionRequestedClose: {
                         controller.disconnectSSHPane(
                             pane.id,
@@ -176,9 +342,11 @@ struct MacWorkspaceView: View {
                     }
                 )
                 .overlay {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(isFocused ? Color.accentColor : .clear, lineWidth: 2)
-                        .allowsHitTesting(false)
+                    if showsPaneChrome {
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(isFocused ? Color.accentColor : .clear, lineWidth: 2)
+                            .allowsHitTesting(false)
+                    }
                 }
                 .contentShape(Rectangle())
                 .simultaneousGesture(TapGesture().onEnded { controller.focus(pane.id) })
@@ -277,43 +445,6 @@ struct MacWorkspaceView: View {
             }
     }
 
-    @ToolbarContentBuilder
-    private var workspaceToolbar: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            HStack(spacing: 6) {
-                if let color = controller.workgroupColor?.color {
-                    Capsule(style: .continuous)
-                        .fill(color)
-                        .frame(width: 3, height: 18)
-                    Circle()
-                        .fill(color)
-                        .frame(width: 8, height: 8)
-                }
-                Image(systemName: "apple.terminal")
-                    .imageScale(.small)
-                    .foregroundStyle(.secondary)
-            }
-            .accessibilityLabel(controller.windowTitle)
-        }
-        .sharedBackgroundVisibility(.hidden)
-        ToolbarItemGroup {
-            Button("New Local Pane", systemImage: "rectangle.split.2x1") {
-                controller.addPane(intent: .local, axis: .horizontal)
-            }
-            .disabled(!controller.canAddPane)
-
-            Button("Connect Host", systemImage: "network") {
-                controller.requestSSHPane(axis: .horizontal)
-            }
-            .disabled(!controller.canAddPane)
-
-            Button("Secure Keyboard Entry", systemImage: secureKeyboardEntry.isEnabled(for: controller.workspaceID) ? "lock.fill" : "lock.open") {
-                secureKeyboardEntry.toggle(for: controller.workspaceID)
-            }
-            .disabled(controller.focusedPaneID == nil)
-        }
-    }
-
     private var focusedActions: MacWorkspaceFocusedActions {
         MacWorkspaceFocusedActions(
             workspaceID: controller.workspaceID,
@@ -335,17 +466,6 @@ struct MacWorkspaceView: View {
                 secureKeyboardEntry.toggle(for: controller.workspaceID)
             }
         )
-    }
-
-    private var newWorkspaceTabAction: MacNewWorkspaceTabAction {
-        MacNewWorkspaceTabAction {
-            let request = MacWorkspaceLaunchRequest(startsEmpty: true)
-            MacWorkspaceWindowRegistry.shared.prepareTab(
-                sourceWorkspaceID: controller.workspaceID,
-                destinationWorkspaceID: request.workspaceID
-            )
-            openWindow(id: "workspace", value: request)
-        }
     }
 
     private func findNonce(for paneID: UUID) -> UInt64 {
@@ -408,6 +528,26 @@ struct MacWorkspaceView: View {
     }
 }
 
+extension ToolbarContent {
+    @ToolbarContentBuilder
+    func macOverflowFirstWhenCompact() -> some ToolbarContent {
+        if #available(macOS 26.1, *) {
+            visibilityPriority(.low)
+        } else {
+            self
+        }
+    }
+
+    @ToolbarContentBuilder
+    func macKeepVisibleWhenCompact() -> some ToolbarContent {
+        if #available(macOS 26.1, *) {
+            visibilityPriority(.high)
+        } else {
+            self
+        }
+    }
+}
+
 private struct MacWorkspaceLayout {
     struct Handle: Identifiable {
         let id: UUID
@@ -455,122 +595,4 @@ private struct MacWorkspaceLayout {
     }
 }
 
-@MainActor
-final class MacWorkspaceWindowRegistry {
-    static let shared = MacWorkspaceWindowRegistry()
-    private static let maximumPendingTabs = 32
-    private static let maximumPendingBatches = 32
-
-    private var windows: [UUID: WeakWindow] = [:]
-    private var pendingTabs: [UUID: WeakWindow] = [:]
-    private var pendingBatches: [UUID: PendingBatch] = [:]
-    private var batchIDByWorkspaceID: [UUID: UUID] = [:]
-    var pendingTabCount: Int { pendingTabs.count }
-    var pendingBatchCount: Int { pendingBatches.count }
-
-    func register(_ window: NSWindow, workspaceID: UUID) {
-        windows[workspaceID] = WeakWindow(window)
-        if let batchID = batchIDByWorkspaceID[workspaceID] {
-            assembleBatchIfReady(batchID)
-        }
-        guard let source = pendingTabs.removeValue(forKey: workspaceID)?.value,
-              source !== window,
-              source.isVisible else { return }
-        source.addTabbedWindow(window, ordered: .above)
-        window.makeKeyAndOrderFront(nil)
-    }
-
-    func prepareTab(sourceWorkspaceID: UUID, destinationWorkspaceID: UUID) {
-        guard let sourceWindow = windows[sourceWorkspaceID]?.value else {
-            pendingTabs.removeValue(forKey: destinationWorkspaceID)
-            return
-        }
-        prepareTab(sourceWindow: sourceWindow, destinationWorkspaceID: destinationWorkspaceID)
-    }
-
-    func prepareTab(sourceWindow: NSWindow, destinationWorkspaceID: UUID) {
-        pendingTabs = pendingTabs.filter { $0.value.value != nil }
-        if pendingTabs.count >= Self.maximumPendingTabs,
-           let oldestDeterministicKey = pendingTabs.keys.sorted(by: {
-               $0.uuidString < $1.uuidString
-           }).first {
-            pendingTabs.removeValue(forKey: oldestDeterministicKey)
-        }
-        pendingTabs[destinationWorkspaceID] = WeakWindow(sourceWindow)
-    }
-
-    func prepareTabBatch(workspaceIDs: [UUID]) {
-        var seen = Set<UUID>()
-        let orderedIDs = workspaceIDs.filter { seen.insert($0).inserted }
-        guard orderedIDs.count > 1,
-              orderedIDs.count <= MacWorkspaceRestorationState.maximumPaneCount else { return }
-
-        for workspaceID in orderedIDs {
-            if let existingBatchID = batchIDByWorkspaceID[workspaceID] {
-                cancelBatch(existingBatchID)
-            }
-        }
-        if pendingBatches.count >= Self.maximumPendingBatches,
-           let oldestBatchID = pendingBatches.keys.sorted(by: {
-               $0.uuidString < $1.uuidString
-           }).first {
-            cancelBatch(oldestBatchID)
-        }
-
-        let batchID = UUID()
-        pendingBatches[batchID] = PendingBatch(orderedWorkspaceIDs: orderedIDs)
-        for workspaceID in orderedIDs {
-            batchIDByWorkspaceID[workspaceID] = batchID
-        }
-        assembleBatchIfReady(batchID)
-    }
-
-    func unregister(_ workspaceID: UUID) {
-        let closingWindow = windows.removeValue(forKey: workspaceID)?.value
-        if let batchID = batchIDByWorkspaceID[workspaceID] {
-            cancelBatch(batchID)
-        }
-        pendingTabs.removeValue(forKey: workspaceID)
-        pendingTabs = pendingTabs.filter { _, source in
-            guard let sourceWindow = source.value else { return false }
-            return sourceWindow !== closingWindow
-        }
-    }
-
-    func close(_ workspaceID: UUID) {
-        windows[workspaceID]?.value?.performClose(nil)
-    }
-
-    private func assembleBatchIfReady(_ batchID: UUID) {
-        guard let batch = pendingBatches[batchID] else { return }
-        let orderedWindows = batch.orderedWorkspaceIDs.compactMap { windows[$0]?.value }
-        guard orderedWindows.count == batch.orderedWorkspaceIDs.count,
-              let firstWindow = orderedWindows.first else { return }
-
-        cancelBatch(batchID)
-        // AppKit inserts `.above` immediately after the receiver. Reverse
-        // assembly therefore preserves the workgroup's saved tab order.
-        for window in orderedWindows.dropFirst().reversed() where window !== firstWindow {
-            firstWindow.addTabbedWindow(window, ordered: .above)
-        }
-        firstWindow.makeKeyAndOrderFront(nil)
-    }
-
-    private func cancelBatch(_ batchID: UUID) {
-        guard let batch = pendingBatches.removeValue(forKey: batchID) else { return }
-        for workspaceID in batch.orderedWorkspaceIDs
-        where batchIDByWorkspaceID[workspaceID] == batchID {
-            batchIDByWorkspaceID.removeValue(forKey: workspaceID)
-        }
-    }
-
-    private struct PendingBatch {
-        let orderedWorkspaceIDs: [UUID]
-    }
-
-    private final class WeakWindow {
-        weak var value: NSWindow?
-        init(_ value: NSWindow) { self.value = value }
-    }
-}
 #endif
