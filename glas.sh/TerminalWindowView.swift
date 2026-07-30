@@ -46,12 +46,16 @@ struct TerminalWindowView: View {
     /// Standalone terminal windows own their session. An app-level workspace or
     /// workgroup retains ownership so view identity and tab moves cannot disconnect SSH.
     var ownsSessionLifecycle = true
-    /// A visionOS workgroup presents one shared identity ornament for all tabs.
-    /// Standalone terminal windows keep the per-connection ornament.
+    /// Native workgroup tabs provide connection identity. Standalone visionOS
+    /// terminal windows keep the per-connection ornament.
     var showsConnectionOrnament = true
     /// A workgroup can retain several terminal views so their emulator state is
     /// preserved. Only the selected view may own keyboard focus.
     var isTerminalActive = true
+    /// Split workspaces retain pane separation; a single terminal uses the
+    /// square edge-to-edge canvas provided by the native window. This value is
+    /// harmless on other platforms and keeps the shared initializer portable.
+    var showsMacPaneChrome = false
     /// Workspace command routing increments this value to present the existing
     /// terminal search UI without duplicating search state outside this view.
     var externalSearchRequestNonce: UInt64 = 0
@@ -81,7 +85,7 @@ struct TerminalWindowView: View {
     @State private var showingErrorCard = false
     @State private var aiAssistant = AIAssistant()
     @State private var terminalSettingsTab: TerminalSettingsModalTab = .terminal
-    @StateObject private var terminalHostModel = SwiftTermHostModel()
+    @ObservedObject private var terminalHostModel: SwiftTermHostModel
     @State private var errorCheckTask: Task<Void, Never>?
     @State private var terminalAudioManager = TerminalAudioManager()
     @State private var notificationManager = NotificationManager()
@@ -105,6 +109,27 @@ struct TerminalWindowView: View {
     #endif
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+
+    init(
+        session: TerminalSession,
+        ownsSessionLifecycle: Bool = true,
+        showsConnectionOrnament: Bool = true,
+        isTerminalActive: Bool = true,
+        showsMacPaneChrome: Bool = false,
+        externalSearchRequestNonce: UInt64 = 0,
+        onNewTerminalTab: (() -> Void)? = nil,
+        onSessionRequestedClose: (() -> Void)? = nil
+    ) {
+        self.session = session
+        self.ownsSessionLifecycle = ownsSessionLifecycle
+        self.showsConnectionOrnament = showsConnectionOrnament
+        self.isTerminalActive = isTerminalActive
+        self.showsMacPaneChrome = showsMacPaneChrome
+        self.externalSearchRequestNonce = externalSearchRequestNonce
+        self.onNewTerminalTab = onNewTerminalTab
+        self.onSessionRequestedClose = onSessionRequestedClose
+        _terminalHostModel = ObservedObject(wrappedValue: session.terminalHostModel)
+    }
     
     var body: some View {
         terminalWindowIdentity
@@ -131,47 +156,16 @@ struct TerminalWindowView: View {
     @ViewBuilder
     private var terminalWindowIdentity: some View {
         #if os(macOS)
-        if ownsSessionLifecycle {
-            terminalFocusTracking
-                .navigationTitle(session.server.name)
-                .navigationSubtitle("\(session.server.username)@\(session.server.host):\(session.server.port)")
-                .toolbar {
-                    ToolbarItem(placement: .navigation) {
-                        Image(systemName: "apple.terminal")
-                            .imageScale(.small)
-                            .foregroundStyle(.secondary)
-                            .accessibilityLabel("SSH terminal session")
-                    }
-                    .sharedBackgroundVisibility(.hidden)
-                }
-                .windowToolbarFullScreenVisibility(.onHover)
-                .background {
-                    MacTerminalWindowAccessor { window in
-                        if macTerminalWindow !== window {
-                            macTerminalWindow = window
-                            isMacFullScreen = window.styleMask.contains(.fullScreen)
-                        }
-                    }
-                }
-                .focusedSceneValue(
-                    \.macNewWorkspaceTabAction,
-                    MacNewWorkspaceTabAction(openMacNewTerminalTab)
-                )
-                .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) {
-                    updateMacFullScreenState(from: $0, isFullScreen: true)
-                }
-                .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) {
-                    updateMacFullScreenState(from: $0, isFullScreen: false)
-                }
-        } else {
-            terminalFocusTracking
-                .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) {
-                    updateMacFullScreenState(from: $0, isFullScreen: true)
-                }
-                .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) {
-                    updateMacFullScreenState(from: $0, isFullScreen: false)
-                }
-        }
+        terminalFocusTracking
+            .toolbar {
+                macTerminalToolbar
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) {
+                updateMacFullScreenState(from: $0, isFullScreen: true)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) {
+                updateMacFullScreenState(from: $0, isFullScreen: false)
+            }
         #else
         terminalFocusTracking
         #endif
@@ -284,40 +278,8 @@ struct TerminalWindowView: View {
                 }
         }
         #elseif os(macOS)
-        VStack(spacing: 0) {
-            if !ownsSessionLifecycle {
-                connectionLabel
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background {
-                        MacTerminalVisualEffect(
-                            amount: 1,
-                            material: .titlebar,
-                            state: .followsWindowActiveState
-                        )
-                    }
-                Divider()
-            }
-            terminalContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            bottomStatusBar
-                .controlSize(.small)
-                .glassEffect(.regular, in: .capsule)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .frame(maxWidth: .infinity)
-                .background {
-                    MacTerminalVisualEffect(
-                        amount: 1,
-                        material: .titlebar,
-                        state: .followsWindowActiveState
-                    )
-                }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        terminalContent
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         #else
         VStack(spacing: 0) {
             if !ownsSessionLifecycle && showsConnectionOrnament {
@@ -443,9 +405,10 @@ struct TerminalWindowView: View {
 
     private func handleTerminalDisappear() {
         terminalHostModel.stopFocusMaintenance()
-        if ownsSessionLifecycle {
-            sessionManager.closeSession(session)
-        }
+        // SwiftUI may temporarily remove adaptive tab content during sidebar,
+        // selection, size-class, and scene transitions. Session teardown is an
+        // explicit close operation owned by closeTerminalSession or the parent
+        // workspace; view disappearance is never lifecycle authority.
         #if os(visionOS)
         if isImmersiveFocusActive {
             Task { await dismissImmersiveSpace() }
@@ -466,21 +429,6 @@ struct TerminalWindowView: View {
     }
 
     #if os(macOS)
-    private func openMacNewTerminalTab() {
-        if let onNewTerminalTab {
-            onNewTerminalTab()
-            return
-        }
-        let request = MacWorkspaceLaunchRequest(startsEmpty: true)
-        if let macTerminalWindow {
-            MacWorkspaceWindowRegistry.shared.prepareTab(
-                sourceWindow: macTerminalWindow,
-                destinationWorkspaceID: request.workspaceID
-            )
-        }
-        openWindow(id: "workspace", value: request)
-    }
-
     private func toggleMacFocusMode() {
         guard let window = macTerminalWindow ?? NSApp.keyWindow else { return }
         macTerminalWindow = window
@@ -610,24 +558,8 @@ struct TerminalWindowView: View {
             } else {
                 terminalHostModel.stopFocusMaintenance()
             }
-            if session.terminalInputNonce > 0 {
-                let chunks = session.drainTerminalInputChunks()
-                if !chunks.isEmpty {
-                    let data = chunks.reduce(into: Data()) { $0.append($1) }
-                    ingestAfterCurrentViewUpdate(
-                        data,
-                        nonce: session.terminalInputNonce
-                    )
-                }
-            }
         }
-        .onChange(of: session.terminalInputNonce) { _, nonce in
-            let chunks = session.drainTerminalInputChunks()
-            if !chunks.isEmpty {
-                let data = chunks.reduce(into: Data()) { $0.append($1) }
-                ingestAfterCurrentViewUpdate(data, nonce: nonce)
-            }
-
+        .onChange(of: session.terminalInputNonce) { _, _ in
             // Debounced error detection for AI explainer
             if aiAssistant.isAvailable {
                 errorCheckTask?.cancel()
@@ -685,16 +617,6 @@ struct TerminalWindowView: View {
             aiAssistant.checkAvailability()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    /// SwiftTerm synchronously reports scroll and semantic updates while it
-    /// ingests a chunk. Schedule the ordered feed after SwiftUI completes the
-    /// current appearance/change transaction so those model publications do
-    /// not occur from inside a view update.
-    private func ingestAfterCurrentViewUpdate(_ data: Data, nonce: UInt64) {
-        DispatchQueue.main.async {
-            terminalHostModel.ingest(data: data, nonce: nonce)
-        }
     }
 
     private var swiftTermTheme: SwiftTermTheme {
@@ -774,7 +696,7 @@ struct TerminalWindowView: View {
 
     private var terminalCanvasCornerRadius: CGFloat {
         #if os(macOS)
-        ownsSessionLifecycle ? 0 : 18
+        showsMacPaneChrome ? 18 : 0
         #else
         18
         #endif
@@ -1065,7 +987,10 @@ struct TerminalWindowView: View {
             openConnections: { showConnections() },
             openMacTab: {
                 #if os(macOS)
-                openMacNewTerminalTab()
+                openWindow(
+                    id: "workspace",
+                    value: MacWorkspaceLaunchRequest(startsEmpty: true)
+                )
                 #endif
             }
         )
@@ -1104,7 +1029,34 @@ struct TerminalWindowView: View {
         #endif
     }
 
+    private var showsFooterNewTerminalAction: Bool {
+        #if os(macOS)
+        // macOS tab creation belongs to the native workspace shell so the
+        // title bar exposes exactly one New Terminal Tab action.
+        false
+        #else
+        showsFooterWorkspaceNavigationActions
+        #endif
+    }
+
     // MARK: - Bottom Status
+
+    #if os(macOS)
+    @ToolbarContentBuilder
+    private var macTerminalToolbar: some ToolbarContent {
+        if isTerminalActive {
+            ToolbarItem(id: MacTerminalToolbarItemID.terminalTools) {
+                HStack(spacing: 8) {
+                    bottomStatusBarContents(compact: true)
+                }
+                .padding(.horizontal, 6)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("mac-terminal-tools")
+            }
+            .macKeepVisibleWhenCompact()
+        }
+    }
+    #endif
 
     private var bottomStatusBar: some View {
         #if os(macOS) || os(iOS)
@@ -1154,7 +1106,9 @@ struct TerminalWindowView: View {
                 } label: {
                     Image(systemName: "server.rack")
                 }
+#if !os(macOS)
                 .buttonStyle(.borderless)
+#endif
                 .accessibilityLabel("Connections")
                 .help("Connections")
             }
@@ -1165,7 +1119,9 @@ struct TerminalWindowView: View {
                 } label: {
                     Image(systemName: "sparkles")
                 }
+#if !os(macOS)
                 .buttonStyle(.borderless)
+#endif
                 .accessibilityLabel("AI Assistant")
                 .help("AI Assistant")
             }
@@ -1175,7 +1131,9 @@ struct TerminalWindowView: View {
             } label: {
                 Image(systemName: "folder.fill")
             }
+#if !os(macOS)
             .buttonStyle(.borderless)
+#endif
             .disabled(session.state != .connected)
             .accessibilityLabel("SFTP Browser")
             .help("SFTP Browser")
@@ -1203,20 +1161,22 @@ struct TerminalWindowView: View {
             } label: {
                 Image(systemName: isMacFullScreen ? "moon.fill" : "moon")
             }
-            .buttonStyle(.borderless)
             .accessibilityLabel(isMacFullScreen ? "Exit Focus Mode" : "Focus Mode")
             .help(isMacFullScreen ? "Exit Focus Mode" : "Focus Mode")
             #endif
 
             recordingIndicator
 
-            if showsFooterWorkspaceNavigationActions {
+            if showsFooterNewTerminalAction {
                 Button {
                     openNewTerminalFromFooter()
                 } label: {
                     Image(systemName: "plus")
                 }
+#if !os(macOS)
                 .buttonStyle(.borderless)
+#endif
+                .accessibilityIdentifier("terminal-footer-new-tab")
                 .accessibilityLabel(newTerminalAccessibilityLabel)
                 .help(newTerminalAccessibilityLabel)
             }
@@ -1335,8 +1295,10 @@ struct TerminalWindowView: View {
                 Image(systemName: "gearshape")
             }
             .menuOrder(.fixed)
+#if !os(macOS)
             .menuStyle(.button)
             .buttonStyle(.borderless)
+#endif
             .help("Tools")
             .accessibilityLabel("Tools menu")
     }

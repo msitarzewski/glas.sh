@@ -119,14 +119,18 @@ struct AddServerView: View {
                 Section("Connection") {
                     TextField("Display Name", text: $name)
                         .focused($focusedField, equals: .name)
+                        .accessibilityIdentifier("add-server-display-name")
                     TextField("Host", text: $host)
                         .terminalTextInputDefaults()
                         .focused($focusedField, equals: .host)
+                        .accessibilityIdentifier("add-server-host")
                     TextField("Port", text: $port)
                         .focused($focusedField, equals: .port)
+                        .accessibilityIdentifier("add-server-port")
                     TextField("Username", text: $username)
                         .terminalTextInputDefaults()
                         .focused($focusedField, equals: .username)
+                        .accessibilityIdentifier("add-server-username")
                 }
 
                 Section("Authentication") {
@@ -140,6 +144,7 @@ struct AddServerView: View {
                         SecureField("Password", text: $password)
                             .textContentType(.init(rawValue: ""))
                             .focused($focusedField, equals: .password)
+                            .accessibilityIdentifier("add-server-password")
                     } else if authMethod == .sshKey {
                         if settingsManager.sshKeys.isEmpty {
                             Text("No SSH keys available. Add one to continue.")
@@ -244,6 +249,7 @@ struct AddServerView: View {
                                 TextField("Add tag", text: $newTag)
                                     .textFieldStyle(.plain)
                                     .frame(width: 80)
+                                    .accessibilityIdentifier("add-server-tag")
                                     .onSubmit {
                                         commitPendingTag()
                                     }

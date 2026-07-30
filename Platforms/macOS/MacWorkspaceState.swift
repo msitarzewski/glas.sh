@@ -1,6 +1,32 @@
 #if os(macOS)
 import Foundation
 
+enum MacWorkspaceChromeText {
+    static func sanitize(_ value: String?, maximumLength: Int) -> String? {
+        guard let value else { return nil }
+        let safeScalars = value.unicodeScalars.map { scalar -> String in
+            if CharacterSet.controlCharacters.contains(scalar) || isBidirectionalControl(scalar) {
+                return " "
+            }
+            return String(scalar)
+        }.joined()
+        let singleLine = safeScalars
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        guard !singleLine.isEmpty else { return nil }
+        return String(singleLine.prefix(maximumLength))
+    }
+
+    private static func isBidirectionalControl(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x061C, 0x200E, 0x200F, 0x202A...0x202E, 0x2066...0x2069:
+            true
+        default:
+            false
+        }
+    }
+}
+
 enum MacWorkspaceSplitAxis: String, Codable, CaseIterable, Hashable, Sendable {
     case horizontal
     case vertical
@@ -265,9 +291,10 @@ struct MacWorkspaceRestorationState: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
-struct MacWorkspaceLaunchRequest: Codable, Hashable, Sendable {
+struct MacWorkspaceTabRequest: Codable, Hashable, Sendable, Identifiable {
     static let maximumDisplayTextLength = 80
 
+    var id: UUID { workspaceID }
     let workspaceID: UUID
     let startsEmpty: Bool
     let initialPaneIntent: MacWorkspacePaneIntent?
@@ -327,10 +354,175 @@ struct MacWorkspaceLaunchRequest: Codable, Hashable, Sendable {
     }
 
     private static func normalizedDisplayText(_ value: String?) -> String? {
-        guard let value else { return nil }
-        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty, !normalized.utf8.contains(0) else { return nil }
-        return String(normalized.prefix(maximumDisplayTextLength))
+        MacWorkspaceChromeText.sanitize(
+            value,
+            maximumLength: maximumDisplayTextLength
+        )
+    }
+}
+
+struct MacWorkspaceLaunchRequest: Codable, Hashable, Sendable {
+    let windowID: UUID
+    let tabs: [MacWorkspaceTabRequest]
+    /// Opaque runtime handoff for “Move Tab to New Window.” The controller and
+    /// its live sessions never enter the Codable scene value.
+    let transferredTabTicketID: UUID?
+
+    var workspaceID: UUID { tabs[0].workspaceID }
+    var startsEmpty: Bool { tabs[0].startsEmpty }
+    var initialPaneIntent: MacWorkspacePaneIntent? { tabs[0].initialPaneIntent }
+    var workgroupID: UUID? { tabs[0].workgroupID }
+    var workgroupName: String? { tabs[0].workgroupName }
+    var workgroupColor: ServerColorTag? { tabs[0].workgroupColor }
+    var tabLabel: String? { tabs[0].tabLabel }
+    var startupTicketID: UUID? { tabs[0].startupTicketID }
+    var liveSessionTicketID: UUID? { tabs[0].liveSessionTicketID }
+
+    init(
+        windowID: UUID = UUID(),
+        tabs: [MacWorkspaceTabRequest],
+        transferredTabTicketID: UUID? = nil
+    ) {
+        let bounded = Array(
+            tabs.prefix(MacWorkspaceWindowRestorationState.maximumTabCount)
+        )
+        self.windowID = windowID
+        self.tabs = bounded.isEmpty ? [MacWorkspaceTabRequest(startsEmpty: true)] : bounded
+        self.transferredTabTicketID = transferredTabTicketID
+    }
+
+    init(
+        workspaceID: UUID = UUID(),
+        startsEmpty: Bool = false,
+        initialPaneIntent: MacWorkspacePaneIntent? = nil,
+        workgroupID: UUID? = nil,
+        workgroupName: String? = nil,
+        workgroupColor: ServerColorTag? = nil,
+        tabLabel: String? = nil,
+        startupTicketID: UUID? = nil,
+        liveSessionTicketID: UUID? = nil
+    ) {
+        self.init(
+            windowID: workspaceID,
+            tabs: [
+                MacWorkspaceTabRequest(
+                    workspaceID: workspaceID,
+                    startsEmpty: startsEmpty,
+                    initialPaneIntent: initialPaneIntent,
+                    workgroupID: workgroupID,
+                    workgroupName: workgroupName,
+                    workgroupColor: workgroupColor,
+                    tabLabel: tabLabel,
+                    startupTicketID: startupTicketID,
+                    liveSessionTicketID: liveSessionTicketID
+                )
+            ]
+        )
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if container.contains(.tabs), try !container.decodeNil(forKey: .tabs) {
+            var tabContainer = try container.nestedUnkeyedContainer(forKey: .tabs)
+            if let count = tabContainer.count,
+               count > MacWorkspaceWindowRestorationState.maximumTabCount {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .tabs,
+                    in: container,
+                    debugDescription: "A workspace window may contain at most \(MacWorkspaceWindowRestorationState.maximumTabCount) tabs."
+                )
+            }
+            var decodedTabs: [MacWorkspaceTabRequest] = []
+            decodedTabs.reserveCapacity(
+                min(
+                    tabContainer.count ?? MacWorkspaceWindowRestorationState.maximumTabCount,
+                    MacWorkspaceWindowRestorationState.maximumTabCount
+                )
+            )
+            while !tabContainer.isAtEnd {
+                guard decodedTabs.count < MacWorkspaceWindowRestorationState.maximumTabCount else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .tabs,
+                        in: container,
+                        debugDescription: "A workspace window may contain at most \(MacWorkspaceWindowRestorationState.maximumTabCount) tabs."
+                    )
+                }
+                decodedTabs.append(try tabContainer.decode(MacWorkspaceTabRequest.self))
+            }
+            guard !decodedTabs.isEmpty else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .tabs,
+                    in: container,
+                    debugDescription: "A workspace window requires at least one tab."
+                )
+            }
+            windowID = try container.decodeIfPresent(UUID.self, forKey: .windowID)
+                ?? decodedTabs[0].workspaceID
+            tabs = decodedTabs
+            transferredTabTicketID = try container.decodeIfPresent(
+                UUID.self,
+                forKey: .transferredTabTicketID
+            )
+            return
+        }
+
+        // Decode scene values created before one-window model-owned tabs.
+        let legacyTab = try MacWorkspaceTabRequest(from: decoder)
+        windowID = legacyTab.workspaceID
+        tabs = [legacyTab]
+        transferredTabTicketID = nil
+    }
+}
+
+struct MacWorkspaceTabDescriptor: Codable, Hashable, Sendable, Identifiable {
+    let id: UUID
+    let workgroupID: UUID?
+    let workgroupName: String?
+    let workgroupColor: ServerColorTag?
+    let tabLabel: String?
+
+    init(_ request: MacWorkspaceTabRequest) {
+        id = request.workspaceID
+        workgroupID = request.workgroupID
+        workgroupName = request.workgroupName
+        workgroupColor = request.workgroupColor
+        tabLabel = request.tabLabel
+    }
+
+    var request: MacWorkspaceTabRequest {
+        MacWorkspaceTabRequest(
+            workspaceID: id,
+            workgroupID: workgroupID,
+            workgroupName: workgroupName,
+            workgroupColor: workgroupColor,
+            tabLabel: tabLabel
+        )
+    }
+}
+
+struct MacWorkspaceWindowRestorationState: Codable, Equatable, Sendable {
+    static let currentSchemaVersion = 1
+    static let maximumTabCount = 32
+
+    let schemaVersion: Int
+    let tabs: [MacWorkspaceTabDescriptor]
+    let selectedTabID: UUID
+
+    init(tabs: [MacWorkspaceTabDescriptor], selectedTabID: UUID) {
+        schemaVersion = Self.currentSchemaVersion
+        self.tabs = tabs
+        self.selectedTabID = selectedTabID
+    }
+
+    func validated() -> MacWorkspaceWindowRestorationState? {
+        guard schemaVersion == Self.currentSchemaVersion,
+              !tabs.isEmpty,
+              tabs.count <= Self.maximumTabCount,
+              Set(tabs.map(\.id)).count == tabs.count,
+              tabs.contains(where: { $0.id == selectedTabID }) else {
+            return nil
+        }
+        return self
     }
 }
 
@@ -506,7 +698,7 @@ enum MacLiveSessionWorkspaceRouter {
     }
 }
 
-/// Builds one native-tab macOS terminal window from an ordered workgroup.
+/// Builds one model-owned tabbed macOS terminal window from an ordered workgroup.
 /// Callers remain responsible for filtering unavailable servers before launch.
 @MainActor
 enum MacWorkgroupLauncher {
@@ -519,9 +711,11 @@ enum MacWorkgroupLauncher {
         broker: MacStartupCommandBroker = .shared,
         openWindow: (MacWorkspaceLaunchRequest) -> Void
     ) -> [MacWorkspaceLaunchRequest] {
-        let boundedItems = Array(items.prefix(MacWorkspaceRestorationState.maximumPaneCount))
-        let requests = boundedItems.map { item in
-            MacWorkspaceLaunchRequest(
+        let boundedItems = Array(
+            items.prefix(MacWorkspaceWindowRestorationState.maximumTabCount)
+        )
+        let tabRequests = boundedItems.map { item in
+            MacWorkspaceTabRequest(
                 initialPaneIntent: item.intent,
                 workgroupID: workgroupID,
                 workgroupName: name,
@@ -530,11 +724,12 @@ enum MacWorkgroupLauncher {
                 startupTicketID: broker.issue(command: item.startupCommand)
             )
         }
-        MacWorkspaceWindowRegistry.shared.prepareTabBatch(
-            workspaceIDs: requests.map(\.workspaceID)
-        )
-        requests.forEach(openWindow)
-        return requests
+        guard !tabRequests.isEmpty else { return [] }
+        let request = MacWorkspaceLaunchRequest(tabs: tabRequests)
+        openWindow(request)
+        return tabRequests.map {
+            MacWorkspaceLaunchRequest(windowID: request.windowID, tabs: [$0])
+        }
     }
 }
 

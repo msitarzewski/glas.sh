@@ -401,6 +401,10 @@ class TerminalSession: Identifiable, Hashable {
 
     let id: UUID
     var server: ServerConfiguration
+    /// The terminal emulator belongs to the live session rather than any one
+    /// presentation. Adaptive tab/sidebar changes may reconstruct views, but
+    /// must not discard scrollback, search state, or pending terminal input.
+    let terminalHostModel = SwiftTermHostModel()
     
     var state: SessionState = .disconnected {
         didSet {
@@ -427,7 +431,6 @@ class TerminalSession: Identifiable, Hashable {
     // SSH Connection
     private var sshConnection: SSHConnection?
     private var pendingTerminalOutput = Data()
-    private var pendingTerminalInputChunks: [Data] = []
     private var terminalFlushTask: Task<Void, Never>?
     private var terminalFlushGeneration: UInt64 = 0
     private let terminalFlushInterval: Duration = .milliseconds(8)
@@ -842,16 +845,12 @@ class TerminalSession: Identifiable, Hashable {
         scheduleTerminalResizeDrainIfNeeded()
     }
 
-    func drainTerminalInputChunks() -> [Data] {
-        guard !pendingTerminalInputChunks.isEmpty else { return [] }
-        let chunks = pendingTerminalInputChunks
-        pendingTerminalInputChunks.removeAll(keepingCapacity: true)
-        return chunks
-    }
-
     private func emitTerminalChunk(_ data: Data) {
-        pendingTerminalInputChunks.append(data)
         terminalInputNonce &+= 1
+        // The emulator belongs to this live session. Feed it independently of
+        // view presence so adaptive tab/sidebar reconstruction cannot delay or
+        // duplicate remote output.
+        terminalHostModel.ingest(data: data, nonce: terminalInputNonce)
     }
 
     private func scheduleTerminalFlush() {

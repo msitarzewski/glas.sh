@@ -17,13 +17,16 @@ struct MacWorkspaceFocusedActions {
 
 @MainActor
 struct MacNewWorkspaceTabAction {
+    let isEnabled: Bool
     private let action: () -> Void
 
-    init(_ action: @escaping () -> Void) {
+    init(isEnabled: Bool, _ action: @escaping () -> Void) {
+        self.isEnabled = isEnabled
         self.action = action
     }
 
     func callAsFunction() {
+        guard isEnabled else { return }
         action()
     }
 }
@@ -71,6 +74,7 @@ struct MacWorkspaceCommands: Commands {
                 }
             }
             .keyboardShortcut("t", modifiers: .command)
+            .disabled(newWorkspaceTabAction?.isEnabled == false)
 
             Button("Connect Saved Host…") {
                 actions?.requestSSHPane(.horizontal)

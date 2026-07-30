@@ -9,6 +9,7 @@ import SwiftUI
 import Observation
 import WidgetKit
 import GlasSecretStore
+import RealityKitContent
 
 @MainActor
 @Observable
@@ -28,7 +29,7 @@ class SessionManager {
         case transient(ServerConfiguration)
     }
 
-    var sessions: [TerminalSession] = []
+    private(set) var sessions: [TerminalSession] = []
     private(set) var workgroups: [TerminalWorkgroup] = []
     let portForwardManager: PortForwardManager
     private let stopSessionForwards: (UUID) -> Void
@@ -377,6 +378,26 @@ class SessionManager {
         workgroups.first { $0.id == id }
     }
 
+    /// Resolves a workgroup's live sessions in the model's authoritative tab
+    /// order. Presentation layers must not reconstruct ordering from the global
+    /// session array.
+    func sessions(inWorkgroup workgroupID: UUID) -> [TerminalSession] {
+        guard let workgroup = workgroup(for: workgroupID) else { return [] }
+        return workgroup.sessionIDs.compactMap { sessionID in
+            session(for: sessionID)
+        }
+    }
+
+    /// The selected session is valid by construction after every workgroup
+    /// mutation. Returning it through SessionManager keeps adaptive views from
+    /// independently repairing selection.
+    func selectedSession(inWorkgroup workgroupID: UUID) -> TerminalSession? {
+        guard let selectedSessionID = workgroup(for: workgroupID)?.selectedSessionID else {
+            return nil
+        }
+        return session(for: selectedSessionID)
+    }
+
     @discardableResult
     func createWorkgroup(
         id: UUID = UUID(),
@@ -402,20 +423,130 @@ class SessionManager {
               workgroups[index].sessionIDs.count < LayoutPreset.maximumSessionCount else {
             return false
         }
-        workgroups[index].sessionIDs.append(session.id)
-        workgroups[index].selectedSessionID = session.id
+        var updated = workgroups[index]
+        updated.sessionIDs.append(session.id)
+        updated.selectedSessionID = session.id
+        workgroups[index] = updated
         return true
     }
 
-    func selectSession(_ sessionID: UUID, inWorkgroup workgroupID: UUID) {
+    @discardableResult
+    func selectSession(_ sessionID: UUID, inWorkgroup workgroupID: UUID) -> Bool {
         guard let index = workgroups.firstIndex(where: { $0.id == workgroupID }),
-              workgroups[index].sessionIDs.contains(sessionID) else { return }
-        workgroups[index].selectedSessionID = sessionID
+              workgroups[index].sessionIDs.contains(sessionID),
+              session(for: sessionID) != nil else { return false }
+        var updated = workgroups[index]
+        updated.selectedSessionID = sessionID
+        workgroups[index] = updated
+        return true
+    }
+
+    /// Moves one live session to its final zero-based tab index without
+    /// disturbing the selected session.
+    @discardableResult
+    func moveSession(
+        _ sessionID: UUID,
+        inWorkgroup workgroupID: UUID,
+        to destinationIndex: Int
+    ) -> Bool {
+        guard let index = workgroups.firstIndex(where: { $0.id == workgroupID }),
+              let sourceIndex = workgroups[index].sessionIDs.firstIndex(of: sessionID),
+              workgroups[index].sessionIDs.indices.contains(destinationIndex) else {
+            return false
+        }
+        guard sourceIndex != destinationIndex else { return true }
+        var updated = workgroups[index]
+        updated.sessionIDs.remove(at: sourceIndex)
+        updated.sessionIDs.insert(sessionID, at: destinationIndex)
+        repairSelection(in: &updated)
+        workgroups[index] = updated
+        return true
+    }
+
+    /// Transfers one live tab between workgroups in a single model mutation.
+    /// All preconditions are validated before either workgroup changes, so a
+    /// rejected handoff cannot strand a session between windows.
+    @discardableResult
+    func transferSession(
+        _ sessionID: UUID,
+        fromWorkgroup sourceWorkgroupID: UUID,
+        toWorkgroup destinationWorkgroupID: UUID,
+        at destinationIndex: Int
+    ) -> Bool {
+        guard sourceWorkgroupID != destinationWorkgroupID,
+              session(for: sessionID) != nil,
+              let sourceIndex = workgroups.firstIndex(where: {
+                  $0.id == sourceWorkgroupID
+              }),
+              let destinationWorkgroupIndex = workgroups.firstIndex(where: {
+                  $0.id == destinationWorkgroupID
+              }),
+              let sourceSessionIndex = workgroups[sourceIndex].sessionIDs.firstIndex(
+                  of: sessionID
+              ),
+              !workgroups[destinationWorkgroupIndex].sessionIDs.contains(sessionID),
+              workgroups[destinationWorkgroupIndex].sessionIDs.count
+                  < LayoutPreset.maximumSessionCount,
+              (0...workgroups[destinationWorkgroupIndex].sessionIDs.count).contains(
+                  destinationIndex
+              ) else {
+            return false
+        }
+
+        var updatedWorkgroups = workgroups
+        var source = updatedWorkgroups[sourceIndex]
+        var destination = updatedWorkgroups[destinationWorkgroupIndex]
+        source.sessionIDs.remove(at: sourceSessionIndex)
+        repairSelection(in: &source, preferredIndex: sourceSessionIndex)
+        destination.sessionIDs.insert(sessionID, at: destinationIndex)
+        destination.selectedSessionID = sessionID
+        updatedWorkgroups[sourceIndex] = source
+        updatedWorkgroups[destinationWorkgroupIndex] = destination
+        workgroups = updatedWorkgroups
+        return true
+    }
+
+    /// Removes a tab from its source workgroup without disconnecting the live
+    /// session. The source workgroup is intentionally retained when empty so a
+    /// transfer can be rolled back or its scene can finish restoration.
+    @discardableResult
+    func detachSession(_ sessionID: UUID, fromWorkgroup workgroupID: UUID) -> Bool {
+        guard session(for: sessionID) != nil else { return false }
+        return removeSession(
+            sessionID,
+            fromWorkgroup: workgroupID,
+            discardEmptyWorkgroup: false
+        )
+    }
+
+    /// Explicit tab-close authority. Merely removing or reconstructing a view
+    /// must never call this operation.
+    @discardableResult
+    func closeSession(_ sessionID: UUID, inWorkgroup workgroupID: UUID) -> Bool {
+        guard let session = session(for: sessionID),
+              removeSession(
+                sessionID,
+                fromWorkgroup: workgroupID,
+                discardEmptyWorkgroup: true
+              ) else {
+            return false
+        }
+        closeSession(session)
+        return true
     }
 
     func removeSessionFromWorkgroup(_ session: TerminalSession, close: Bool = true) {
-        removeSessionFromWorkgroups(session.id)
-        if close { closeSession(session) }
+        guard let workgroupID = workgroups.first(where: {
+            $0.sessionIDs.contains(session.id)
+        })?.id else {
+            if close { closeSession(session) }
+            return
+        }
+        if close {
+            _ = closeSession(session.id, inWorkgroup: workgroupID)
+        } else {
+            _ = detachSession(session.id, fromWorkgroup: workgroupID)
+        }
     }
 
     func closeWorkgroup(_ workgroupID: UUID) {
@@ -472,10 +603,11 @@ class SessionManager {
 
     private func unregister(_ session: TerminalSession) {
         sessions.removeAll { $0.id == session.id }
-        removeSessionFromWorkgroups(session.id)
+        removeSessionFromWorkgroups(session.id, discardEmptyWorkgroups: true)
         sessionOrigins.removeValue(forKey: session.id)
         transientPasswords.removeValue(forKey: session.id)
         session.connectionPreparation = nil
+        session.terminalHostModel.releaseRenderer()
         scheduleForwardPurgeAfterCleanup(for: session)
     }
 
@@ -500,26 +632,79 @@ class SessionManager {
             installLifecycleHook(on: session)
             session.disconnect()
             session.connectionPreparation = nil
+            session.terminalHostModel.releaseRenderer()
             scheduleForwardPurgeAfterCleanup(for: session)
         }
     }
 
-    private func removeSessionFromWorkgroups(_ sessionID: UUID) {
+    private func removeSessionFromWorkgroups(
+        _ sessionID: UUID,
+        discardEmptyWorkgroups: Bool
+    ) {
         for index in workgroups.indices.reversed() {
-            guard let removedIndex = workgroups[index].sessionIDs.firstIndex(of: sessionID) else {
-                continue
-            }
-            workgroups[index].sessionIDs.remove(at: removedIndex)
-            if workgroups[index].selectedSessionID == sessionID {
-                let remaining = workgroups[index].sessionIDs
-                workgroups[index].selectedSessionID = remaining.isEmpty
-                    ? nil
-                    : remaining[min(removedIndex, remaining.count - 1)]
-            }
-            if workgroups[index].sessionIDs.isEmpty {
-                workgroups.remove(at: index)
-            }
+            _ = removeSession(
+                sessionID,
+                fromWorkgroupAt: index,
+                discardEmptyWorkgroup: discardEmptyWorkgroups
+            )
         }
+    }
+
+    @discardableResult
+    private func removeSession(
+        _ sessionID: UUID,
+        fromWorkgroup workgroupID: UUID,
+        discardEmptyWorkgroup: Bool
+    ) -> Bool {
+        guard let index = workgroups.firstIndex(where: { $0.id == workgroupID }) else {
+            return false
+        }
+        return removeSession(
+            sessionID,
+            fromWorkgroupAt: index,
+            discardEmptyWorkgroup: discardEmptyWorkgroup
+        )
+    }
+
+    @discardableResult
+    private func removeSession(
+        _ sessionID: UUID,
+        fromWorkgroupAt index: Int,
+        discardEmptyWorkgroup: Bool
+    ) -> Bool {
+        guard workgroups.indices.contains(index),
+              let removedIndex = workgroups[index].sessionIDs.firstIndex(of: sessionID) else {
+            return false
+        }
+        var updated = workgroups[index]
+        updated.sessionIDs.remove(at: removedIndex)
+        repairSelection(in: &updated, preferredIndex: removedIndex)
+        if updated.sessionIDs.isEmpty && discardEmptyWorkgroup {
+            workgroups.remove(at: index)
+        } else {
+            workgroups[index] = updated
+        }
+        return true
+    }
+
+    private func repairSelection(
+        in workgroup: inout TerminalWorkgroup,
+        preferredIndex: Int? = nil
+    ) {
+        guard !workgroup.sessionIDs.isEmpty else {
+            workgroup.selectedSessionID = nil
+            return
+        }
+        if let selectedSessionID = workgroup.selectedSessionID,
+           workgroup.sessionIDs.contains(selectedSessionID),
+           session(for: selectedSessionID) != nil {
+            return
+        }
+        let fallbackIndex = min(
+            preferredIndex ?? 0,
+            workgroup.sessionIDs.count - 1
+        )
+        workgroup.selectedSessionID = workgroup.sessionIDs[fallbackIndex]
     }
 
     private func installReconnectPreparation(on session: TerminalSession, settingsManager _: SettingsManager) {

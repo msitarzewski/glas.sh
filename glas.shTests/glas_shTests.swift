@@ -16,6 +16,8 @@ import SwiftUI
 #if canImport(UIKit)
 import Combine
 import UIKit
+#elseif canImport(AppKit)
+import AppKit
 #endif
 
 private struct LegacyKEXFixture: Error, CustomStringConvertible {
@@ -5365,6 +5367,37 @@ struct glas_shTests {
         #expect(!SwiftTermPastePolicy.isAllowed(text))
     }
 
+    @Test @MainActor func terminalRendererPreAttachBufferIsBoundedAndReleaseClearsIt() {
+        let model = SwiftTermHostModel()
+        let prefix = Data("buffered-before-attach".utf8)
+        model.ingest(data: prefix, nonce: 1)
+        #expect(model.pendingRendererByteCount == prefix.count)
+        #expect(model.droppedPendingRendererByteCount == 0)
+        #expect(!model.hasRetainedRenderer)
+
+        let overflowBytes = 19
+        model.ingest(
+            data: Data(
+                repeating: UInt8(ascii: "x"),
+                count: SwiftTermHostModel.maximumPendingRendererBytes
+                    - prefix.count
+                    + overflowBytes
+            ),
+            nonce: 2
+        )
+        #expect(
+            model.pendingRendererByteCount
+                == SwiftTermHostModel.maximumPendingRendererBytes
+        )
+        #expect(model.droppedPendingRendererByteCount == overflowBytes)
+
+        model.releaseRenderer()
+        #expect(model.pendingRendererByteCount == 0)
+        #expect(model.droppedPendingRendererByteCount == 0)
+        #expect(!model.hasRetainedRenderer)
+        #expect(model.rendererDiagnostics == .awaitingWindow)
+    }
+
     #if canImport(UIKit)
     @Test func terminalRendererDiagnosticsDoNotInventUnobservedBackingState() {
         let model = SwiftTermHostModel()
@@ -5941,6 +5974,143 @@ struct glas_shTests {
         textInput.setMarkedText(nil, selectedRange: NSRange(location: 0, length: 0))
         #expect(!model.isComposingText)
         #expect(emittedData.count == committedDataCount)
+    }
+    #endif
+
+    #if canImport(AppKit)
+    @Test @MainActor func remoteRendererFlushesOnceAndSurvivesHostReconstructionUntilClose()
+        async
+    {
+        let session = TerminalSession(server: ServerConfiguration(
+            name: "Retained remote",
+            host: "example.com",
+            username: "tester"
+        ))
+        let manager = SessionManager(
+            serverManager: ServerManager(loadImmediately: false),
+            loadImmediately: false
+        )
+        manager.registerSession(session)
+        let model = session.terminalHostModel
+        let markerA = "renderer-lifetime-marker-A"
+        let markerB = "renderer-lifetime-marker-B"
+        let titleA = "renderer-title-A"
+        let titleB = "renderer-title-B"
+        let dataA = Data("\(markerA)\r\n".utf8)
+        let titleDataA = Data("\u{1B}]0;\(titleA)\u{07}".utf8)
+        let dataB = Data("\(markerB)\r\n".utf8)
+        let titleDataB = Data("\u{1B}]0;\(titleB)\u{07}".utf8)
+        let bellData = Data([0x07])
+        let expectedReceivedBytes = UInt64(
+            dataA.count + titleDataA.count + dataB.count + titleDataB.count + bellData.count
+        )
+
+        // Exercise the real session-to-model path before any renderer exists.
+        session.feedTerminalData(dataA)
+        for _ in 0..<100 where model.pendingRendererByteCount != dataA.count {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.pendingRendererByteCount == dataA.count)
+        #expect(!model.hasRetainedRenderer)
+
+        let theme = SwiftTermTheme(
+            fontSize: 13,
+            foreground: (1, 1, 1),
+            background: (0, 0, 0, 0),
+            cursor: (1, 1, 1)
+        )
+        let runtimeSettings = SwiftTermRuntimeSettings(
+            cursorStyle: "block",
+            blinkingCursor: false,
+            scrollbackLines: 100
+        )
+        var firstTitles: [String] = []
+        var secondTitles: [String] = []
+        var firstBellCount = 0
+        var secondBellCount = 0
+        var hostingView: NSHostingView<SwiftTermHostView>? = NSHostingView(
+            rootView: SwiftTermHostView(
+                model: model,
+                theme: theme,
+                runtimeSettings: runtimeSettings,
+                onSendData: { _ in },
+                onResize: { _, _ in },
+                onTitleChanged: { firstTitles.append($0) },
+                onBell: { firstBellCount += 1 }
+            )
+        )
+        let window = NSWindow()
+        window.isReleasedWhenClosed = false
+        window.setContentSize(NSSize(width: 800, height: 600))
+        hostingView?.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        window.contentView = hostingView
+        hostingView?.layoutSubtreeIfNeeded()
+        await Task.yield()
+
+        #expect(model.hasRetainedRenderer)
+        for _ in 0..<100 where model.pendingRendererByteCount != 0 {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.pendingRendererByteCount == 0)
+        session.feedTerminalData(titleDataA)
+        for _ in 0..<100 where !firstTitles.contains(titleA) {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(firstTitles.contains(titleA))
+
+        window.contentView = nil
+        hostingView = nil
+        await Task.yield()
+        #expect(manager.session(for: session.id) === session)
+        #expect(model.hasRetainedRenderer)
+
+        // The retained emulator keeps consuming transport bytes while no
+        // representable is mounted.
+        session.feedTerminalData(dataB)
+        for _ in 0..<100 where model.performanceDiagnostics.receivedChunkCount < 3 {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        hostingView = NSHostingView(
+            rootView: SwiftTermHostView(
+                model: model,
+                theme: theme,
+                runtimeSettings: runtimeSettings,
+                onSendData: { _ in },
+                onResize: { _, _ in },
+                onTitleChanged: { secondTitles.append($0) },
+                onBell: { secondBellCount += 1 }
+            )
+        )
+        hostingView?.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        window.contentView = hostingView
+        hostingView?.layoutSubtreeIfNeeded()
+        await Task.yield()
+        session.feedTerminalData(titleDataB)
+        for _ in 0..<100 where !secondTitles.contains(titleB) {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        session.feedTerminalData(bellData)
+        for _ in 0..<100 where model.performanceDiagnostics.receivedChunkCount < 5 {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        let visibleText = model.getVisibleText(lastNLines: 100).joined(separator: "\n")
+        #expect(visibleText.components(separatedBy: markerA).count - 1 == 1)
+        #expect(visibleText.components(separatedBy: markerB).count - 1 == 1)
+        #expect(firstTitles == [titleA])
+        #expect(secondTitles == [titleB])
+        #expect(firstBellCount == 0)
+        #expect(secondBellCount == 1)
+        #expect(model.performanceDiagnostics.receivedChunkCount == 5)
+        #expect(model.performanceDiagnostics.receivedByteCount == expectedReceivedBytes)
+
+        manager.closeSession(session)
+        #expect(manager.session(for: session.id) == nil)
+        #expect(!model.hasRetainedRenderer)
+        window.contentView = nil
+        hostingView = nil
+        window.close()
     }
     #endif
 
@@ -6945,6 +7115,18 @@ struct glas_shTests {
         #expect(session.server.host == "example.com")
     }
 
+    @Test @MainActor func terminalSessionRetainsOneRendererHostIdentity() {
+        let session = TerminalSession(server: ServerConfiguration(
+            name: "Test",
+            host: "example.com",
+            port: 22,
+            username: "user"
+        ))
+
+        let initialHost = session.terminalHostModel
+        #expect(initialHost === session.terminalHostModel)
+    }
+
     @Test @MainActor func terminalSessionDisconnect() {
         let server = ServerConfiguration(
             name: "Test",
@@ -6976,7 +7158,10 @@ struct glas_shTests {
         #expect(session.state == .disconnected)
         #expect(session.connectionProgress == nil)
         #expect(session.closeWindowNonce == initialNonce &+ 1)
-        #expect(session.drainTerminalInputChunks() == [Data("final remote bytes".utf8)])
+        #expect(
+            session.terminalHostModel.pendingRendererByteCount
+                == Data("final remote bytes".utf8).count
+        )
     }
 
     @Test @MainActor func terminalSessionClearPreservesBufferedOutputBeforeClearSequence() {
@@ -6990,10 +7175,11 @@ struct glas_shTests {
         session.feedTerminalData(Data("tail".utf8))
         session.clearScreen()
 
-        #expect(session.drainTerminalInputChunks() == [
-            Data("tail".utf8),
-            Data("\u{1B}[2J\u{1B}[H".utf8),
-        ])
+        #expect(session.terminalInputNonce == 2)
+        #expect(
+            session.terminalHostModel.pendingRendererByteCount
+                == Data("tail\u{1B}[2J\u{1B}[H".utf8).count
+        )
     }
 
     @Test @MainActor func terminalSessionSerializesMixedOutboundWrites() async {
@@ -7150,6 +7336,237 @@ struct glas_shTests {
         #expect(manager.session(for: first.id) == nil)
         #expect(manager.workgroup(for: secondGroup)?.sessionIDs == [second.id])
         #expect(manager.session(for: second.id) === second)
+    }
+
+    @Test @MainActor func runtimeWorkgroupOrderingAndSelectionAreModelAuthoritative() {
+        let manager = SessionManager(loadImmediately: false)
+        let first = TerminalSession(server: ServerConfiguration(
+            name: "First", host: "first.example.com", port: 22, username: "user"
+        ))
+        let second = TerminalSession(server: ServerConfiguration(
+            name: "Second", host: "second.example.com", port: 22, username: "user"
+        ))
+        let third = TerminalSession(server: ServerConfiguration(
+            name: "Third", host: "third.example.com", port: 22, username: "user"
+        ))
+        for session in [first, second, third] {
+            manager.registerSession(session)
+        }
+        let workgroupID = manager.createWorkgroup(name: "Ordered", colorTag: .blue)
+        #expect(manager.appendSession(first, toWorkgroup: workgroupID))
+        #expect(manager.appendSession(second, toWorkgroup: workgroupID))
+        #expect(manager.appendSession(third, toWorkgroup: workgroupID))
+
+        #expect(manager.sessions(inWorkgroup: workgroupID).map(\.id) == [
+            first.id,
+            second.id,
+            third.id,
+        ])
+        #expect(manager.selectedSession(inWorkgroup: workgroupID) === third)
+        #expect(manager.selectSession(first.id, inWorkgroup: workgroupID))
+        #expect(!manager.selectSession(UUID(), inWorkgroup: workgroupID))
+
+        #expect(manager.moveSession(first.id, inWorkgroup: workgroupID, to: 2))
+        #expect(manager.sessions(inWorkgroup: workgroupID).map(\.id) == [
+            second.id,
+            third.id,
+            first.id,
+        ])
+        #expect(manager.selectedSession(inWorkgroup: workgroupID) === first)
+        #expect(manager.moveSession(third.id, inWorkgroup: workgroupID, to: 0))
+        #expect(manager.sessions(inWorkgroup: workgroupID).map(\.id) == [
+            third.id,
+            second.id,
+            first.id,
+        ])
+        #expect(manager.selectedSession(inWorkgroup: workgroupID) === first)
+        #expect(!manager.moveSession(first.id, inWorkgroup: workgroupID, to: 3))
+        #expect(!manager.moveSession(UUID(), inWorkgroup: workgroupID, to: 0))
+    }
+
+    @Test @MainActor func detachedTabsRepairSelectionAndRetainLiveAuthority() {
+        let manager = SessionManager(loadImmediately: false)
+        let first = TerminalSession(server: ServerConfiguration(
+            name: "First", host: "first.example.com", port: 22, username: "user"
+        ))
+        let second = TerminalSession(server: ServerConfiguration(
+            name: "Second", host: "second.example.com", port: 22, username: "user"
+        ))
+        let third = TerminalSession(server: ServerConfiguration(
+            name: "Third", host: "third.example.com", port: 22, username: "user"
+        ))
+        for session in [first, second, third] {
+            manager.registerSession(session)
+        }
+        let workgroupID = manager.createWorkgroup(name: "Transfer Source", colorTag: .purple)
+        #expect(manager.appendSession(first, toWorkgroup: workgroupID))
+        #expect(manager.appendSession(second, toWorkgroup: workgroupID))
+        #expect(manager.appendSession(third, toWorkgroup: workgroupID))
+        #expect(manager.selectSession(second.id, inWorkgroup: workgroupID))
+
+        #expect(manager.detachSession(second.id, fromWorkgroup: workgroupID))
+        #expect(manager.workgroup(for: workgroupID)?.sessionIDs == [first.id, third.id])
+        #expect(manager.workgroup(for: workgroupID)?.selectedSessionID == third.id)
+        #expect(manager.selectedSession(inWorkgroup: workgroupID) === third)
+        #expect(manager.session(for: second.id) === second)
+
+        #expect(manager.detachSession(third.id, fromWorkgroup: workgroupID))
+        #expect(manager.workgroup(for: workgroupID)?.sessionIDs == [first.id])
+        #expect(manager.selectedSession(inWorkgroup: workgroupID) === first)
+        #expect(manager.detachSession(first.id, fromWorkgroup: workgroupID))
+
+        #expect(manager.workgroup(for: workgroupID)?.sessionIDs == [])
+        #expect(manager.workgroup(for: workgroupID)?.selectedSessionID == nil)
+        #expect(manager.sessions.map(\.id) == [first.id, second.id, third.id])
+        #expect([first, second, third].allSatisfy { $0.state == .disconnected })
+
+        manager.discardWorkgroupIfEmpty(workgroupID)
+        #expect(manager.workgroup(for: workgroupID) == nil)
+        #expect(manager.sessions.map(\.id) == [first.id, second.id, third.id])
+    }
+
+    @Test @MainActor func workgroupTransferCommitsMembershipAndSelectionTogether() {
+        let manager = SessionManager(loadImmediately: false)
+        let first = TerminalSession(server: ServerConfiguration(
+            name: "First", host: "first.example.com", port: 22, username: "user"
+        ))
+        let second = TerminalSession(server: ServerConfiguration(
+            name: "Second", host: "second.example.com", port: 22, username: "user"
+        ))
+        let destinationSession = TerminalSession(server: ServerConfiguration(
+            name: "Destination",
+            host: "destination.example.com",
+            port: 22,
+            username: "user"
+        ))
+        for session in [first, second, destinationSession] {
+            manager.registerSession(session)
+        }
+        let sourceID = manager.createWorkgroup(name: "Source", colorTag: .purple)
+        let destinationID = manager.createWorkgroup(name: "Destination", colorTag: .cyan)
+        #expect(manager.appendSession(first, toWorkgroup: sourceID))
+        #expect(manager.appendSession(second, toWorkgroup: sourceID))
+        #expect(manager.appendSession(destinationSession, toWorkgroup: destinationID))
+        #expect(manager.selectSession(first.id, inWorkgroup: sourceID))
+
+        #expect(manager.transferSession(
+            first.id,
+            fromWorkgroup: sourceID,
+            toWorkgroup: destinationID,
+            at: 0
+        ))
+
+        #expect(manager.workgroup(for: sourceID)?.sessionIDs == [second.id])
+        #expect(manager.selectedSession(inWorkgroup: sourceID) === second)
+        #expect(manager.workgroup(for: destinationID)?.sessionIDs == [
+            first.id,
+            destinationSession.id,
+        ])
+        #expect(manager.selectedSession(inWorkgroup: destinationID) === first)
+        #expect(manager.session(for: first.id) === first)
+    }
+
+    @Test @MainActor func rejectedWorkgroupTransfersLeaveBothGroupsUnchanged() {
+        let manager = SessionManager(loadImmediately: false)
+        let sourceSession = TerminalSession(server: ServerConfiguration(
+            name: "Source", host: "source.example.com", port: 22, username: "user"
+        ))
+        let ungroupedSession = TerminalSession(server: ServerConfiguration(
+            name: "Ungrouped", host: "ungrouped.example.com", port: 22, username: "user"
+        ))
+        manager.registerSession(sourceSession)
+        manager.registerSession(ungroupedSession)
+        let sourceID = manager.createWorkgroup(name: "Source", colorTag: .purple)
+        let destinationID = manager.createWorkgroup(name: "Destination", colorTag: .cyan)
+        #expect(manager.appendSession(sourceSession, toWorkgroup: sourceID))
+
+        let initialWorkgroups = manager.workgroups
+        #expect(!manager.transferSession(
+            UUID(),
+            fromWorkgroup: sourceID,
+            toWorkgroup: destinationID,
+            at: 0
+        ))
+        #expect(!manager.transferSession(
+            ungroupedSession.id,
+            fromWorkgroup: sourceID,
+            toWorkgroup: destinationID,
+            at: 0
+        ))
+        #expect(!manager.transferSession(
+            sourceSession.id,
+            fromWorkgroup: sourceID,
+            toWorkgroup: UUID(),
+            at: 0
+        ))
+        #expect(!manager.transferSession(
+            sourceSession.id,
+            fromWorkgroup: sourceID,
+            toWorkgroup: destinationID,
+            at: 1
+        ))
+        #expect(!manager.transferSession(
+            sourceSession.id,
+            fromWorkgroup: sourceID,
+            toWorkgroup: sourceID,
+            at: 0
+        ))
+        #expect(manager.workgroups == initialWorkgroups)
+
+        for index in 0..<LayoutPreset.maximumSessionCount {
+            let session = TerminalSession(server: ServerConfiguration(
+                name: "Destination \(index)",
+                host: "destination-\(index).example.com",
+                port: 22,
+                username: "user"
+            ))
+            manager.registerSession(session)
+            #expect(manager.appendSession(session, toWorkgroup: destinationID))
+        }
+        let fullDestinationWorkgroups = manager.workgroups
+        #expect(!manager.transferSession(
+            sourceSession.id,
+            fromWorkgroup: sourceID,
+            toWorkgroup: destinationID,
+            at: 0
+        ))
+        #expect(manager.workgroups == fullDestinationWorkgroups)
+        #expect(manager.session(for: sourceSession.id) === sourceSession)
+    }
+
+    @Test @MainActor func explicitTabCloseRepairsSelectionAndOwnsDisconnection() {
+        let manager = SessionManager(loadImmediately: false)
+        let first = TerminalSession(server: ServerConfiguration(
+            name: "First", host: "first.example.com", port: 22, username: "user"
+        ))
+        let second = TerminalSession(server: ServerConfiguration(
+            name: "Second", host: "second.example.com", port: 22, username: "user"
+        ))
+        let third = TerminalSession(server: ServerConfiguration(
+            name: "Third", host: "third.example.com", port: 22, username: "user"
+        ))
+        for session in [first, second, third] {
+            manager.registerSession(session)
+        }
+        let workgroupID = manager.createWorkgroup(name: "Explicit Close", colorTag: .orange)
+        #expect(manager.appendSession(first, toWorkgroup: workgroupID))
+        #expect(manager.appendSession(second, toWorkgroup: workgroupID))
+        #expect(manager.appendSession(third, toWorkgroup: workgroupID))
+        #expect(manager.selectSession(second.id, inWorkgroup: workgroupID))
+
+        #expect(manager.closeSession(second.id, inWorkgroup: workgroupID))
+        #expect(manager.workgroup(for: workgroupID)?.sessionIDs == [first.id, third.id])
+        #expect(manager.selectedSession(inWorkgroup: workgroupID) === third)
+        #expect(manager.session(for: second.id) == nil)
+        #expect(second.state == .disconnected)
+
+        #expect(manager.closeSession(third.id, inWorkgroup: workgroupID))
+        #expect(manager.workgroup(for: workgroupID)?.sessionIDs == [first.id])
+        #expect(manager.selectedSession(inWorkgroup: workgroupID) === first)
+        #expect(manager.closeSession(first.id, inWorkgroup: workgroupID))
+        #expect(manager.workgroup(for: workgroupID) == nil)
+        #expect(manager.sessions.isEmpty)
+        #expect(!manager.closeSession(first.id, inWorkgroup: workgroupID))
     }
 
     #if os(iOS)

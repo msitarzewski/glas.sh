@@ -308,3 +308,62 @@
   - ANSI glyph colors remain independent of the transparent/blurred terminal canvas.
   - iPadOS/iOS shells, a comparative engine spike, and App Store distribution remain separately tracked work.
 - References: `Platforms/macOS/MacTerminalWindowPolicy.swift`, `Platforms/macOS/MacWorkspaceView.swift`, `Packages/RealityKitContent/Sources/RealityKitContent/SwiftTermHostView.swift`, `memory-bank/releases/codex-completions/06-native-platform-foundation.md`
+
+## 2026-07-25: Model-owned adaptive tabs replace AppKit tab-group mirroring
+- Status: Approved and implemented
+- Context:
+  - The product must preserve independent spatial terminal windows on Vision
+    Pro while providing compact native session navigation inside each window.
+  - The Mac prototype mirrors `NSWindowTabGroup` into a custom
+    `NavigationSplitView` and suppresses the native horizontal tab strip through
+    KVO, delayed reconciliation, and Window-menu inspection.
+  - Apple exposes no supported API that transforms AppKit window tabs into
+    native sidebar rows. The Xcode 27 SDK validates `Tab`, `TabSection`,
+    `.sidebarAdaptable`, sidebar-only placement, and sidebar header/footer
+    composition when targeting OS 26 across macOS, iOS/iPadOS, and visionOS.
+  - OS 27 placement and sidebar-availability APIs remain beta and require
+    availability gates when the deployment floor is OS 26.
+- Decision:
+  - Represent one terminal window as one model-owned workspace containing
+    native adaptive session tabs; keep any split topology inside the selected
+    tab.
+  - Use `.sidebarAdaptable` for Mac, iPad, and visionOS presentation while
+    retaining the compact iPhone OS 26 switcher.
+  - Let visionOS generate the leading root-tab ornament and the workgroup
+    session sidebar. Preserve one bottom status/tools ornament per window and
+    preserve independent spatial windows.
+  - Route Command-T, explicit close, restoration, and Move Tab to New Window
+    through authoritative workgroup/session models and value-based
+    `WindowGroup` scenes.
+  - Use a bounded claim-confirm-remove transaction for live tab transfers.
+  - Close sessions and workgroups only through explicit model or scene
+    authority; never from adaptive-tab content `onDisappear`.
+  - Preserve native material chrome separately from the user-controlled
+    transparent, tinted, and blurred terminal canvas; terminal glyphs and cursor
+    remain fully opaque.
+- Alternatives:
+  - Keep AppKit-native window tabs and mirror them into a custom sidebar:
+    rejected because it creates two navigation authorities and depends on
+    private timing assumptions around tab-strip presentation.
+  - Nest the custom Mac `NavigationSplitView` around adaptive tabs: rejected
+    because nested navigation containers have independent state and toolbar
+    behavior.
+  - Force the same geometry on every platform: rejected because shared domain
+    behavior does not require shared presentation trees.
+- Consequences:
+  - AppKit `NSWindowTabGroup` no longer supplies session-tab semantics
+    automatically. glas.sh now preserves Command-T, multiple windows, detach,
+    restoration, and close behavior through native commands over its workspace
+    model.
+  - The Mac custom sidebar registry, tab-bar visibility reconciliation, and
+    Window-menu probing have been removed. Native SwiftUI adaptive tabs and the
+    system automatic sidebar control are the only tab-navigation authority.
+  - Connections and terminal scenes use matching unified compact native
+    titlebars. A small AppKit window coordinator is retained only for supported
+    native window policy and toolbar spacing; it does not create a second
+    titlebar, tab model, sidebar, or accessory view.
+  - visionOS gains correct system ornament ownership without reducing the
+    independent spatial-window or full-transparency product invariant.
+  - The implementation remains in the existing `codex-completions` Phase 06/07
+    program; no new release is created.
+- References: `Platforms/macOS/MacWorkspaceView.swift`, `Platforms/macOS/MacWorkspaceController.swift`, `Platforms/macOS/MacTerminalWindowPolicy.swift`, `glas.sh/VisionTerminalWorkgroupView.swift`, `memory-bank/releases/codex-completions/06-native-platform-foundation.md`, `memory-bank/releases/codex-completions/07-workspaces-and-shell-integration.md`, `memory-bank/systemPatterns.md#Terminal-window-adaptive-presentation-and-ornament-ownership`
