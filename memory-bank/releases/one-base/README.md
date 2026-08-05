@@ -48,15 +48,15 @@ glassdb proves the desired Xcode model:
 | Capability | Authoritative source | One Base use |
 |---|---|---|
 | Primary app target | `glas.sh.xcodeproj/project.pbxproj` target `glas.sh` | Extend to macOS; do not create another target |
-| Platform scenes | `glas.sh/glas_shApp.swift`, `glas.sh-mac/glas_shMacApp.swift` | Consolidate into one `@main` app |
-| Mac workspace | `glas.sh-mac/MacWorkspace*.swift` | Preserve behind `#if os(macOS)` |
-| Local PTY | `glas.sh-mac/MacLocalTerminalPaneView.swift`, RealityKitContent | Preserve unchanged in behavior |
+| Platform scenes | `glas.sh/glas_shApp.swift`, `Platforms/macOS/MacTerminalWindowPolicy.swift` | Consolidate into one `@main` app |
+| Mac workspace | `Platforms/macOS/MacWorkspace*.swift` | Preserve behind `#if os(macOS)` |
+| Local PTY | `Platforms/macOS/MacLocalTerminalPaneView.swift`, RealityKitContent | Preserve unchanged in behavior |
 | Shared app core | `glas.sh/*.swift` | Continue compiling on every supported destination |
 | Secrets and trust | GlasSecretStore, `glas.sh/KeychainManager.swift` | Preserve shared access-group authority |
 | Shared defaults | `glas.sh/Constants.swift` (`SharedDefaults`) | Preserve data and audit old Mac preference domain |
-| App resources | `glas.sh/Assets.xcassets`, `glas.sh-mac/AppIcon.icon` | Select by SDK without recreating artwork |
+| App resources | `glas.sh/Assets.xcassets`, `Platforms/macOS/AppIcon.icon` | Select by SDK without recreating artwork |
 | Widget | `glasWidgets` target | Keep as one platform-filtered extension |
-| Unit tests | `glas.shTests`, `glas.sh-macTests` | Consolidate under one test host |
+| Unit tests | `glas.shTests`, `glas.shTests/macOS` | Consolidate under one test host |
 | UI tests | shared `glas.shUITests` sources | Remove duplicate Mac UI-test target |
 | Primary scheme | `glas.sh.xcscheme` | Become the only application scheme |
 
@@ -64,7 +64,7 @@ glassdb proves the desired Xcode model:
 
 - No new production or test source file is planned.
 - Extend the existing primary app, test, UI-test, widget, and scheme objects.
-- Keep the `glas.sh-mac` folder as a platform implementation boundary; a folder is not a second app product.
+- Keep `Platforms/macOS` as the public platform implementation boundary; a folder is not a second app product.
 - Do not rewrite Mac workspaces or terminal scenes during target consolidation.
 - Remove old targets only after the new target passes every supported destination.
 - A new source file requires a fresh reuse analysis and explicit approval.
@@ -145,7 +145,8 @@ glasWidgets     ---- separate extension, embedded only where supported
 ## Completion evidence
 
 - One native `glas.sh` app target now supports iPhone, iPad, visionOS, and native Apple Silicon macOS; Catalyst is disabled. The widget and two test bundles remain separate binaries.
-- One `@main` application composes the existing platform-native scene graphs. Mac local PTY, workspaces, tabs, splits, secure keyboard entry, commands, and multiwindow behavior remain in the retained `glas.sh-mac` platform source boundary.
+- One `@main` application composes the existing platform-native scene graphs. Mac local PTY, workspaces, tabs, splits, secure keyboard entry, commands, and multiwindow behavior remain in the `Platforms/macOS` platform source boundary.
+- The post-release public-structure cleanup moved the former `glas.sh-mac` sources/resources to `Platforms/macOS` and Mac tests to `glas.shTests/macOS`; Git blob verification confirmed no behavioral source changes.
 - The application identity is `sh.glas.app` on every app platform. SDK-specific plist, entitlements, and icons preserve the shared app group, Keychain group, iCloud KVS namespace, GlassSecretStore authority, and native Mac icon.
 - The shared `glas.sh` scheme exposes My Mac, iPhone, iPad, and Vision Pro destinations. The obsolete Mac app/test targets and `glas.sh Mac` scheme are absent.
 - Exact-current iPhone and iPad unit suites passed 232/232 each. iPad UI passed 2/2; final compact iPhone UI smoke passed 1/1.
@@ -164,12 +165,24 @@ glasWidgets     ---- separate extension, embedded only where supported
 - OSV online dependency scanning was not run because it would transmit dependency metadata and no offline database was available. Package tests, pinned resolution, Gitleaks, and static security review passed.
 - The plan called for a commit at every phase boundary, but implementation remained one reviewable release diff after baseline `c9f7a406`. The approved release accepts that governance variance; no phase history was fabricated.
 
+## Post-release verification checkpoint — 2026-08-01
+
+- PR #30 is merged to `main` at merge commit `d9237f97`; the unified target and
+  scheme remain the current architecture.
+- A wearer-present Vision Pro build successfully opened an SSH terminal to the
+  development Mac over Tailscale. This adds real-device connectivity evidence
+  without rewriting the original One Base approval boundary above.
+- Initial Vision Pro terminal geometry and native session-sidebar dismissal
+  remain open Codex Completions presentation defects, not One Base target
+  consolidation regressions.
+
 ## Publication
 
 - Post-Connection-Library polish commit: `904ae0af`.
 - One Base implementation and release documentation commit: `47b23f12`.
 - Pull request: [#30 — Unify glas.sh with One Base](https://github.com/msitarzewski/glas.sh/pull/30).
-- The pull request is the canonical merge-status record.
+- Merge commit: `d9237f97` on `main`.
+- The pull request and merge commit are the canonical publication record.
 
 ## Release acceptance criteria
 

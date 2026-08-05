@@ -62,6 +62,8 @@ struct glas_shApp: App {
                 .frame(minWidth: 900, minHeight: 560)
         }
         .defaultSize(width: 1180, height: 720)
+        .windowResizability(.contentMinSize)
+        .windowToolbarStyle(.unifiedCompact)
         .defaultLaunchBehavior(.presented)
         .commands { MacWorkspaceCommands() }
 

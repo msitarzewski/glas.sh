@@ -19,8 +19,8 @@ Phase 01.
 ## Primary files
 
 - `glas.sh/glas_shApp.swift`
-- `glas.sh-mac/glas_shMacApp.swift`
-- Existing `glas.sh-mac/MacWorkspace*.swift` and `MacLocalTerminalPaneView.swift`
+- `Platforms/macOS/MacTerminalWindowPolicy.swift`
+- Existing `Platforms/macOS/MacWorkspace*.swift` and `MacLocalTerminalPaneView.swift`
 
 ## Work items
 
@@ -36,7 +36,7 @@ Phase 01.
 3. Preserve the current iOS compact root and visionOS scene graph without structural rewrites.
 4. Preserve shared `SessionManager` and `SettingsManager` ownership at app scope.
 5. Remove only the duplicate `@main GlasShMacApp` declaration after the unified app entry compiles.
-6. Keep the remaining AppKit window-reader/helper code in `glas_shMacApp.swift` under its macOS guard.
+6. Keep the remaining AppKit window-reader/helper code in `MacTerminalWindowPolicy.swift` under its macOS guard.
 7. Verify application commands are registered exactly once per platform.
 8. Verify scene identifiers remain stable so existing `openWindow` routes continue to resolve.
 9. Do not rename or redesign workspaces, ornaments, tabs, or terminal controls.
@@ -70,7 +70,7 @@ One `@main` application owns all supported destinations, each platform retains i
 ## Completion evidence
 
 - `glas.sh/glas_shApp.swift` is the single application `@main` authority and branches to the existing native platform scenes.
-- The duplicate Mac app entry was removed while the retained helper/window code in `glas.sh-mac/glas_shMacApp.swift` remains macOS-guarded.
+- The duplicate Mac app entry was removed while the retained helper/window code in `Platforms/macOS/MacTerminalWindowPolicy.swift` remains macOS-guarded.
 - Static scans find one application `@main`; the widget extension is the only other intended `@main`.
 - Mac commands are registered once, terminal ingest is deferred past the current view transaction, and iPhone/iPad/visionOS navigation remains platform-native.
 - Direct Mac launch and iPhone/iPad/visionOS UI smokes prove primary and secondary application routes remain viable.

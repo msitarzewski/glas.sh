@@ -20,9 +20,9 @@ Phase 02.
 
 - `glas.sh.xcodeproj/project.pbxproj`
 - `glas.sh/Info.plist`
-- `glas.sh-mac/Info.plist`
+- `Platforms/macOS/Info.plist`
 - `glas.sh/glas.sh.entitlements`
-- `glas.sh-mac/glas.sh-mac.entitlements`
+- `Platforms/macOS/macOS.entitlements`
 - `glas.sh/Constants.swift`
 - Existing defaults/bootstrap migration code
 
@@ -39,9 +39,9 @@ The old development-only Mac identity is `sh.glas.mac`. Because no release has s
 1. Set one application bundle identifier across SDKs.
 2. Select SDK-specific configuration following the glassdb pattern:
    - default plist: `glas.sh/Info.plist`;
-   - macOS plist: `glas.sh-mac/Info.plist`;
+   - macOS plist: `Platforms/macOS/Info.plist`;
    - default entitlements: `glas.sh/glas.sh.entitlements`;
-   - macOS entitlements: `glas.sh-mac/glas.sh-mac.entitlements`.
+   - macOS entitlements: `Platforms/macOS/macOS.entitlements`.
 3. Preserve URL scheme, category, local-network messaging, Face ID text, and multi-scene declarations where applicable.
 4. Preserve the shared Keychain access group.
 5. Preserve the iCloud KVS identifier.

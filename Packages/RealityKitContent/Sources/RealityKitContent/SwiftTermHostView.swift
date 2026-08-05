@@ -322,6 +322,10 @@ public enum SwiftTermITermContentPolicy {
 @MainActor
 public final class SwiftTermHostModel: ObservableObject {
     public static let semanticEventHistoryLimit = 256
+    /// Remote output can arrive before SwiftUI installs the first platform
+    /// renderer. Bound that short bootstrap window so an untrusted host cannot
+    /// grow process memory without limit.
+    public static let maximumPendingRendererBytes = 4 * 1_024 * 1_024
 
     @Published public private(set) var currentDirectory: String?
     @Published public private(set) var scrollPosition: Double = 1
@@ -330,9 +334,17 @@ public final class SwiftTermHostModel: ObservableObject {
     public private(set) var rendererDiagnostics = SwiftTermRendererDiagnostics.awaitingWindow
     public private(set) var semanticEvents: [SwiftTermSemanticEvent] = []
     public let semanticEventPublisher = PassthroughSubject<SwiftTermSemanticEvent, Never>()
+    /// The emulator belongs to the live terminal session, not to a transient
+    /// SwiftUI representable. Keeping this reference strong preserves the
+    /// terminal buffer while adaptive tabs and sidebars reconstruct views.
     private weak var terminalEngine: (any TerminalEngine)?
+    private var retainedRemoteEngine: (any TerminalEngine)?
+    private var rendererDelegateOwner: AnyObject?
     private var attachedViewID: ObjectIdentifier?
     private var pendingChunks: [Data] = []
+    private var pendingFlushTask: Task<Void, Never>?
+    public private(set) var pendingRendererByteCount = 0
+    public private(set) var droppedPendingRendererByteCount = 0
     private var lastNonce: UInt64 = 0
     private var focusRetryTask: Task<Void, Never>?
     public private(set) var allowsFocusOwnership = true
@@ -340,16 +352,67 @@ public final class SwiftTermHostModel: ObservableObject {
 
     public init() {}
 
-    fileprivate func attach(_ engine: any TerminalEngine) {
+    public var hasRetainedRenderer: Bool {
+        retainedRemoteEngine != nil
+    }
+
+    fileprivate func retainedRenderer() -> (any TerminalEngine)? {
+        retainedRemoteEngine
+    }
+
+    fileprivate func retainedDelegate<Delegate: AnyObject>(
+        as type: Delegate.Type
+    ) -> Delegate? {
+        rendererDelegateOwner as? Delegate
+    }
+
+    fileprivate func attach(
+        _ engine: any TerminalEngine,
+        delegateOwner: AnyObject
+    ) {
+        retainedRemoteEngine = engine
+        terminalEngine = engine
+        rendererDelegateOwner = delegateOwner
         let viewID = engine.identity
         guard attachedViewID != viewID else {
             return
         }
-        terminalEngine = engine
         attachedViewID = viewID
         publishRendererDiagnosticsIfChanged(engine.rendererDiagnostics)
-        flushPending()
+        schedulePendingFlush()
         focus()
+    }
+
+    /// Local PTY renderers retain their engine through
+    /// `SwiftTermLocalProcessRuntime`; keep this non-owning attachment so the
+    /// established explicit local-process teardown remains authoritative.
+    fileprivate func attach(_ engine: any TerminalEngine) {
+        terminalEngine = engine
+        let viewID = engine.identity
+        guard attachedViewID != viewID else { return }
+        attachedViewID = viewID
+        publishRendererDiagnosticsIfChanged(engine.rendererDiagnostics)
+        schedulePendingFlush()
+        focus()
+    }
+
+    /// Explicit terminal-close authority releases the renderer and its complete
+    /// in-memory scrollback. View disappearance intentionally never calls this.
+    public func releaseRenderer() {
+        stopFocusMaintenance()
+        pendingFlushTask?.cancel()
+        pendingFlushTask = nil
+        terminalEngine?.resignFocus()
+        terminalEngine = nil
+        retainedRemoteEngine = nil
+        rendererDelegateOwner = nil
+        attachedViewID = nil
+        pendingChunks.removeAll(keepingCapacity: false)
+        pendingRendererByteCount = 0
+        droppedPendingRendererByteCount = 0
+        pendingPasteReview = nil
+        pendingExternalLink = nil
+        publishRendererDiagnosticsIfChanged(.awaitingWindow)
     }
 
     fileprivate func updateRendererDiagnostics(_ diagnostics: SwiftTermRendererDiagnostics) {
@@ -477,12 +540,15 @@ public final class SwiftTermHostModel: ObservableObject {
     }
 
     fileprivate func updateCurrentDirectory(_ directory: String?) {
+        guard currentDirectory != directory else { return }
         currentDirectory = directory
         appendSemanticEvent(.workingDirectoryChanged(directory: directory))
     }
 
     fileprivate func updateScrollPosition(_ position: Double) {
-        scrollPosition = min(1, max(0, position))
+        let clampedPosition = min(1, max(0, position))
+        guard scrollPosition != clampedPosition else { return }
+        scrollPosition = clampedPosition
     }
 
     fileprivate func recordITermEvent(_ kind: SwiftTermSemanticEventKind) {
@@ -510,8 +576,33 @@ public final class SwiftTermHostModel: ObservableObject {
     public func ingest(data: Data, nonce: UInt64) {
         guard nonce != lastNonce else { return }
         lastNonce = nonce
-        pendingChunks.append(data)
-        flushPending()
+        guard let terminalEngine,
+              pendingFlushTask == nil,
+              pendingChunks.isEmpty,
+              droppedPendingRendererByteCount == 0 else {
+            enqueuePendingRendererData(data)
+            schedulePendingFlush()
+            return
+        }
+        terminalEngine.receive(data)
+    }
+
+    /// SwiftUI invokes representable creation during a view update. Deferring
+    /// the bootstrap feed one main-actor turn avoids delegate-published model
+    /// changes during that update. New bytes remain queued until this task
+    /// drains the retained prefix, preserving transport order exactly.
+    private func schedulePendingFlush() {
+        guard pendingFlushTask == nil,
+              terminalEngine != nil,
+              !pendingChunks.isEmpty || droppedPendingRendererByteCount > 0 else {
+            return
+        }
+        pendingFlushTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self, !Task.isCancelled else { return }
+            self.pendingFlushTask = nil
+            self.flushPending()
+        }
     }
 
     private func flushPending() {
@@ -520,6 +611,36 @@ public final class SwiftTermHostModel: ObservableObject {
             terminalEngine.receive(chunk)
         }
         pendingChunks.removeAll(keepingCapacity: true)
+        pendingRendererByteCount = 0
+        if droppedPendingRendererByteCount > 0 {
+            // CAN aborts an incomplete escape/control string and SGR 0 returns
+            // the parser to a readable style before the truthful truncation
+            // notice. The count is metadata; omitted remote bytes are not
+            // fabricated or silently hidden.
+            let notice = Data(
+                (
+                    "\u{18}\u{1B}[0m\r\n"
+                        + "[glas.sh omitted \(droppedPendingRendererByteCount) bytes "
+                        + "received before the terminal renderer attached]\r\n"
+                ).utf8
+            )
+            terminalEngine.receive(notice)
+            droppedPendingRendererByteCount = 0
+        }
+    }
+
+    private func enqueuePendingRendererData(_ data: Data) {
+        guard !data.isEmpty else { return }
+        let available = max(
+            0,
+            Self.maximumPendingRendererBytes - pendingRendererByteCount
+        )
+        if available > 0 {
+            let retained = Data(data.prefix(available))
+            pendingChunks.append(retained)
+            pendingRendererByteCount += retained.count
+        }
+        droppedPendingRendererByteCount += max(0, data.count - available)
     }
 }
 
@@ -736,6 +857,7 @@ private protocol TerminalEngine: AnyObject {
     var performanceDiagnostics: SwiftTermPerformanceDiagnostics { get }
 
     func configure(theme: SwiftTermTheme, runtimeSettings: SwiftTermRuntimeSettings)
+    func updateDelegate(_ delegate: TerminalViewDelegate)
     func receive(_ data: Data)
     func recordInput(byteCount: Int)
     func focusIfActive() -> Bool
@@ -1387,6 +1509,10 @@ private final class SwiftTermEngine: TerminalEngine {
         activateRendererIfAttached()
     }
 
+    func updateDelegate(_ delegate: TerminalViewDelegate) {
+        terminalView.terminalDelegate = delegate
+    }
+
     func receive(_ data: Data) {
         let start = performanceClock.now
         terminalView.feed(byteArray: ArraySlice(data))
@@ -1702,7 +1828,17 @@ public struct SwiftTermHostView: UIViewRepresentable {
     }
 
     public func makeCoordinator() -> Coordinator {
-        Coordinator(
+        if let coordinator = model.retainedDelegate(as: Coordinator.self) {
+            coordinator.update(
+                model: model,
+                onSendData: onSendData,
+                onResize: onResize,
+                onTitleChanged: onTitleChanged,
+                onBell: onBell
+            )
+            return coordinator
+        }
+        return Coordinator(
             model: model,
             onSendData: onSendData,
             onResize: onResize,
@@ -1713,35 +1849,53 @@ public struct SwiftTermHostView: UIViewRepresentable {
 
     public func makeUIView(context: Context) -> UIView {
         model.setFocusOwnershipAllowed(allowsFocusOwnership)
-        let engine = makeEngine(delegate: context.coordinator)
+        context.coordinator.update(
+            model: model,
+            onSendData: onSendData,
+            onResize: onResize,
+            onTitleChanged: onTitleChanged,
+            onBell: onBell
+        )
+        let retainedEngine = model.retainedRenderer()
+        let engine = retainedEngine ?? makeEngine(delegate: context.coordinator)
+        engine.updateDelegate(context.coordinator)
         engine.configure(theme: theme, runtimeSettings: runtimeSettings)
-        context.coordinator.engine = engine
         context.coordinator.lastTheme = theme
         context.coordinator.lastRuntimeSettings = runtimeSettings
 
-        // Dismiss an active edit menu on any tap. The eye+hand input model can
-        // otherwise leave it visible after the selection interaction ends.
-        let dismissMenuTap = UITapGestureRecognizer(
-            target: context.coordinator,
-            action: #selector(Coordinator.dismissEditMenu(_:))
-        )
-        dismissMenuTap.cancelsTouchesInView = false
-        engine.hostView.addGestureRecognizer(dismissMenuTap)
+        if retainedEngine == nil {
+            // Dismiss an active edit menu on any tap. The eye+hand input model can
+            // otherwise leave it visible after the selection interaction ends.
+            let dismissMenuTap = UITapGestureRecognizer(
+                target: context.coordinator,
+                action: #selector(Coordinator.dismissEditMenu(_:))
+            )
+            dismissMenuTap.cancelsTouchesInView = false
+            engine.hostView.addGestureRecognizer(dismissMenuTap)
+        }
 
-        model.attach(engine)
+        model.attach(engine, delegateOwner: context.coordinator)
         return engine.hostView
     }
 
     public func updateUIView(_ uiView: UIView, context: Context) {
         model.setFocusOwnershipAllowed(allowsFocusOwnership)
+        context.coordinator.update(
+            model: model,
+            onSendData: onSendData,
+            onResize: onResize,
+            onTitleChanged: onTitleChanged,
+            onBell: onBell
+        )
         if uiView.layer.cornerRadius != 18 {
             uiView.layer.cornerRadius = 18
         }
         if !uiView.layer.masksToBounds {
             uiView.layer.masksToBounds = true
         }
-        guard let engine = context.coordinator.engine,
+        guard let engine = model.retainedRenderer(),
               engine.hostView === uiView else { return }
+        engine.updateDelegate(context.coordinator)
         var needsConfiguration = false
         if context.coordinator.lastTheme != theme {
             context.coordinator.lastTheme = theme
@@ -1754,16 +1908,22 @@ public struct SwiftTermHostView: UIViewRepresentable {
         if needsConfiguration {
             engine.configure(theme: theme, runtimeSettings: runtimeSettings)
         }
-        model.attach(engine)
+        model.attach(engine, delegateOwner: context.coordinator)
     }
 
-    private func makeEngine(delegate: TerminalViewDelegate) -> any TerminalEngine {
+    public static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        coordinator.prepareForDismantle()
+    }
+
+    private func makeEngine(delegate: Coordinator) -> any TerminalEngine {
         SwiftTermEngine(
             delegate: delegate,
             onPasteRequest: { [weak model] text, bracketed in
                 model?.requestPaste(text, bracketed: bracketed)
             },
-            onPasteData: onSendData,
+            onPasteData: { [weak delegate] data in
+                delegate?.sendPasteData(data)
+            },
             onRendererDiagnostics: { [weak model] diagnostics in
                 DispatchQueue.main.async { [weak model] in
                     model?.updateRendererDiagnostics(diagnostics)
@@ -1781,11 +1941,10 @@ public struct SwiftTermHostView: UIViewRepresentable {
     @MainActor
     public final class Coordinator: NSObject, @preconcurrency TerminalViewDelegate {
         private weak var model: SwiftTermHostModel?
-        private let onSendData: (Data) -> Void
-        private let onResize: (Int, Int) -> Void
-        private let onTitleChanged: (String) -> Void
-        private let onBell: () -> Void
-        fileprivate var engine: (any TerminalEngine)?
+        private var onSendData: (Data) -> Void
+        private var onResize: (Int, Int) -> Void
+        private var onTitleChanged: (String) -> Void
+        private var onBell: () -> Void
         fileprivate var lastTheme: SwiftTermTheme?
         fileprivate var lastRuntimeSettings: SwiftTermRuntimeSettings?
 
@@ -1801,6 +1960,28 @@ public struct SwiftTermHostView: UIViewRepresentable {
             self.onResize = onResize
             self.onTitleChanged = onTitleChanged
             self.onBell = onBell
+        }
+
+        fileprivate func update(
+            model: SwiftTermHostModel,
+            onSendData: @escaping (Data) -> Void,
+            onResize: @escaping (Int, Int) -> Void,
+            onTitleChanged: @escaping (String) -> Void,
+            onBell: @escaping () -> Void
+        ) {
+            self.model = model
+            self.onSendData = onSendData
+            self.onResize = onResize
+            self.onTitleChanged = onTitleChanged
+            self.onBell = onBell
+        }
+
+        fileprivate func prepareForDismantle() {
+            model?.dismissInputFocus()
+        }
+
+        fileprivate func sendPasteData(_ data: Data) {
+            onSendData(data)
         }
 
         @objc @MainActor func dismissEditMenu(_ sender: UITapGestureRecognizer) {
@@ -1824,12 +2005,12 @@ public struct SwiftTermHostView: UIViewRepresentable {
         }
 
         public func send(source: TerminalView, data: ArraySlice<UInt8>) {
-            engine?.recordInput(byteCount: data.count)
+            model?.retainedRenderer()?.recordInput(byteCount: data.count)
             onSendData(Data(data))
         }
 
         public func scrolled(source: TerminalView, position: Double) {
-            engine?.refreshAccessibilityViewport()
+            model?.retainedRenderer()?.refreshAccessibilityViewport()
             Task { @MainActor [weak model] in
                 model?.updateScrollPosition(position)
             }
@@ -1873,6 +2054,7 @@ private protocol TerminalEngine: AnyObject {
     var performanceDiagnostics: SwiftTermPerformanceDiagnostics { get }
 
     func configure(theme: SwiftTermTheme, runtimeSettings: SwiftTermRuntimeSettings)
+    func updateDelegate(_ delegate: TerminalViewDelegate)
     func receive(_ data: Data)
     func recordInput(byteCount: Int)
     func focusIfActive() -> Bool
@@ -1952,6 +2134,10 @@ private final class MacSwiftTermEngine: TerminalEngine {
         applyTheme(theme)
         applyRuntimeSettings(runtimeSettings)
         publishRendererDiagnostics()
+    }
+
+    func updateDelegate(_ delegate: TerminalViewDelegate) {
+        terminalView.terminalDelegate = delegate
     }
 
     func receive(_ data: Data) {
@@ -2109,7 +2295,17 @@ public struct SwiftTermHostView: NSViewRepresentable {
     }
 
     public func makeCoordinator() -> Coordinator {
-        Coordinator(
+        if let coordinator = model.retainedDelegate(as: Coordinator.self) {
+            coordinator.update(
+                model: model,
+                onSendData: onSendData,
+                onResize: onResize,
+                onTitleChanged: onTitleChanged,
+                onBell: onBell
+            )
+            return coordinator
+        }
+        return Coordinator(
             model: model,
             onSendData: onSendData,
             onResize: onResize,
@@ -2120,12 +2316,21 @@ public struct SwiftTermHostView: NSViewRepresentable {
 
     public func makeNSView(context: Context) -> NSView {
         model.setFocusOwnershipAllowed(allowsFocusOwnership)
-        let engine = MacSwiftTermEngine(
+        context.coordinator.update(
+            model: model,
+            onSendData: onSendData,
+            onResize: onResize,
+            onTitleChanged: onTitleChanged,
+            onBell: onBell
+        )
+        let engine = model.retainedRenderer() ?? MacSwiftTermEngine(
             delegate: context.coordinator,
             onPasteRequest: { [weak model] text, bracketed in
                 model?.requestPaste(text, bracketed: bracketed)
             },
-            onPasteData: onSendData,
+            onPasteData: { [weak coordinator = context.coordinator] data in
+                coordinator?.sendPasteData(data)
+            },
             onRendererDiagnostics: { [weak model] diagnostics in
                 model?.updateRendererDiagnostics(diagnostics)
             },
@@ -2133,34 +2338,45 @@ public struct SwiftTermHostView: NSViewRepresentable {
                 model?.recordOSC52Decision(decision)
             }
         )
+        engine.updateDelegate(context.coordinator)
         engine.configure(theme: theme, runtimeSettings: runtimeSettings)
-        context.coordinator.engine = engine
         context.coordinator.lastTheme = theme
         context.coordinator.lastRuntimeSettings = runtimeSettings
-        model.attach(engine)
+        model.attach(engine, delegateOwner: context.coordinator)
         return engine.hostView
     }
 
     public func updateNSView(_ nsView: NSView, context: Context) {
         model.setFocusOwnershipAllowed(allowsFocusOwnership)
-        guard let engine = context.coordinator.engine, engine.hostView === nsView else { return }
+        context.coordinator.update(
+            model: model,
+            onSendData: onSendData,
+            onResize: onResize,
+            onTitleChanged: onTitleChanged,
+            onBell: onBell
+        )
+        guard let engine = model.retainedRenderer(), engine.hostView === nsView else { return }
+        engine.updateDelegate(context.coordinator)
         if context.coordinator.lastTheme != theme
             || context.coordinator.lastRuntimeSettings != runtimeSettings {
             context.coordinator.lastTheme = theme
             context.coordinator.lastRuntimeSettings = runtimeSettings
             engine.configure(theme: theme, runtimeSettings: runtimeSettings)
         }
-        model.attach(engine)
+        model.attach(engine, delegateOwner: context.coordinator)
+    }
+
+    public static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.prepareForDismantle()
     }
 
     @MainActor
     public final class Coordinator: NSObject, @preconcurrency TerminalViewDelegate {
         private weak var model: SwiftTermHostModel?
-        private let onSendData: (Data) -> Void
-        private let onResize: (Int, Int) -> Void
-        private let onTitleChanged: (String) -> Void
-        private let onBell: () -> Void
-        fileprivate var engine: (any TerminalEngine)?
+        private var onSendData: (Data) -> Void
+        private var onResize: (Int, Int) -> Void
+        private var onTitleChanged: (String) -> Void
+        private var onBell: () -> Void
         fileprivate var lastTheme: SwiftTermTheme?
         fileprivate var lastRuntimeSettings: SwiftTermRuntimeSettings?
 
@@ -2178,6 +2394,28 @@ public struct SwiftTermHostView: NSViewRepresentable {
             self.onBell = onBell
         }
 
+        fileprivate func update(
+            model: SwiftTermHostModel,
+            onSendData: @escaping (Data) -> Void,
+            onResize: @escaping (Int, Int) -> Void,
+            onTitleChanged: @escaping (String) -> Void,
+            onBell: @escaping () -> Void
+        ) {
+            self.model = model
+            self.onSendData = onSendData
+            self.onResize = onResize
+            self.onTitleChanged = onTitleChanged
+            self.onBell = onBell
+        }
+
+        fileprivate func prepareForDismantle() {
+            model?.dismissInputFocus()
+        }
+
+        fileprivate func sendPasteData(_ data: Data) {
+            onSendData(data)
+        }
+
         public func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
             onResize(newCols, newRows)
         }
@@ -2191,13 +2429,16 @@ public struct SwiftTermHostView: NSViewRepresentable {
         }
 
         public func send(source: TerminalView, data: ArraySlice<UInt8>) {
-            engine?.recordInput(byteCount: data.count)
+            model?.retainedRenderer()?.recordInput(byteCount: data.count)
             onSendData(Data(data))
         }
 
         public func scrolled(source: TerminalView, position: Double) {
-            engine?.refreshAccessibilityViewport()
-            model?.updateScrollPosition(position)
+            model?.retainedRenderer()?.refreshAccessibilityViewport()
+            Task { @MainActor [weak model] in
+                await Task.yield()
+                model?.updateScrollPosition(position)
+            }
         }
 
         public func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
@@ -2422,11 +2663,11 @@ private final class MacLocalProcessDelegateProxy:
     weak var hostModel: SwiftTermHostModel?
     weak var processState: SwiftTermLocalProcessState?
 
-    let onResize: (Int, Int) -> Void
-    let onTitleChanged: (String) -> Void
-    let onCurrentDirectoryChanged: (String?) -> Void
-    let onBell: () -> Void
-    let onProcessTerminated: (Int32?) -> Void
+    var onResize: (Int, Int) -> Void
+    var onTitleChanged: (String) -> Void
+    var onCurrentDirectoryChanged: (String?) -> Void
+    var onBell: () -> Void
+    var onProcessTerminated: (Int32?) -> Void
 
     init(
         hostModel: SwiftTermHostModel,
@@ -2534,12 +2775,12 @@ private final class MacLocalProcessEngine: TerminalEngine, SwiftTermLocalProcess
     let terminalView: ReviewingMacLocalProcessTerminalView
     private let delegateProxy: MacLocalProcessDelegateProxy
     private weak var processState: SwiftTermLocalProcessState?
-    private let onOutputData: (Data) -> Void
-    private let onInputData: (Data) -> Void
-    private let onProcessReady: () -> Void
-    private let onProcessTerminated: (Int32?) -> Void
-    private let onRendererDiagnostics: (SwiftTermRendererDiagnostics) -> Void
-    private let onOSC52Decision: (SwiftTermOSC52Decision) -> Void
+    private var onOutputData: (Data) -> Void
+    private var onInputData: (Data) -> Void
+    private var onProcessReady: () -> Void
+    private var onProcessTerminated: (Int32?) -> Void
+    private var onRendererDiagnostics: (SwiftTermRendererDiagnostics) -> Void
+    private var onOSC52Decision: (SwiftTermOSC52Decision) -> Void
     private var didReportTermination = false
     private(set) var rendererDiagnostics = SwiftTermRendererDiagnostics.awaitingWindow
     private(set) var performanceDiagnostics = SwiftTermPerformanceDiagnostics()
@@ -2609,6 +2850,49 @@ private final class MacLocalProcessEngine: TerminalEngine, SwiftTermLocalProcess
         terminalView.getTerminal().isCurrentBufferAlternate
     }
     var isComposingText: Bool { terminalView.hasMarkedText() }
+
+    /// Local PTY input must continue through its ioctl/process delegate proxy.
+    /// Remote hosts use this protocol hook to refresh presentation callbacks;
+    /// the local runtime intentionally preserves its existing proxy.
+    func updateDelegate(_ delegate: TerminalViewDelegate) {
+        _ = delegate
+    }
+
+    func updateCallbacks(
+        hostModel: SwiftTermHostModel,
+        processState: SwiftTermLocalProcessState,
+        onPasteRequest: @escaping (String, Bool) -> Void,
+        onOutputData: @escaping (Data) -> Void,
+        onInputData: @escaping (Data) -> Void,
+        onResize: @escaping (Int, Int) -> Void,
+        onTitleChanged: @escaping (String) -> Void,
+        onCurrentDirectoryChanged: @escaping (String?) -> Void,
+        onBell: @escaping () -> Void,
+        onProcessReady: @escaping () -> Void,
+        onProcessTerminated: @escaping (Int32?) -> Void,
+        onRendererDiagnostics: @escaping (SwiftTermRendererDiagnostics) -> Void,
+        onOSC52Decision: @escaping (SwiftTermOSC52Decision) -> Void
+    ) {
+        self.processState = processState
+        self.onOutputData = onOutputData
+        self.onInputData = onInputData
+        self.onProcessReady = onProcessReady
+        self.onProcessTerminated = onProcessTerminated
+        self.onRendererDiagnostics = onRendererDiagnostics
+        self.onOSC52Decision = onOSC52Decision
+        delegateProxy.hostModel = hostModel
+        delegateProxy.processState = processState
+        delegateProxy.onResize = onResize
+        delegateProxy.onTitleChanged = onTitleChanged
+        delegateProxy.onCurrentDirectoryChanged = onCurrentDirectoryChanged
+        delegateProxy.onBell = onBell
+        delegateProxy.onProcessTerminated = onProcessTerminated
+        terminalView.onPasteRequest = onPasteRequest
+        terminalView.getTerminal().parser.oscHandlers[52] = { [weak self] request in
+            guard let self else { return }
+            self.onOSC52Decision(SwiftTermOSC52Policy.evaluate(request))
+        }
+    }
 
     func configure(theme: SwiftTermTheme, runtimeSettings: SwiftTermRuntimeSettings) {
         applyTheme(theme)
@@ -2921,12 +3205,93 @@ private final class MacLocalProcessEngine: TerminalEngine, SwiftTermLocalProcess
     }
 }
 
-/// An AppKit SwiftTerm host backed by a real local pseudo-terminal. The local
-/// process is started once when the representable is created and is terminated
-/// when the view is dismantled. Output and input callbacks are delivered in
-/// chunks no larger than 64 KiB so recording clients cannot receive unbounded
-/// transient payloads.
+/// Explicit lifecycle owner for a local terminal engine. Workspace models keep
+/// this object alive while SwiftUI replaces inactive tab content; only pane,
+/// tab, or window closure calls `terminate()`.
+@MainActor
+public final class SwiftTermLocalProcessRuntime {
+    public let model: SwiftTermHostModel
+    public let processState: SwiftTermLocalProcessState
+
+    private var engine: MacLocalProcessEngine?
+
+    public init(
+        model: SwiftTermHostModel = SwiftTermHostModel(),
+        processState: SwiftTermLocalProcessState = SwiftTermLocalProcessState()
+    ) {
+        self.model = model
+        self.processState = processState
+    }
+
+    isolated deinit {
+        engine?.terminateLocalProcess()
+    }
+
+    public var hasEngine: Bool { engine != nil }
+
+    public func terminate() {
+        engine?.terminateLocalProcess()
+        engine = nil
+    }
+
+    fileprivate func resolveEngine(
+        onPasteRequest: @escaping (String, Bool) -> Void,
+        onOutputData: @escaping (Data) -> Void,
+        onInputData: @escaping (Data) -> Void,
+        onResize: @escaping (Int, Int) -> Void,
+        onTitleChanged: @escaping (String) -> Void,
+        onCurrentDirectoryChanged: @escaping (String?) -> Void,
+        onBell: @escaping () -> Void,
+        onProcessReady: @escaping () -> Void,
+        onProcessTerminated: @escaping (Int32?) -> Void,
+        onRendererDiagnostics: @escaping (SwiftTermRendererDiagnostics) -> Void,
+        onOSC52Decision: @escaping (SwiftTermOSC52Decision) -> Void
+    ) -> (engine: MacLocalProcessEngine, isNew: Bool) {
+        if let engine {
+            engine.updateCallbacks(
+                hostModel: model,
+                processState: processState,
+                onPasteRequest: onPasteRequest,
+                onOutputData: onOutputData,
+                onInputData: onInputData,
+                onResize: onResize,
+                onTitleChanged: onTitleChanged,
+                onCurrentDirectoryChanged: onCurrentDirectoryChanged,
+                onBell: onBell,
+                onProcessReady: onProcessReady,
+                onProcessTerminated: onProcessTerminated,
+                onRendererDiagnostics: onRendererDiagnostics,
+                onOSC52Decision: onOSC52Decision
+            )
+            return (engine, false)
+        }
+
+        let engine = MacLocalProcessEngine(
+            hostModel: model,
+            processState: processState,
+            onPasteRequest: onPasteRequest,
+            onOutputData: onOutputData,
+            onInputData: onInputData,
+            onResize: onResize,
+            onTitleChanged: onTitleChanged,
+            onCurrentDirectoryChanged: onCurrentDirectoryChanged,
+            onBell: onBell,
+            onProcessReady: onProcessReady,
+            onProcessTerminated: onProcessTerminated,
+            onRendererDiagnostics: onRendererDiagnostics,
+            onOSC52Decision: onOSC52Decision
+        )
+        self.engine = engine
+        return (engine, true)
+    }
+}
+
+/// An AppKit SwiftTerm host backed by a real local pseudo-terminal. A workspace
+/// runtime keeps the PTY alive across representable reconstruction. The legacy
+/// initializer retains view-owned teardown for standalone hosts and tests.
 public struct SwiftTermLocalProcessHostView: NSViewRepresentable {
+    let runtime: SwiftTermLocalProcessRuntime
+    let terminatesOnDismantle: Bool
     @ObservedObject var model: SwiftTermHostModel
     @ObservedObject var processState: SwiftTermLocalProcessState
     let configuration: SwiftTermLocalProcessConfiguration
@@ -2956,6 +3321,11 @@ public struct SwiftTermLocalProcessHostView: NSViewRepresentable {
         onProcessReady: @escaping () -> Void = {},
         onProcessTerminated: @escaping (Int32?) -> Void = { _ in }
     ) {
+        self.runtime = SwiftTermLocalProcessRuntime(
+            model: model,
+            processState: processState
+        )
+        self.terminatesOnDismantle = true
         self.model = model
         self.processState = processState
         self.configuration = configuration
@@ -2971,14 +3341,43 @@ public struct SwiftTermLocalProcessHostView: NSViewRepresentable {
         self.onProcessTerminated = onProcessTerminated
     }
 
+    public init(
+        runtime: SwiftTermLocalProcessRuntime,
+        configuration: SwiftTermLocalProcessConfiguration = .init(),
+        theme: SwiftTermTheme,
+        runtimeSettings: SwiftTermRuntimeSettings,
+        onOutputData: @escaping (Data) -> Void = { _ in },
+        onInputData: @escaping (Data) -> Void = { _ in },
+        onResize: @escaping (Int, Int) -> Void = { _, _ in },
+        onTitleChanged: @escaping (String) -> Void = { _ in },
+        onCurrentDirectoryChanged: @escaping (String?) -> Void = { _ in },
+        onBell: @escaping () -> Void = {},
+        onProcessReady: @escaping () -> Void = {},
+        onProcessTerminated: @escaping (Int32?) -> Void = { _ in }
+    ) {
+        self.runtime = runtime
+        self.terminatesOnDismantle = false
+        self.model = runtime.model
+        self.processState = runtime.processState
+        self.configuration = configuration
+        self.theme = theme
+        self.runtimeSettings = runtimeSettings
+        self.onOutputData = onOutputData
+        self.onInputData = onInputData
+        self.onResize = onResize
+        self.onTitleChanged = onTitleChanged
+        self.onCurrentDirectoryChanged = onCurrentDirectoryChanged
+        self.onBell = onBell
+        self.onProcessReady = onProcessReady
+        self.onProcessTerminated = onProcessTerminated
+    }
+
     public func makeCoordinator() -> Coordinator {
-        Coordinator()
+        Coordinator(terminatesOnDismantle: terminatesOnDismantle)
     }
 
     public func makeNSView(context: Context) -> NSView {
-        let engine = MacLocalProcessEngine(
-            hostModel: model,
-            processState: processState,
+        let resolved = runtime.resolveEngine(
             onPasteRequest: { [weak model] text, bracketed in
                 model?.requestPaste(text, bracketed: bracketed)
             },
@@ -2997,6 +3396,7 @@ public struct SwiftTermLocalProcessHostView: NSViewRepresentable {
                 model?.recordOSC52Decision(decision)
             }
         )
+        let engine = resolved.engine
         let coordinator = context.coordinator
         coordinator.engine = engine
         coordinator.lastTheme = theme
@@ -3006,7 +3406,9 @@ public struct SwiftTermLocalProcessHostView: NSViewRepresentable {
             model.attach(engine)
             processState.attach(engine)
             engine.configure(theme: theme, runtimeSettings: runtimeSettings)
-            engine.start(configuration)
+            if resolved.isNew {
+                engine.start(configuration)
+            }
             coordinator.isReady = true
         }
         return engine.hostView
@@ -3027,17 +3429,26 @@ public struct SwiftTermLocalProcessHostView: NSViewRepresentable {
     }
 
     public static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
-        coordinator.engine?.terminateLocalProcess()
+        if coordinator.terminatesOnDismantle {
+            coordinator.engine?.terminateLocalProcess()
+        } else {
+            coordinator.engine?.resignFocus()
+        }
         coordinator.engine = nil
         coordinator.isReady = false
     }
 
     @MainActor
     public final class Coordinator {
+        fileprivate let terminatesOnDismantle: Bool
         fileprivate var engine: MacLocalProcessEngine?
         fileprivate var isReady = false
         fileprivate var lastTheme: SwiftTermTheme?
         fileprivate var lastRuntimeSettings: SwiftTermRuntimeSettings?
+
+        fileprivate init(terminatesOnDismantle: Bool) {
+            self.terminatesOnDismantle = terminatesOnDismantle
+        }
     }
 }
 #endif

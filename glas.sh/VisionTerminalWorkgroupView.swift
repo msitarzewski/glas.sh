@@ -63,11 +63,6 @@ struct VisionTerminalWorkgroupView: View {
             guard let newSelection else { return }
             sessionManager.selectSession(newSelection, inWorkgroup: workgroupID)
         }
-        .onDisappear {
-            #if os(visionOS)
-            closeWorkgroupOnce()
-            #endif
-        }
         .focusedSceneValue(
             \.platformNewTerminalAction,
             PlatformNewTerminalAction(title: "New Terminal Tab") {
@@ -172,42 +167,13 @@ struct VisionTerminalWorkgroupView: View {
         workgroup: TerminalWorkgroup,
         sessions: [TerminalSession]
     ) -> some View {
-        let tabs = TabView(selection: $selectedSessionID) {
-            ForEach(sessions) { session in
-                Tab(value: Optional(session.id)) {
-                    TerminalWindowView(
-                        session: session,
-                        ownsSessionLifecycle: false,
-                        showsConnectionOrnament: false,
-                        isTerminalActive: selectedSessionID == session.id,
-                        onNewTerminalTab: {
-                            showingSavedHostPicker = true
-                        },
-                        onSessionRequestedClose: {
-                            closeSessionTab(session)
-                        }
-                    )
-                } label: {
-                    Label {
-                        Text(session.server.name)
-                    } icon: {
-                        Image(systemName: "circle.fill")
-                            .foregroundStyle(workgroup.colorTag.color)
-                    }
-                }
-            }
-        }
-
         #if os(visionOS)
-        tabs
-        .ornament(attachmentAnchor: .scene(.top)) {
-            workgroupLabel(workgroup: workgroup, sessions: sessions)
-                .glassBackgroundEffect(in: .capsule)
-        }
+        adaptiveTerminalTabs(workgroup: workgroup, sessions: sessions)
+            .accessibilityIdentifier("terminal-workgroup-tabs")
         #else
         if usesCompactPhoneNavigation {
             NavigationStack {
-                tabs
+                compactTerminalTabs(workgroup: workgroup, sessions: sessions)
                     .toolbar(.visible, for: .navigationBar)
                     .toolbar(.hidden, for: .tabBar)
                     .toolbar {
@@ -220,8 +186,8 @@ struct VisionTerminalWorkgroupView: View {
             }
         } else {
             NavigationStack {
-                tabs
-                    .tabViewStyle(.sidebarAdaptable)
+                adaptiveTerminalTabs(workgroup: workgroup, sessions: sessions)
+                    .defaultAdaptableTabBarPlacement(.tabBar)
                     .toolbar {
                         terminalNavigationToolbar(
                             sessions: sessions,
@@ -233,6 +199,66 @@ struct VisionTerminalWorkgroupView: View {
             }
         }
         #endif
+    }
+
+    private func adaptiveTerminalTabs(
+        workgroup: TerminalWorkgroup,
+        sessions: [TerminalSession]
+    ) -> some View {
+        TabView(selection: $selectedSessionID) {
+            TabSection(workgroup.name) {
+                ForEach(sessions) { session in
+                    terminalTab(session: session, workgroup: workgroup)
+                }
+            }
+        }
+        .tabViewStyle(.sidebarAdaptable)
+    }
+
+    #if os(iOS)
+    private func compactTerminalTabs(
+        workgroup: TerminalWorkgroup,
+        sessions: [TerminalSession]
+    ) -> some View {
+        TabView(selection: $selectedSessionID) {
+            ForEach(sessions) { session in
+                terminalTab(session: session, workgroup: workgroup)
+            }
+        }
+    }
+    #endif
+
+    private func terminalTab(
+        session: TerminalSession,
+        workgroup: TerminalWorkgroup
+    ) -> some TabContent<UUID?> {
+        Tab(value: Optional(session.id)) {
+            TerminalWindowView(
+                session: session,
+                ownsSessionLifecycle: false,
+                showsConnectionOrnament: false,
+                isTerminalActive: selectedSessionID == session.id,
+                onNewTerminalTab: {
+                    showingSavedHostPicker = true
+                },
+                onSessionRequestedClose: {
+                    closeSessionTab(session)
+                }
+            )
+            .accessibilityIdentifier("terminal-workgroup-session-\(session.id.uuidString)")
+        } label: {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(session.server.name)
+                    Text("\(session.server.username)@\(session.server.host)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } icon: {
+                Image(systemName: "circle.fill")
+                    .foregroundStyle(workgroup.colorTag.color)
+            }
+        }
     }
 
     #if os(iOS)
@@ -300,51 +326,16 @@ struct VisionTerminalWorkgroupView: View {
     }
     #endif
 
-    private func workgroupLabel(
-        workgroup: TerminalWorkgroup,
-        sessions: [TerminalSession]
-    ) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "circle.fill")
-                .font(.caption2)
-                .foregroundStyle(workgroup.colorTag.color)
-
-            Text(workgroup.name)
-                .font(.caption)
-                .fontWeight(.semibold)
-
-            if let selectedSessionID,
-               let session = sessions.first(where: { $0.id == selectedSessionID }) {
-                Divider()
-                    .frame(height: 18)
-                Text("\(session.server.username)@\(session.server.host):\(session.server.port)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(workgroup.name), \(workgroup.colorTag.rawValue) workgroup")
-    }
-
     private func liveSessions(in workgroup: TerminalWorkgroup) -> [TerminalSession] {
-        workgroup.sessionIDs.compactMap { sessionManager.session(for: $0) }
+        sessionManager.sessions(inWorkgroup: workgroup.id)
     }
 
     private func synchronizeSelection() {
-        guard let workgroup = sessionManager.workgroup(for: workgroupID) else {
+        guard sessionManager.workgroup(for: workgroupID) != nil else {
             selectedSessionID = nil
             return
         }
-        let sessions = liveSessions(in: workgroup)
-        let resolvedSelection = workgroup.selectedSessionID.flatMap { selectedID in
-            sessions.contains(where: { $0.id == selectedID }) ? selectedID : nil
-        } ?? sessions.first?.id
-        selectedSessionID = resolvedSelection
-        if let resolvedSelection {
-            sessionManager.selectSession(resolvedSelection, inWorkgroup: workgroupID)
-        }
+        selectedSessionID = sessionManager.selectedSession(inWorkgroup: workgroupID)?.id
     }
 
     private func openSavedHost(_ server: ServerConfiguration) {
@@ -383,7 +374,9 @@ struct VisionTerminalWorkgroupView: View {
 
     private func closeSessionTab(_ session: TerminalSession) {
         let closesLastSession = sessionManager.workgroup(for: workgroupID)?.sessionIDs == [session.id]
-        sessionManager.removeSessionFromWorkgroup(session)
+        guard sessionManager.closeSession(session.id, inWorkgroup: workgroupID) else {
+            return
+        }
         if closesLastSession {
             closeWorkgroupOnce()
             #if os(visionOS)

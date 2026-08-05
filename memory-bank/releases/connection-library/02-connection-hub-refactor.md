@@ -16,9 +16,9 @@ Refactor the existing connection hub around the shared Library projection while 
 - The obsolete `ConnectionSection`, `selectedSection`, `activeTagFilters`, `macFilteredServers`, `sortedSections`, `macShowsTailscale`, `ServerManager.favoriteServers`, and `ServerManager.recentServers` paths were removed; final symbol scans find no remaining references.
 - The source file is larger because it now hosts native four-platform shell composition and accessibility hooks. The semantic navigation model is smaller: one projection, one selection model, and no duplicate platform-specific domain state.
 
-## Current integration point
+## Baseline integration point (historical)
 
-`glas.sh/ConnectionManagerView.swift:12` currently owns platform branches, search, filters, actions, workgroups, details, and Tailscale. macOS also renders separate Favorites, Recent, and All Connections host sections around `glas.sh/ConnectionManagerView.swift:330`, while row interaction and connection behavior are mixed into the same surface.
+At release entry, `glas.sh/ConnectionManagerView.swift:12` owned platform branches, search, filters, actions, workgroups, details, and Tailscale. macOS also rendered separate Favorites, Recent, and All Connections host sections around the then-current `glas.sh/ConnectionManagerView.swift:330`, while row interaction and connection behavior were mixed into the same surface.
 
 ## Work
 

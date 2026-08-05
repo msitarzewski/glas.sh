@@ -4,21 +4,22 @@ import RealityKitContent
 import SwiftUI
 
 struct MacLocalTerminalPaneView: View {
+    let runtime: SwiftTermLocalProcessRuntime
+    let recorder: SessionRecorder
     let workspaceID: UUID
     let isFocused: Bool
     let showsPaneChrome: Bool
     let findRequestNonce: UInt64
     let claimStartupCommand: () -> TerminalStartupCommandTicket?
     let onFocus: () -> Void
-    let onNewTerminalTab: () -> Void
     let onDisconnect: () -> Void
 
     @Environment(SettingsManager.self) private var settingsManager
     @Environment(\.openWindow) private var openWindow
-    @StateObject private var hostModel = SwiftTermHostModel()
-    @StateObject private var processState = SwiftTermLocalProcessState()
+    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
+    @ObservedObject var hostModel: SwiftTermHostModel
+    @ObservedObject var processState: SwiftTermLocalProcessState
     @State private var aiAssistant = AIAssistant()
-    @State private var recorder = SessionRecorder()
     @State private var localSessionID = UUID()
     @State private var showingSearch = false
     @State private var searchQuery = ""
@@ -43,8 +44,7 @@ struct MacLocalTerminalPaneView: View {
                 Divider()
             }
             SwiftTermLocalProcessHostView(
-                model: hostModel,
-                processState: processState,
+                runtime: runtime,
                 configuration: localConfiguration,
                 theme: terminalTheme,
                 runtimeSettings: runtimeSettings,
@@ -91,7 +91,6 @@ struct MacLocalTerminalPaneView: View {
                     .background(.regularMaterial)
                 }
             }
-            localFooter
         }
         .clipShape(.rect(cornerRadius: showsPaneChrome ? 18 : 0, style: .continuous))
         .overlay {
@@ -114,12 +113,55 @@ struct MacLocalTerminalPaneView: View {
             onFocus()
             processState.focus()
         })
+        .toolbar {
+            if isFocused {
+                ToolbarItem(id: MacTerminalToolbarItemID.terminalTools) {
+                    HStack(spacing: 8) {
+                        localProcessStatus
+
+                        Button("Connections", systemImage: "server.rack") {
+                            openWindow(id: "main")
+                        }
+                        .labelStyle(.iconOnly)
+                        .help("Connections")
+
+                        if aiAssistant.isAvailable {
+                            Button("AI Assistant", systemImage: "sparkles") {
+                                presentAIAssistant()
+                            }
+                            .labelStyle(.iconOnly)
+                            .disabled(!processState.isRunning)
+                            .help("AI Assistant")
+                        }
+
+                        Button("Reveal Working Directory", systemImage: "folder.fill") {
+                            revealWorkingDirectory()
+                        }
+                        .labelStyle(.iconOnly)
+                        .help("Reveal Working Directory in Finder")
+
+                        Button(
+                            isLocalFullScreen ? "Exit Focus Mode" : "Focus Mode",
+                            systemImage: isLocalFullScreen ? "moon.fill" : "moon"
+                        ) {
+                            processState.toggleFullScreen()
+                        }
+                        .labelStyle(.iconOnly)
+                        .help(isLocalFullScreen ? "Exit Focus Mode" : "Focus Mode")
+
+                        localRecordingIndicator
+                        localToolsMenu
+                    }
+                    .padding(.horizontal, 6)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("mac-local-terminal-tools")
+                }
+                .macKeepVisibleWhenCompact()
+            }
+        }
         .onAppear {
             aiAssistant.checkAvailability()
             if isFocused { processState.focus() }
-        }
-        .onDisappear {
-            if recorder.isRecording { _ = recorder.stop() }
         }
         .onChange(of: isFocused) { _, focused in
             if focused { processState.focus() }
@@ -246,97 +288,27 @@ struct MacLocalTerminalPaneView: View {
         .padding(.vertical, 6)
     }
 
-    private var localBottomBar: some View {
-        ViewThatFits(in: .horizontal) {
-            expandedLocalBottomBar
-            compactLocalBottomBar
-        }
-        .buttonStyle(.borderless)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .glassEffect(.regular.interactive(), in: .capsule)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-    }
-
-    private var localFooter: some View {
-        localBottomBar
-            .frame(maxWidth: .infinity)
-            .background {
-                MacTerminalVisualEffect(
-                    amount: 1,
-                    material: .titlebar,
-                    state: .followsWindowActiveState
-                )
-            }
-    }
-
-    private var expandedLocalBottomBar: some View {
-        HStack(spacing: 10) {
-            localProcessStatus
-
-            Button("Connections", systemImage: "server.rack") {
-                openWindow(id: "main")
-            }
-            .labelStyle(.iconOnly)
-            .help("Connections")
-
-            if aiAssistant.isAvailable {
-                Button("AI Assistant", systemImage: "sparkles") {
-                    presentAIAssistant()
-                }
-                .labelStyle(.iconOnly)
-                .disabled(!processState.isRunning)
-                .help("AI Assistant")
-            }
-
-            Button("Reveal Working Directory", systemImage: "folder.fill") {
-                revealWorkingDirectory()
-            }
-            .labelStyle(.iconOnly)
-            .help("Reveal Working Directory in Finder")
-
-            Button(
-                isLocalFullScreen ? "Exit Focus Mode" : "Focus Mode",
-                systemImage: isLocalFullScreen ? "moon.fill" : "moon"
-            ) {
-                processState.toggleFullScreen()
-            }
-            .labelStyle(.iconOnly)
-            .help(isLocalFullScreen ? "Exit Focus Mode" : "Focus Mode")
-
-            localRecordingIndicator
-            Button("New Terminal Tab", systemImage: "plus", action: onNewTerminalTab)
-                .labelStyle(.iconOnly)
-                .help("New Terminal Tab")
-            localToolsMenu
-        }
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    private var compactLocalBottomBar: some View {
-        HStack(spacing: 8) {
-            localProcessStatus
-            localRecordingIndicator
-            Button("New Terminal Tab", systemImage: "plus", action: onNewTerminalTab)
-                .labelStyle(.iconOnly)
-                .help("New Terminal Tab")
-            localToolsMenu
-        }
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
     private var localProcessStatus: some View {
-        HStack(spacing: 7) {
-            Circle()
-                .fill(processState.isRunning ? Color.green : Color.secondary)
-                .frame(width: 8, height: 8)
-            Text(localProcessStatusText)
-                .font(.caption.weight(.medium))
-                .lineLimit(1)
+        HStack(spacing: 0) {
+            if differentiateWithoutColor {
+                Image(systemName: localProcessStatusSymbol)
+                    .foregroundStyle(processState.isRunning ? Color.green : Color.secondary)
+                    .frame(width: 12, height: 12)
+            } else {
+                Circle()
+                    .fill(processState.isRunning ? Color.green : Color.secondary)
+                    .frame(width: 8, height: 8)
+            }
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("Local terminal status: \(localProcessStatusText)")
+    }
+
+    private var localProcessStatusSymbol: String {
+        if processState.isRunning { return "checkmark.circle.fill" }
+        if processState.launchError != nil { return "exclamationmark.triangle.fill" }
+        if processState.exitCode != nil { return "stop.circle.fill" }
+        return "clock.fill"
     }
 
     private var localProcessStatusText: String {

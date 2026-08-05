@@ -20,8 +20,8 @@ Phase 03.
 
 - `glas.sh.xcodeproj/project.pbxproj`
 - `glas.sh/Assets.xcassets`
-- `glas.sh-mac/AppIcon.icon`
-- `glas.sh-mac/Assets.xcassets`
+- `Platforms/macOS/AppIcon.icon`
+- `Platforms/macOS/Assets.xcassets`
 - `glasWidgets/*`
 
 Only one agent may edit `project.pbxproj` during this phase.

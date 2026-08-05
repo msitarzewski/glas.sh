@@ -6,7 +6,6 @@ final class ConnectionLibraryUITests: XCTestCase {
     private var app: XCUIApplication!
     private var testServerName = ""
     private var testServerTag = ""
-    private var createdTestServer = false
 
     @MainActor
     private func prepareApp() {
@@ -16,15 +15,15 @@ final class ConnectionLibraryUITests: XCTestCase {
         testServerTag = "UI Test \(suffix)"
         app = XCUIApplication()
         app.launchEnvironment[Self.credentialCleanupEnvironmentKey] = "1"
+        #if os(macOS)
+        app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+        #endif
         app.launch()
 
         addTeardownBlock { @MainActor [weak self] in
             guard let self else { return }
             self.dismissSavePasswordPromptIfPresent()
-            if self.createdTestServer {
-                self.deleteTestServer(assertRemoval: true)
-            }
-            self.app?.terminate()
+            self.terminateAndWait(self.app)
             self.app = nil
             self.launchCredentialCleanupApp()
         }
@@ -45,6 +44,16 @@ final class ConnectionLibraryUITests: XCTestCase {
     @MainActor
     func testLibraryModesSettingsAndUnconfiguredNetwork() {
         prepareApp()
+        #if !os(visionOS)
+        let allConnectionsScope = buttonOrElement(
+            identifier: "connection-library-scope-all-connections"
+        )
+        XCTAssertTrue(allConnectionsScope.waitForExistence(timeout: 3))
+        XCTAssertTrue(
+            allConnectionsScope.label.hasPrefix("All Connections,"),
+            "The Library section should name its aggregate route All Connections."
+        )
+        #endif
         openAllConnections()
         XCTAssertTrue(resultsConnections.waitForExistence(timeout: 5))
         XCTAssertTrue(
@@ -77,8 +86,260 @@ final class ConnectionLibraryUITests: XCTestCase {
     func testMacAddServerCancellationAndLocalTerminalRoute() {
         prepareApp()
         openAllConnections()
+        verifyConnectionLibraryToolbar()
         verifyAddServerPresentationAndDismissal()
         verifyLocalTerminalRouteKeepsLibraryOpen()
+    }
+
+    @MainActor
+    func testMacConnectionRowUsesItsFullWidthForSelectionAndDoubleClick() {
+        prepareApp()
+        openAllConnections()
+        createTestServer()
+
+        XCTAssertTrue(
+            app.staticTexts["Select a connection to get started."].waitForExistence(timeout: 5),
+            "A populated Library with no selection should show only the selection prompt."
+        )
+        XCTAssertFalse(
+            app.buttons["connection-library-add-server-empty-detail"].exists,
+            "A populated Library should not duplicate creation actions in the detail pane."
+        )
+        XCTAssertFalse(
+            app.buttons["connection-library-local-terminal-empty-detail"].exists,
+            "A populated Library should not duplicate Local Terminal in the detail pane."
+        )
+        XCTAssertFalse(
+            app.buttons["Actions for \(testServerName)"].exists,
+            "Connection rows should not reserve horizontal space for a visible actions menu."
+        )
+
+        activate(testServerNameLabel)
+        assertTestServerDetailIsVisible(
+            "Clicking the connection label should select the row and reveal its details."
+        )
+
+        openAllConnections()
+        XCTAssertFalse(selectedServerConnectAction.exists)
+
+        let row = testServerContainer
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        XCTAssertGreaterThan(
+            row.frame.width,
+            testServerNameLabel.frame.width + 20,
+            "The connection row hit surface should span beyond its label content."
+        )
+        row.coordinate(
+            withNormalizedOffset: CGVector(dx: 0.88, dy: 0.5)
+        ).click()
+        assertTestServerDetailIsVisible(
+            "Clicking the trailing row surface should select the connection."
+        )
+
+        let existingWorkspaceIDs = Set(terminalWorkspaceWindows.map(\.identifier))
+        row.doubleClick()
+        let workspaceOpened = XCTNSPredicateExpectation(
+            predicate: NSPredicate { [weak self] _, _ in
+                guard let self else { return false }
+                return self.terminalWorkspaceWindows.contains {
+                    !existingWorkspaceIDs.contains($0.identifier)
+                        && $0.staticTexts[self.testServerName].exists
+                }
+            },
+            object: app
+        )
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [workspaceOpened], timeout: 10),
+            .completed,
+            "Double-clicking any row content should open that saved connection."
+        )
+        if let terminalWindow = terminalWorkspaceWindows.first(where: {
+            !existingWorkspaceIDs.contains($0.identifier)
+                && $0.staticTexts[testServerName].exists
+        }) {
+            closeTerminalWorkspace(terminalWindow)
+        }
+    }
+
+    @MainActor
+    func testMacNativeTerminalChromeAndSidebarSmoke() {
+        prepareApp()
+        openAllConnections()
+
+        let connectionsWindow = firstExistingConnectionLibraryWindow()
+        let terminalWindow = openLocalTerminalWorkspace()
+        terminalWindow.click()
+
+        XCTAssertTrue(
+            terminalWindow.staticTexts["Local"].waitForExistence(timeout: 3),
+            "The native title bar should expose the focused terminal identity."
+        )
+        XCTAssertFalse(
+            terminalWindow.staticTexts["Terminal"].exists,
+            "A local workspace should not retain the generic Terminal title."
+        )
+
+        let newTabAction = terminalWindow.buttons["mac-workspace-new-tab"].firstMatch
+        XCTAssertTrue(
+            newTabAction.waitForExistence(timeout: 3),
+            "The workspace should expose one native New Terminal Tab action."
+        )
+        XCTAssertEqual(
+            terminalWindow.buttons.matching(identifier: "mac-workspace-new-tab").count,
+            1,
+            "The native title bar must not expose duplicate New Terminal Tab actions."
+        )
+        XCTAssertEqual(
+            terminalWindow.buttons.matching(
+                NSPredicate(format: "label == %@", "New Terminal Tab")
+            ).count,
+            1,
+            "The active terminal tool cluster must defer tab creation to its workspace shell."
+        )
+
+        let connectionsAction = terminalWindow.buttons["Connections"].firstMatch
+        XCTAssertTrue(connectionsAction.waitForExistence(timeout: 3))
+        XCTAssertLessThan(
+            connectionsAction.frame.midY,
+            terminalWindow.frame.midY,
+            "Terminal actions must live in the native title-bar toolbar, not a footer."
+        )
+
+        let sidebarToggles = terminalWindow.buttons.matching(
+            NSPredicate(format: "label IN %@", ["Show Sidebar", "Hide Sidebar"])
+        )
+        let sidebarToggle = sidebarToggles.firstMatch
+        XCTAssertTrue(
+            sidebarToggle.waitForExistence(timeout: 5),
+            "The terminal should expose Apple's native sidebar action."
+        )
+        XCTAssertEqual(
+            sidebarToggles.count,
+            1,
+            "The adaptive tab content must publish exactly one native sidebar disclosure."
+        )
+        XCTAssertFalse(
+            terminalWindow
+                .descendants(matching: .any)["mac-workspace-identity"]
+                .exists,
+            "The native window title should be the only title-bar identity."
+        )
+        let nativeWindowTitle = terminalWindow.staticTexts
+            .matching(identifier: "Local")
+            .allElementsBoundByIndex
+            .first {
+                $0.frame.midY < terminalWindow.frame.minY + 60
+                    && $0.frame.minX >= newTabAction.frame.maxX - 1
+            }
+        XCTAssertNotNil(
+            nativeWindowTitle,
+            "The native server identity should follow the leading New Tab action."
+        )
+        XCTAssertFalse(
+            terminalWindow.menuButtons["Tab Actions"].exists,
+            "A single-tab terminal should not reserve title-bar space for tab actions."
+        )
+
+        let secureKeyboardAction = terminalWindow
+            .buttons["mac-workspace-secure-keyboard-entry"]
+            .firstMatch
+        let focusModeAction = terminalWindow.buttons["Focus Mode"].firstMatch
+        let terminalToolsMenu = terminalWindow
+            .menuButtons["Local terminal tools menu"]
+            .firstMatch
+        XCTAssertTrue(secureKeyboardAction.waitForExistence(timeout: 3))
+        XCTAssertTrue(focusModeAction.waitForExistence(timeout: 3))
+        XCTAssertTrue(terminalToolsMenu.waitForExistence(timeout: 3))
+        XCTAssertLessThan(
+            secureKeyboardAction.frame.maxX,
+            connectionsAction.frame.minX,
+            "Window-level controls should remain separated from terminal-level tools."
+        )
+        let windowToTerminalGap =
+            connectionsAction.frame.minX - secureKeyboardAction.frame.maxX
+        let terminalToolGap =
+            terminalToolsMenu.frame.minX - focusModeAction.frame.maxX
+        XCTAssertLessThan(
+            terminalToolGap,
+            windowToTerminalGap,
+            "Settings should remain grouped with terminal tools after the window-level separator."
+        )
+        let workspaceIdentifier = terminalWindow.identifier
+        XCTAssertFalse(
+            workspaceIdentifier.isEmpty,
+            "The terminal workspace must expose a stable scene identifier."
+        )
+        let focusedTerminalWindow = terminalWorkspaceWindow(
+            identifier: workspaceIdentifier
+        )
+        focusedTerminalWindow.click()
+        focusedTerminalWindow.typeKey("t", modifierFlags: .command)
+        XCTAssertTrue(
+            focusedTerminalWindow.staticTexts["New Terminal"].waitForExistence(timeout: 10),
+            "Command-T should add and select a second adaptive workspace tab."
+        )
+        let groupedTerminalWindow = terminalWorkspaceWindow(
+            identifier: workspaceIdentifier
+        )
+        let tabActions = groupedTerminalWindow.menuButtons["Tab Actions"].firstMatch
+        XCTAssertTrue(
+            tabActions.waitForExistence(timeout: 3),
+            "Move Tab should become available when the window contains multiple tabs."
+        )
+        activate(tabActions)
+        XCTAssertTrue(
+            app.menuItems["Move Tab to New Window"].waitForExistence(timeout: 3)
+        )
+        XCTAssertFalse(
+            app.menuItems["Close Tab"].exists,
+            "Native window and keyboard controls already provide tab closure."
+        )
+        groupedTerminalWindow.coordinate(
+            withNormalizedOffset: CGVector(dx: 0.75, dy: 0.5)
+        ).click()
+
+        let groupedSidebarToggles = groupedTerminalWindow.buttons.matching(
+            NSPredicate(format: "label IN %@", ["Show Sidebar", "Hide Sidebar"])
+        )
+        let groupedSidebarToggle = groupedSidebarToggles.firstMatch
+        XCTAssertTrue(groupedSidebarToggle.waitForExistence(timeout: 5))
+        XCTAssertEqual(
+            groupedSidebarToggles.count,
+            1,
+            "A grouped terminal window must expose one native sidebar toggle."
+        )
+        let sidebar = groupedTerminalWindow.outlines.firstMatch
+        let sidebarWasVisible = sidebar.exists
+        activate(groupedSidebarToggle)
+        if sidebarWasVisible {
+            XCTAssertTrue(
+                sidebar.waitForNonExistence(timeout: 5),
+                "The standard AppKit action should close the terminal sidebar."
+            )
+        } else {
+            XCTAssertTrue(
+                sidebar.waitForExistence(timeout: 5),
+                "The standard AppKit action should open the terminal sidebar."
+            )
+        }
+        activate(groupedSidebarToggle)
+        if sidebarWasVisible {
+            XCTAssertTrue(
+                sidebar.waitForExistence(timeout: 5),
+                "The standard AppKit action should restore the terminal sidebar."
+            )
+        } else {
+            XCTAssertTrue(
+                sidebar.waitForNonExistence(timeout: 5),
+                "The standard AppKit action should restore the hidden sidebar state."
+            )
+        }
+
+        XCTAssertTrue(
+            connectionsWindow.exists && library.exists,
+            "Opening the native terminal sidebar must leave the Connections Library open."
+        )
+        closeAllTerminalWorkspaces()
     }
     #else
     @MainActor
@@ -128,7 +389,8 @@ final class ConnectionLibraryUITests: XCTestCase {
         // with its native container name. Its navigation child remains stable.
         return firstExistingElement(withIdentifiers: [
             "connection-library",
-            "connection-library-navigation"
+            "connection-library-navigation",
+            "connection-library-results-connections"
         ])
         #else
         element(identifier: "connection-library")
@@ -154,6 +416,9 @@ final class ConnectionLibraryUITests: XCTestCase {
     private func launchCredentialCleanupApp() {
         let cleanupApp = XCUIApplication()
         cleanupApp.launchEnvironment[Self.credentialCleanupEnvironmentKey] = "1"
+        #if os(macOS)
+        cleanupApp.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+        #endif
         cleanupApp.launch()
         XCTAssertTrue(
             cleanupApp.descendants(matching: .any)[
@@ -161,15 +426,24 @@ final class ConnectionLibraryUITests: XCTestCase {
             ].waitForExistence(timeout: 15),
             "UI-test teardown must remove the shared GlassSecretStore credential."
         )
-        cleanupApp.terminate()
+        terminateAndWait(cleanupApp)
+    }
+
+    @MainActor
+    private func terminateAndWait(_ application: XCUIApplication?) {
+        guard let application, application.state != .notRunning else { return }
+        application.terminate()
+        XCTAssertTrue(
+            application.wait(for: .notRunning, timeout: 10),
+            "The UI-test app must fully terminate before the next isolated launch."
+        )
     }
 
     @MainActor
     private var addServerAction: XCUIElement {
         firstExistingElement(withIdentifiers: [
+            "connection-library-add-server-toolbar",
             "connection-library-add-server-results",
-            "connection-library-add-server-sidebar",
-            "connection-library-add-server-empty-results",
             "connection-library-add-server-empty-detail",
             "connection-library-detail-empty-server"
         ])
@@ -177,18 +451,29 @@ final class ConnectionLibraryUITests: XCTestCase {
 
     @MainActor
     private var testServerRow: XCUIElement {
-        testServerNameLabel
+        testServerContainer
+    }
+
+    @MainActor
+    private var testServerContainer: XCUIElement {
+        app.descendants(matching: .any).matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@ AND NOT identifier BEGINSWITH %@",
+                "connection-library-server-",
+                "connection-library-server-name-"
+            )
+        ).matching(
+            NSPredicate(format: "label CONTAINS %@", testServerName)
+        ).firstMatch
     }
 
     @MainActor
     private var testServerNameLabel: XCUIElement {
-        app.staticTexts.matching(
+        testServerContainer.staticTexts.matching(
             NSPredicate(
                 format: "identifier BEGINSWITH %@",
                 "connection-library-server-name-"
             )
-        ).matching(
-            NSPredicate(format: "label == %@", testServerName)
         ).firstMatch
     }
 
@@ -214,6 +499,88 @@ final class ConnectionLibraryUITests: XCTestCase {
 
     #if os(macOS)
     @MainActor
+    private func verifyConnectionLibraryToolbar() {
+        let window = firstExistingConnectionLibraryWindow()
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+
+        let addConnection = window.buttons[
+            "connection-library-add-server-toolbar"
+        ].firstMatch
+        let localTerminal = window.buttons[
+            "connection-library-local-terminal-toolbar"
+        ].firstMatch
+        let sidebarToggles = window.buttons.matching(
+            NSPredicate(format: "label IN %@", ["Show Sidebar", "Hide Sidebar"])
+        )
+        let sidebarToggle = sidebarToggles.firstMatch
+        XCTAssertTrue(addConnection.waitForExistence(timeout: 5))
+        XCTAssertTrue(localTerminal.waitForExistence(timeout: 5))
+        XCTAssertTrue(sidebarToggle.waitForExistence(timeout: 5))
+
+        let sidebar = window.descendants(matching: .any)[
+            "connection-library-navigation"
+        ].firstMatch
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 5))
+        XCTAssertLessThan(
+            addConnection.frame.midY,
+            window.frame.minY + 80,
+            "Add Connection should remain in the native title-bar toolbar."
+        )
+        XCTAssertLessThan(
+            localTerminal.frame.midY,
+            window.frame.minY + 80,
+            "Local Terminal should remain in the native title-bar toolbar."
+        )
+
+        XCTAssertTrue(
+            app.windows["All Connections"].exists,
+            "The native window title should identify the active Library scope."
+        )
+        XCTAssertFalse(
+            window.buttons["connection-library-add-server-sidebar"].exists,
+            "The sidebar footer should not duplicate Add Connection."
+        )
+        XCTAssertFalse(
+            window.buttons["connection-library-add-server-empty-results"].exists,
+            "The results empty state should not duplicate Add Connection."
+        )
+        XCTAssertEqual(
+            sidebarToggles.count,
+            1,
+            "Connections must expose exactly one native sidebar toggle."
+        )
+
+        let allConnections = window.descendants(matching: .any)[
+            "connection-library-scope-all-connections"
+        ].firstMatch
+        XCTAssertTrue(
+            allConnections.waitForExistence(timeout: 3)
+                && allConnections.isHittable,
+            "The connection sidebar should begin visible."
+        )
+        activate(sidebarToggle)
+        let sidebarHidden = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in !allConnections.isHittable },
+            object: allConnections
+        )
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [sidebarHidden], timeout: 5),
+            .completed,
+            "The native sidebar control should hide this window's sidebar."
+        )
+        activate(sidebarToggle)
+        let sidebarRestored = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in allConnections.isHittable },
+            object: allConnections
+        )
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [sidebarRestored], timeout: 5),
+            .completed,
+            "The native sidebar control should restore this window's sidebar."
+        )
+    }
+
+    @MainActor
     private func verifyAddServerPresentationAndDismissal() {
         XCTAssertTrue(
             addServerAction.waitForExistence(timeout: 5),
@@ -236,37 +603,136 @@ final class ConnectionLibraryUITests: XCTestCase {
         let connectionsWindow = firstExistingConnectionLibraryWindow()
         XCTAssertTrue(connectionsWindow.waitForExistence(timeout: 5))
 
-        let localTerminal = app.buttons["Local Terminal"].firstMatch
+        let terminalWindow = openLocalTerminalWorkspace()
+        XCTAssertTrue(
+            connectionsWindow.exists && library.exists,
+            "Opening a terminal workspace must leave the Connections Library open."
+        )
+
+        closeTerminalWorkspace(terminalWindow)
+    }
+
+    @MainActor
+    private func openLocalTerminalWorkspace() -> XCUIElement {
+        let existingWorkspaceIDs = Set(
+            terminalWorkspaceWindows.map(\.identifier)
+        )
+        let localTerminal = app.buttons[
+            "connection-library-local-terminal-toolbar"
+        ].firstMatch
         XCTAssertTrue(
             localTerminal.waitForExistence(timeout: 5),
             "The macOS Library should expose the non-persisted Local Terminal route."
         )
         activate(localTerminal)
 
-        let terminalWindow = app.windows["Terminal"].firstMatch
-        XCTAssertTrue(
-            terminalWindow.waitForExistence(timeout: 10),
+        let workspaceOpened = XCTNSPredicateExpectation(
+            predicate: NSPredicate { [weak self] _, _ in
+                guard let self else { return false }
+                return self.terminalWorkspaceWindows.contains {
+                    !existingWorkspaceIDs.contains($0.identifier)
+                        && $0.staticTexts["Local"].exists
+                }
+            },
+            object: app
+        )
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [workspaceOpened], timeout: 10),
+            .completed,
             "Local Terminal should open a separate terminal workspace."
         )
-        XCTAssertTrue(
-            connectionsWindow.exists && library.exists,
-            "Opening a terminal workspace must leave the Connections Library open."
+        let terminalWindow = terminalWorkspaceWindows.first {
+            !existingWorkspaceIDs.contains($0.identifier)
+                && $0.staticTexts["Local"].exists
+        }
+        XCTAssertNotNil(
+            terminalWindow,
+            "The workspace should be discoverable by its stable native toolbar actions."
         )
+        guard let terminalWindow else { return app.windows.firstMatch }
+        let workspaceIdentifier = terminalWindow.identifier
+        XCTAssertFalse(
+            workspaceIdentifier.isEmpty,
+            "The terminal workspace must expose a stable scene identifier."
+        )
+        return terminalWorkspaceWindow(identifier: workspaceIdentifier)
+    }
 
+    @MainActor
+    private func terminalWorkspaceWindow(identifier: String) -> XCUIElement {
+        app.windows.matching(identifier: identifier).firstMatch
+    }
+
+    @MainActor
+    private func closeTerminalWorkspace(_ terminalWindow: XCUIElement) {
+        let workspaceIdentifier = terminalWindow.identifier
+        XCTAssertFalse(
+            workspaceIdentifier.isEmpty,
+            "A terminal workspace must expose a stable scene identifier."
+        )
         let closeButton = terminalWindow.buttons[XCUIIdentifierCloseWindow]
         XCTAssertTrue(closeButton.waitForExistence(timeout: 3))
         closeButton.click()
-        // AppKit exposes SwiftUI confirmation dialogs as an alert-labelled
-        // sheet; the dialog title is a child rather than the sheet identifier.
-        let confirmation = terminalWindow.sheets.firstMatch
+        // SwiftUI's window-close confirmation is exposed as an app-level
+        // alert-labelled sheet rather than a descendant of the cached window.
+        let confirmation = app.sheets.firstMatch
         if confirmation.waitForExistence(timeout: 2) {
             XCTAssertTrue(confirmation.staticTexts["Close Terminal?"].waitForExistence(timeout: 2))
             let confirmClose = confirmation.buttons["Close"].firstMatch
             XCTAssertTrue(confirmClose.waitForExistence(timeout: 2))
             confirmClose.click()
         }
-        XCTAssertFalse(terminalWindow.waitForExistence(timeout: 3))
+        let workspaceClosed = XCTNSPredicateExpectation(
+            predicate: NSPredicate { [weak self] _, _ in
+                guard let self else { return false }
+                return !self.terminalWorkspaceWindows.contains {
+                    $0.identifier == workspaceIdentifier
+                }
+            },
+            object: app
+        )
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [workspaceClosed], timeout: 3),
+            .completed,
+            "Closing the local terminal should remove its workspace window."
+        )
     }
+
+    @MainActor
+    private func closeAllTerminalWorkspaces() {
+        var attemptsRemaining = 10
+        while let terminalWindow = terminalWorkspaceWindows.first,
+              attemptsRemaining > 0 {
+            closeTerminalWorkspace(terminalWindow)
+            attemptsRemaining -= 1
+        }
+        XCTAssertTrue(
+            terminalWorkspaceWindows.isEmpty,
+            "The toolbar smoke test must close every native terminal tab it creates."
+        )
+    }
+
+    @MainActor
+    private var terminalWorkspaceWindows: [XCUIElement] {
+        app.windows.allElementsBoundByIndex.filter {
+            $0.buttons["New Local Pane"].exists
+        }
+    }
+
+    @MainActor
+    private func firstExistingButton(
+        in container: XCUIElement,
+        withLabels labels: [String]
+    ) -> XCUIElement {
+        for label in labels {
+            let button = container.buttons[label].firstMatch
+            if button.waitForExistence(timeout: 1) {
+                return button
+            }
+        }
+        return container.buttons[labels[0]].firstMatch
+    }
+
     #endif
 
     @MainActor
@@ -283,20 +749,19 @@ final class ConnectionLibraryUITests: XCTestCase {
             "The Add Server flow should open from the connection library."
         )
 
-        replaceText(in: app.textFields["Display Name"], with: testServerName)
-        replaceText(in: app.textFields["Host"], with: "192.0.2.1")
-        replaceText(in: app.textFields["Username"], with: "ui-test")
+        replaceText(in: app.textFields["add-server-display-name"], with: testServerName)
+        replaceText(in: app.textFields["add-server-host"], with: "192.0.2.1")
+        replaceText(in: app.textFields["add-server-username"], with: "ui-test")
         replaceText(
-            in: app.secureTextFields["Password"],
+            in: app.secureTextFields["add-server-password"],
             with: "UI-Test-\(UUID().uuidString)"
         )
-        replaceText(in: app.textFields["Add tag"], with: testServerTag)
+        replaceText(in: app.textFields["add-server-tag"], with: testServerTag)
 
-        let save = app.navigationBars["Add Server"].buttons["Add Server"].firstMatch
+        let save = app.buttons["Add Server"].firstMatch
         XCTAssertTrue(save.waitForExistence(timeout: 3))
         XCTAssertTrue(save.isEnabled)
         activate(save)
-        createdTestServer = true
         dismissSavePasswordPromptIfPresent()
 
         openAllConnections()
@@ -350,6 +815,18 @@ final class ConnectionLibraryUITests: XCTestCase {
                 "Compact layouts should drill into detail with native stack navigation."
             )
         }
+    }
+
+    @MainActor
+    private func assertTestServerDetailIsVisible(_ message: String) {
+        XCTAssertTrue(
+            selectedServerDetail.waitForExistence(timeout: 10),
+            message
+        )
+        XCTAssertTrue(
+            selectedServerConnectAction.waitForExistence(timeout: 5),
+            "Selecting the connection should expose its explicit Connect action."
+        )
     }
 
     @MainActor
@@ -431,6 +908,23 @@ final class ConnectionLibraryUITests: XCTestCase {
         #if os(macOS)
         let connectionsWindow = firstExistingConnectionLibraryWindow()
         XCTAssertTrue(connectionsWindow.waitForExistence(timeout: 5))
+        let searchField = connectionsWindow.searchFields.firstMatch
+        XCTAssertTrue(searchField.waitForExistence(timeout: 5))
+        XCTAssertLessThan(
+            settings.frame.midY,
+            connectionsWindow.frame.minY + 80,
+            "Settings should remain in the native title-bar toolbar."
+        )
+        XCTAssertLessThan(
+            abs(settings.frame.midY - searchField.frame.midY),
+            12,
+            "Settings should align with the native Connections search field."
+        )
+        XCTAssertGreaterThan(
+            settings.frame.midX,
+            searchField.frame.midX,
+            "Settings should appear after the native Connections search field."
+        )
         activate(settings)
 
         XCTAssertTrue(
@@ -488,6 +982,10 @@ final class ConnectionLibraryUITests: XCTestCase {
             connectionsWindow.waitForExistence(timeout: 5),
             "The native Connections window should exist before Library navigation."
         )
+        if connectionsWindow.isHittable {
+            connectionsWindow.click()
+            return
+        }
 
         // macOS may restore a terminal workspace in front of Connections.
         // Raise the existing window through AppKit's Window menu rather than
@@ -580,6 +1078,16 @@ final class ConnectionLibraryUITests: XCTestCase {
         )
         if rootScope.isHittable { return }
 
+        #if os(macOS)
+        let showSidebar = app.buttons["Show Sidebar"].firstMatch
+        if showSidebar.waitForExistence(timeout: 2), showSidebar.isHittable {
+            activate(showSidebar)
+            if rootScope.waitForExistence(timeout: 5), rootScope.isHittable {
+                return
+            }
+        }
+        #endif
+
         for _ in 0..<3 where !rootScope.isHittable {
             let backToRoot = app.navigationBars.buttons["Connections"].firstMatch
             if backToRoot.waitForExistence(timeout: 1), backToRoot.isHittable {
@@ -627,21 +1135,24 @@ final class ConnectionLibraryUITests: XCTestCase {
             return
         }
 
-        let actions = app.buttons["Actions for \(testServerName)"].firstMatch
-        if assertRemoval {
-            XCTAssertTrue(actions.waitForExistence(timeout: 3))
-        }
-        guard actions.exists else { return }
-        activate(actions)
+        #if os(macOS)
+        testServerNameLabel.rightClick()
+        #else
+        testServerNameLabel.press(forDuration: 1)
+        #endif
 
-        let delete = app.buttons["Delete"].firstMatch
+        let deleteButton = app.buttons["Delete"].firstMatch
+        let deleteMenuItem = app.menuItems["Delete"].firstMatch
+        let delete = deleteButton.exists ? deleteButton : deleteMenuItem
         if assertRemoval {
             XCTAssertTrue(delete.waitForExistence(timeout: 2))
         }
         guard delete.exists else { return }
         activate(delete)
 
-        let confirm = app.buttons["Delete \(testServerName)"].firstMatch
+        let confirm = app.descendants(matching: .any)[
+            "connection-library-confirm-delete-server"
+        ].firstMatch
         if assertRemoval {
             XCTAssertTrue(confirm.waitForExistence(timeout: 2))
         }
@@ -654,7 +1165,6 @@ final class ConnectionLibraryUITests: XCTestCase {
                 "Deleting the UI fixture should remove its projected row."
             )
         }
-        createdTestServer = false
     }
 
     @MainActor
@@ -743,6 +1253,14 @@ final class ConnectionLibraryUITests: XCTestCase {
 
     @MainActor
     private func makeHittable(_ element: XCUIElement) {
+        #if os(macOS)
+        // Every field in the macOS form is already visible in its native sheet.
+        // Swiping a sheet to expose a transiently re-rendering field can dismiss
+        // the sheet before XCTest resolves the field's replacement AX node.
+        XCTAssertTrue(element.waitForExistence(timeout: 5))
+        XCTAssertTrue(element.isHittable)
+        return
+        #else
         for _ in 0..<5 where !element.isHittable {
             let sheet = app.sheets.firstMatch
             if sheet.exists {
@@ -760,6 +1278,7 @@ final class ConnectionLibraryUITests: XCTestCase {
             }
         }
         XCTAssertTrue(element.isHittable)
+        #endif
     }
 
     @MainActor

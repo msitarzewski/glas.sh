@@ -14,9 +14,9 @@ Two-tier capture:
 1. **Simulator captures (5 of 8)** — `xcrun simctl io booted screenshot path.png` after navigating to the target UI state. Use for app-content shots where 2D rendering is faithful.
 2. **Vision Pro captures (3 of 8)** — for spatial hero shots where window depth, passthrough blend, and ornament floating make the marketing point. Capture via Vision Pro's built-in spatial capture or AirPlay mirroring.
 
-Pre-seed the simulator with:
-- 2–3 dummy servers with friendly names (e.g., `homelab.local`, `prod-web-01.example.com`, `pi5-living-room`)
-- A canned terminal output history (run `ls -la /etc && uname -a && htop` against any local sshd before capture)
+Prepare a capture-only QA profile that is never included in the production bundle:
+- 2–3 reviewer-owned or isolated test servers with non-sensitive friendly names
+- Real terminal output captured by running commands against a local or dedicated test SSH host
 - One SSH key showing migration badge state
 - One favorited server
 
@@ -25,7 +25,7 @@ Pre-seed the simulator with:
 ### Shot 1 — HERO: Multi-window terminal scene
 - **Source**: Vision Pro on-device
 - **Frame**: Two terminal windows side-by-side at slight angles, one with a colorful TUI (htop, k9s, or `lsd` output), one with a build log streaming
-- **Ornament visible**: bottom ornament with connection label, status indicator, AI/SFTP icons
+- **Ornament visible**: the current system-owned status/tools ornament for that independent terminal window
 - **Caption text overlay**: "Terminals that float where you want them"
 - **Why this shot**: Sells the headline value — visionOS-native multi-window SSH in a single image
 
@@ -37,7 +37,7 @@ Pre-seed the simulator with:
 
 ### Shot 3 — Tailscale device list
 - **Source**: Simulator
-- **Frame**: Tailscale tab in Connections view, showing 6–10 devices from a simulated tailnet (hostnames, OS icons, online dots). One device highlighted on hover.
+- **Frame**: configured Network scope in Connections, showing an isolated capture tailnet with non-sensitive hostnames and real online state. Do not fabricate a production tailnet or ship capture fixtures.
 - **Caption text overlay**: "Your whole tailnet, one tap away"
 - **Why**: Big-name integration, unique feature
 
@@ -86,14 +86,15 @@ Do NOT use:
 
 ## Capture-day checklist
 
-- [ ] Boot Simulator: Vision Pro 26 Simulator on macOS host with Retina display
-- [ ] Seed the app: dummy servers, sample SSH keys, one favorited server, one tag (`production`)
+- [ ] Capture both the OS 26 compatibility runtime and exact-current OS 27 presentation where App Store Connect accepts them
+- [ ] Seed only the capture QA environment: isolated servers, non-production SSH keys, one favorite, and clearly non-sensitive tags
 - [ ] Run a long-running ssh session to a real or local server to get realistic terminal content
 - [ ] For each shot: navigate → adjust window scale to fill canvas → `xcrun simctl io booted screenshot ~/Desktop/glas-sh-shot-N.png`
 - [ ] On Vision Pro: AirPlay to Mac → use native screen recorder → extract frames OR use device spatial screenshot
 - [ ] Open each PNG in any image editor → overlay caption text (Sora 700) → export at 3840×2160 PNG → name `01_hero.png` through `08_transparency.png`
 - [ ] Verify dimensions: `sips -g pixelWidth -g pixelHeight ~/Desktop/01_hero.png`
 - [ ] Verify color space is RGB (not CMYK or P3-only): `sips -g space ~/Desktop/01_hero.png`
+- [ ] Verify the terminal scene opens at a readable physical size and the native session sidebar can be dismissed before capturing hero images
 
 ## After upload
 

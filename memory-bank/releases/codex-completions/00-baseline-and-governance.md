@@ -16,14 +16,15 @@ The supported release baseline is Apple OS 26 or newer on Apple Silicon only.
 
 The ledger, evidence rules, supported platform floor, product invariant, and honest open-gate policy are approved. Toolchain/device rows remain execution evidence owned by Phase 10 rather than reopening this governance phase.
 
-## Current evidence
+## Release-entry evidence and later verification
 
 - The working branch contains active user changes and must not be overwritten (`memory-bank/activeContext.md#Current Focus`).
 - Xcode 27.0 (27A5209h) builds the final candidate with the installed Metal Toolchain.
 - The full app test action passes 164/164 on both visionOS 26.4 and visionOS 27.0 arm64 simulators, with no failures, skips, expected failures, or runtime warnings.
 - GlasSecretStore passes 75/75 tests across 13 suites.
 - The generic Release app is arm64-only with minimum visionOS 26.0 and SDK 27.0.
-- A matching Xcode 26.x current-tree run and physical Vision Pro validation remain required; Xcode 26 is not installed in this environment.
+- A matching Xcode 26.x current-tree run remains required; Xcode 26 is not installed in this environment.
+- Later physical-device evidence (2026-08-01) proves a wearer-present Vision Pro can launch the unified app and open an SSH terminal to the development Mac over Tailscale. Full transparency-extreme, security, input, accessibility, performance, exact-OS/build, initial-geometry, and native sidebar-dismissal validation remains open in Phase 10.
 
 ## Work packages
 
@@ -52,7 +53,7 @@ Track at minimum:
 | Toolchain | SDK/runtime | Build | Tests | Required conclusion |
 |---|---|---|---|---|
 | Xcode 26.4 | visionOS 26.x simulator | Pending; Xcode 26 unavailable locally | Pending | Required matching-toolchain baseline |
-| Xcode 26.4 | Physical Vision Pro on supported OS | Pending | Manual suite pending | Hardware/security/visual baseline |
+| Xcode 27 development build | Physical Vision Pro on supported OS | Partial pass 2026-08-01 | SSH launch/connect passed; broader manual matrix open | Hardware/security/visual baseline |
 | Xcode 27.0 (27A5209h) | visionOS 27.0 simulator | Passed 2026-07-17 | 164/164 passed | Forward compatibility baseline |
 | Xcode 27.0 (27A5209h) | visionOS 26.4 simulator | Passed 2026-07-17 | 164/164 passed | Runtime-floor evidence; does not replace Xcode 26 proof |
 

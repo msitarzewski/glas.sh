@@ -10,7 +10,22 @@ Add semantic terminal workflows and resumable workspace behavior using shell int
 
 ## Current status — In progress
 
-The layout-restoration foundation and native macOS workspace shell are implemented and tested. Versioned session intentions create fresh authorized sessions; macOS workspaces add platform-native windows, tabs, horizontal/vertical splits, focused-pane commands, local/SSH launch choices, teardown, and bounded restoration. Semantic history/command blocks, broader shell integration, and tmux/Zellij discovery remain open, so the phase remains In progress.
+The layout-restoration foundation and model-owned adaptive workspace shell are
+implemented and tested. Versioned session intentions create fresh authorized
+sessions; native adaptive tabs now preserve local/SSH session lifetime,
+selection repair, Command-T, explicit close, Move Tab to New Window, multiple
+windows, focused commands, local/SSH launch choices, teardown, and bounded
+restoration without an AppKit tab-group mirror. Semantic history/command blocks,
+broader shell integration, and tmux/Zellij discovery remain open, so the phase
+remains In progress.
+
+The 2026-08-01 wearer-present Vision Pro check proves that a real device can
+open an SSH terminal to the development Mac over Tailscale. It does not close
+`WORK-003`: a normal SSH session still ends with its transport, while resumable
+handoff requires the tmux/Zellij discovery, attach, detach, and cross-device
+resume work specified below. The same check exposed open initial-window sizing
+and native session-sidebar dismissal defects; those belong to Phase 06 rather
+than the persistent-shell protocol.
 
 ## Existing architecture to reuse
 
@@ -56,14 +71,38 @@ Do not infer sensitive command content from raw terminal output when a trustwort
 - Restore by creating fresh authorized sessions through Phase 01.
 - Report per-pane failures without discarding successful panes.
 - Keep platform-native presentation: spatial groups on visionOS, tabs/splits on macOS, adaptive workspaces on iPadOS, compact switching on iOS.
+- Make `SessionManager` workgroup order and selection authoritative. A selected
+  identifier must resolve to a current session or be repaired atomically to
+  `nil` or the next valid session during the same mutation.
+- Retain terminal emulator, local PTY, and live SSH ownership outside ephemeral
+  adaptive-tab content. View `onDisappear` is never a session, tab, workgroup,
+  or process close command.
+- Model one terminal window as one workspace containing native adaptive session
+  tabs. A tab can retain the existing split topology as its content.
+- Keep windows independent: visionOS spatial windows, macOS/iPadOS value-based
+  `WindowGroup` windows, and compact iPhone navigation all project the same
+  workgroup/session intentions without sharing presentation state.
+- Move Tab to New Window uses a bounded transactional handoff:
+  the source retains the live session, the destination opens and claims it, and
+  only a confirmed claim removes it from the source. Failure or expiration
+  leaves the source tab intact.
+- Persist stable workspace, tab, endpoint, split, and optional attach
+  intentions. Never serialize a live SSH socket or claim that OS restoration
+  resumes transport state.
 
-### 07.4 tmux and Zellij discovery
+### 07.4 Persistent remote sessions and cross-device handoff
 
 - Detect availability without mutating the remote host.
 - List attachable sessions with explicit user choice.
-- Create/attach/detach through visible commands and predictable cleanup.
+- Create, name, attach, and detach through visible commands and predictable cleanup.
+- Keep the shell and its child processes running on the remote host after glas.sh disconnects.
+- Allow a session detached on Vision Pro to be discovered and resumed from glas.sh on Mac, iPad, iPhone, or another Vision Pro, and vice versa.
+- Distinguish a live attached session, a detached resumable session, and a stale or unreachable session without claiming that an SSH socket itself roams between devices.
+- Preserve terminal size, environment, working directory, and multiplexer session identity where the selected server-side tool supports them; report unsupported state honestly.
+- Make simultaneous-attach behavior explicit: support safe shared attachment only when requested, otherwise warn before taking over or attaching to an already viewed session.
 - Handle missing tools, version differences, nested sessions, and failed attach.
-- Prefer this path for resumability before a custom remote daemon.
+- Prefer tmux as the first implementation, retain Zellij as a compatible provider, and evaluate `screen` only as a legacy fallback.
+- Prefer this server-side multiplexer path for resumability before a custom remote daemon.
 
 ### 07.5 File references and working-directory actions
 
@@ -76,7 +115,13 @@ Do not infer sensitive command content from raw terminal output when a trustwort
 
 - Command blocks, working directory, exit status, selection, and file references derive from defined semantic signals.
 - Workspace restore creates fresh authorized sessions and reports partial failures.
-- tmux/Zellij discovery and attach work without a proprietary daemon.
+- Adaptive presentation changes, sidebar toggles, width-class changes, and view
+  reconstruction do not close live sessions or local processes.
+- Command-T, explicit tab close, workgroup close, and Move Tab to New Window are
+  authoritative model operations with deterministic selection repair.
+- Moving a live session between windows is lossless or rolls back to the source.
+- tmux/Zellij discovery, attach, detach, and cross-device resume work without a proprietary daemon.
+- Disconnecting glas.sh does not terminate a process intentionally running inside a managed persistent remote session.
 - Semantic history has bounded retention and deletion and excludes secret input.
 - Platform shells present workspaces natively.
 
@@ -85,17 +130,24 @@ Do not infer sensitive command content from raw terminal output when a trustwort
 - OSC 133 and shell-integration parsing, fragmentation, malformed input, and fallback.
 - Secret-input exclusion and history retention/deletion.
 - Workspace serialization, migration, partial restore, and missing endpoint behavior.
-- tmux/Zellij availability, listing, attach, detach, error, and nested-session fixtures.
+- Dynamic-tab ordering, selection repair, explicit close, view disappearance,
+  transfer claim/rollback/expiration, terminal-host retention, and local-process
+  retention.
+- tmux/Zellij availability, listing, naming, attach, detach, cross-device resume, simultaneous-attach policy, error, stale-session, and nested-session fixtures.
 - Remote file-reference validation and SFTP handoff.
 
 ## Manual verification
 
 - bash, zsh, fish, tmux, and Zellij on representative hosts.
-- Long-running workspace interruption and reconnect.
+- Long-running workspace interruption, detach, app termination, and resume from a second Apple device.
+- Start a process from Vision Pro, disconnect without terminating it, resume it on Mac and iPad, then detach and resume it again on Vision Pro.
 - visionOS spatial grouping plus native macOS/iPadOS presentations when available.
 
 ## Exit evidence
 
 - Documented shell-integration protocol and privacy model.
 - Green semantic/workspace regression suite.
-- Demonstrated resumable workflow through tmux or Zellij.
+- Demonstrated cross-device resumable workflow through tmux or Zellij with the remote process surviving client disconnection.
+- Green adaptive-workspace model and UI coverage for selection repair, explicit
+  close, view reconstruction, local-process retention, SSH-session retention,
+  native sidebar ownership, and transactional window movement.

@@ -1,21 +1,50 @@
 # Active Context
 
-## Current Focus
+## Current Focus (reconciled 2026-08-01)
 - The One Base release was implementation/QA approved on 2026-07-25. One native `glas.sh` application target and scheme now serve iPhone, iPad, visionOS, and native Apple Silicon macOS.
-- One `@main` application composes the existing native platform scenes. `glas.sh-mac` remains a guarded AppKit/local-PTY implementation boundary; the duplicate Mac application/test targets and scheme are retired.
-- Product identity is unified as `sh.glas.app`; SDK-specific plist, entitlements, icons, and widget filtering preserve shared GlassSecretStore, app-group, Keychain, iCloud, terminal, and platform behavior.
-- The approved release is published on `agent/one-base` through PR [#30](https://github.com/msitarzewski/glas.sh/pull/30); GitHub is the canonical merge-status record.
-- This completion is not an App Store distribution decision. Physical Vision Pro, distribution certificate trust/notarization, final hosted Mac XCTest after the render-only delta, and external dependency-advisory querying retain explicit evidence boundaries in the release dashboard.
-- Working branch: `agent/one-base`.
+- One `@main` application composes the existing native platform scenes. `Platforms/macOS` is the guarded AppKit/local-PTY implementation boundary; the duplicate Mac application/test targets and scheme are retired.
+- The public repository structure was implementation/QA approved on 2026-07-25: Mac sources/resources moved from the misleading `glas.sh-mac` name to `Platforms/macOS`, Mac tests moved beneath `glas.shTests/macOS`, and every moved file retained its original Git blob content.
+- Product identity is unified as `sh.glas.app`; SDK-specific plist, entitlements, icons, and widget filtering preserve shared GlasSecretStore, app-group, Keychain, iCloud, terminal, and platform behavior.
+- The approved One Base release was merged to `main` through PR [#30](https://github.com/msitarzewski/glas.sh/pull/30); merge commit `d9237f97` and GitHub are the canonical publication record.
+- This completion is not an App Store distribution decision. Physical Vision Pro SSH to the development Mac over Tailscale now works, but the full device matrix, initial terminal sizing, native session-sidebar dismissal, distribution certificate trust/notarization, final hosted Mac XCTest after the render-only delta, and external dependency-advisory querying retain explicit evidence boundaries in the release dashboard.
+- Working branch: `codex/native-mac-terminal-chrome`.
 
 ## What's Next
-- **Complete and preserve the One Base publication.**
-  - PR [#30](https://github.com/msitarzewski/glas.sh/pull/30) is the canonical review and merge record.
+- **Preserve the completed One Base publication.**
+  - PR [#30](https://github.com/msitarzewski/glas.sh/pull/30) and merge commit `d9237f97` are the canonical review and merge record.
   - Retain baseline `c9f7a406` and the approved single-diff governance variance.
+- **Continue native terminal UX work from the public platform boundary.**
+  - Keep Mac-only titlebar, sidebar, AppKit window, local PTY, tab, and split behavior in `Platforms/macOS`.
+  - Keep shared connection, credential, trust, terminal, workgroup, theme, and appearance behavior in the unified application core.
+  - The approved model-owned `.sidebarAdaptable` terminal workspace now replaces
+    the former AppKit tab-group mirror. `SessionManager` and the workspace model
+    own selection, lifetime, explicit close, restoration, and transactional
+    movement between windows.
+  - Connections and terminal windows use one native automatic sidebar control,
+    full-height sidebar material, and matching unified compact titlebars.
+    Terminal identity and separate global/terminal tool clusters remain stable
+    as the sidebar opens, closes, or adapts at compact widths.
+  - The same authoritative workgroup/session intentions drive the system
+    visionOS tab ornament and session sidebar, native iPad top-tab/sidebar
+    adaptation, and compact iPhone switching.
+  - Preserve independent spatial windows, one bottom tools ornament per window,
+    fully transparent terminal canvases, and fully opaque terminal glyphs.
 - **Close remaining distribution/device evidence.**
-  - Run the physical Vision Pro interaction matrix and distribution-signing/notarization checks when hardware and credentials are available.
+  - Preserve the successful physical Vision Pro -> Mac SSH/Tailscale result, then run the remaining interaction, accessibility, performance, security, and distribution-signing/notarization matrix.
+  - Resolve the initially undersized Vision terminal scene and provide a discoverable native session-sidebar dismissal route without adding a custom tab/sidebar authority.
   - Re-run final hosted Mac unit/UI tests after the protected stale `testmanagerd` state clears.
   - Run an approved dependency-advisory service or provision an offline OSV database.
+- **Then begin Phase 08: the Magic / First Class Glass-family connection experience.**
+  - Deliver the user model **My Connections**: define once, find everywhere,
+    and connect with the least intervention compatible with honest security.
+  - Establish the neutral endpoint, product-overlay, GlasSecretStore credential,
+    host-trust, consent, and availability contracts before implementation begins
+    in glas.sh, glassdb, or the shared package.
+  - Use the canonical acceptance path: define an SSH connection in glas.sh on
+    iPhone, then select and use it in glassdb on Vision Pro as the tunnel to a
+    database without re-entering eligible connection or credential data.
+  - Keep `SYNC-001` through `SYNC-008` `Not started` until their approved
+    cross-repository implementation and verification actually begin.
 - **Close the remaining codex-completions release gates.**
   - Finish physical IME/dictation, hardware-keyboard/accessibility, representative TUI, terminal conformance, and performance evidence.
   - Finish recording export/device policy and cross-repository glassdb acceptance.
@@ -26,6 +55,9 @@
   - Output-only recording default, protected/bounded storage, fail-closed deletion, redacted diagnostics, SFTP no-clobber transfer, and deterministic AI confirmation.
   - SharePlay and unused AI summaries removed, HTML Preview Debug-only, unsupported SSH Agent/inert settings absent, and forwarding backed by the shared manager.
 - **Current automated evidence.**
+  - The 2026-07-30 adaptive-workspace publication checkpoint passes 274/274 native Mac unit tests with zero failures, skips, or runtime warnings. Exact-current visionOS 27, iPadOS 27, and iOS 27 simulator builds also pass.
+  - The final native-chrome diff check and production incomplete-marker scan are clean. User visual review approved the Connections and terminal layouts. The unbounded Mac UI harness was stopped after its host runner stalled between app launches; no UI-suite pass is claimed for that run.
+  - Public platform-boundary cleanup passes 251/251 Mac tests, iPhone 17 Pro and Vision Pro 27 simulator builds, and simulator install/launch smokes on both products.
   - iPhone and iPad iOS 27 unit suites pass 232/232 each; iPad full UI passes 2/2 and final compact iPhone smoke passes 1/1 with zero runtime warnings.
   - visionOS 26.4 and 27 unit suites pass 229/229 each; 26.4 app smoke passes and 27 UI completes with one pass plus one explicit simulator-input skip.
   - A fresh exact-current native arm64 Mac Release archive and direct launch pass with zero compiler/analyzer warnings. The immediately preceding unified-host suite passes 251/251; final hosted XCTest is blocked by protected stale `testmanagerd`.
@@ -127,11 +159,11 @@ Priority definitions:
   - [LocalAuthentication evaluatePolicy](https://developer.apple.com/documentation/localauthentication/lacontext/evaluatepolicy(_:localizedreason:reply:))
   - [Liquid Glass](https://developer.apple.com/documentation/technologyoverviews/liquid-glass)
 
-## Build & Dependency State (verified 2026-07-17)
-- Xcode 27.0 (27A5209h) / visionOS 27 SDK; visionOS 26.4 and 27.0 simulator test actions pass. Matching Xcode 26.x proof remains pending.
-- swift-crypto 4.5.1, swift-nio 2.101.3, swift-log 1.14.0, swift-collections 1.6.0, swift-asn1 1.7.1, swift-argument-parser 1.7.1, SwiftTerm 1.13.0, swift-atomics 1.3.1, swift-system 1.7.4, BigInt 5.7.0
+## Build & Dependency State (verified 2026-08-01)
+- One Swift 6 `glas.sh` application target and scheme support macOS, iOS/iPadOS, and visionOS 26+; exact-current Xcode 27 destination builds pass. Matching Xcode 26.x archive/runtime proof remains pending.
+- swift-crypto 4.5.1, swift-nio 2.101.3, swift-log 1.14.0, swift-collections 1.6.0, swift-asn1 1.7.1, swift-argument-parser 1.8.2, SwiftTerm 1.15.0, swift-atomics 1.3.1, swift-system 1.7.4, BigInt 6.0.0, GlasSecretStore revision `1ffaa96312b8e4b4d6b82eb82cc40c8f6df6317f`
 - Vendored Citadel + swift-nio-ssh stay at original tools versions (5.9 / 5.10) to preserve Swift 5 semantics — bumping their tools versions surfaces strict-concurrency errors in static-var declarations and implicit closure captures.
-- Build: final unsigned generic Release succeeds; app is arm64-only with minimum visionOS 26.0.
+- Build: the unified app is Apple Silicon/arm64-only with OS 26.0 deployment floors and current bundle identifier `sh.glas.app`.
 - `CURRENT_PROJECT_VERSION = 2`, `MARKETING_VERSION = 1.0`
 
 ## Known Platform Limitations

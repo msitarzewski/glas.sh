@@ -32,3 +32,6 @@
 - Use neutral, operational language in memory-bank files.
 - Avoid alarm-style emoji markers and high-intensity wording in persistent docs.
 - Label archived notes as historical records and keep current status in `README.md`, `activeContext.md`, and `progress.md`.
+- Preserve contemporaneous task and release evidence. Add a dated post-release checkpoint instead of rewriting old test totals or claiming that later evidence existed at the original gate.
+- Label evidence precisely: a build is not a test pass, simulator evidence is not physical-device evidence, and a partial device smoke is not a completed release matrix.
+- Treat `Package.resolved`, the Xcode target graph, current source, retained `.xcresult` records, and GitHub merge metadata as authorities for version, target, test, and publication claims.
