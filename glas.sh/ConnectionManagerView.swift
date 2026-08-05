@@ -325,6 +325,10 @@ struct ConnectionManagerView: View {
                 }
                 .padding(.horizontal, 6)
             }
+
+            ToolbarItem(placement: .confirmationAction) {
+                settingsButton
+            }
         }
         #elseif os(visionOS)
         TabView(selection: visionModeSelection(in: connectionLibrary)) {
@@ -521,15 +525,6 @@ struct ConnectionManagerView: View {
                     )
                 }
             }
-
-            Section {
-                Button {
-                    showSettings()
-                } label: {
-                    Label("Settings", systemImage: "gearshape")
-                }
-                .accessibilityIdentifier("connection-library-settings")
-            }
         }
         .accessibilityIdentifier("connection-library-navigation")
         .listStyle(.sidebar)
@@ -552,6 +547,19 @@ struct ConnectionManagerView: View {
         }
         #endif
     }
+
+    #if os(macOS)
+    private var settingsButton: some View {
+        Button {
+            showSettings()
+        } label: {
+            Image(systemName: "gearshape")
+        }
+        .help("Settings")
+        .accessibilityLabel("Settings")
+        .accessibilityIdentifier("connection-library-settings")
+    }
+    #endif
 
     private func collectionNavigation(
         connectionLibrary: ConnectionLibraryProjection

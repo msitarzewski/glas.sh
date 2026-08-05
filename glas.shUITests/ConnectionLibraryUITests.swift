@@ -908,6 +908,23 @@ final class ConnectionLibraryUITests: XCTestCase {
         #if os(macOS)
         let connectionsWindow = firstExistingConnectionLibraryWindow()
         XCTAssertTrue(connectionsWindow.waitForExistence(timeout: 5))
+        let searchField = connectionsWindow.searchFields.firstMatch
+        XCTAssertTrue(searchField.waitForExistence(timeout: 5))
+        XCTAssertLessThan(
+            settings.frame.midY,
+            connectionsWindow.frame.minY + 80,
+            "Settings should remain in the native title-bar toolbar."
+        )
+        XCTAssertLessThan(
+            abs(settings.frame.midY - searchField.frame.midY),
+            12,
+            "Settings should align with the native Connections search field."
+        )
+        XCTAssertGreaterThan(
+            settings.frame.midX,
+            searchField.frame.midX,
+            "Settings should appear after the native Connections search field."
+        )
         activate(settings)
 
         XCTAssertTrue(
