@@ -1,6 +1,6 @@
 # App Store Listing Copy — v1.0.0
 
-All character counts are App Store Connect limits. Trim before paste if a brand decision changes a word.
+**Status: draft, not submission-ready.** Reconcile every feature claim against the final release build and App Store Connect metadata immediately before submission. All character counts are App Store Connect limits.
 
 ## App Name (30 chars max)
 
@@ -53,14 +53,14 @@ Float genuinely transparent terminal windows anywhere in your space, then adjust
 • Password, public key, and Secure Enclave–protected key authentication
 • ED25519, RSA (with SHA-2 signatures), ECDSA P-256
 • Multi-hop jump hosts (ProxyJump)
-• Local (-L), remote (-R), and dynamic SOCKS (-D) port forwarding
+• Local SSH port forwarding through the shared forwarding manager
 • Full SFTP browser with batch upload/download, file info, hidden files, search
 
 — PRIVACY THAT'S TECHNICAL, NOT MARKETING —
 
 • Credentials stored in Keychain with kSecAttrAccessibleWhenUnlockedThisDeviceOnly
 • Optional hardware-bound Secure Enclave SSH signing keys with user-presence authorization
-• Zero analytics, zero telemetry, zero third-party SDKs
+• Zero analytics and zero telemetry services
 • Open source under the MIT license — audit the claims yourself
 
 — POWER FEATURES —
@@ -153,7 +153,7 @@ Key features to verify:
 4. Open the SFTP browser from the bottom ornament (folder icon)
 5. Open the AI Assistant (sparkles icon) — runs fully on-device
 
-Privacy posture: zero data collection, no analytics, no third-party SDKs. Privacy manifest declares only NSPrivacyAccessedAPICategoryUserDefaults.
+Privacy posture: zero data collection, no analytics, and no telemetry services. Privacy manifest declares only NSPrivacyAccessedAPICategoryUserDefaults. The app includes open-source Swift packages listed in the public repository.
 
 Repository (open source): https://github.com/msitarzewski/glas.sh
 Privacy policy: https://msitarzewski.github.io/glas.sh/privacy.html

@@ -10,7 +10,7 @@ This release changes how users browse, organize, inspect, and launch connections
 
 `Complete` — implementation and QA approved by the user on 2026-07-21.
 
-The release delivers one shared transient projection, native visionOS/macOS/iPadOS/iOS shells, authoritative terminal/workgroup routing, iPhone/iPad target support, duplicate-navigation cleanup, and regression coverage. Xcode 27 beta UI-runner finalization and physical Vision Pro developer-disk-image launch capture remain documented tooling limitations; the approval explicitly accepts them without representing either as a passing automated check.
+The release delivers one shared transient projection, native visionOS/macOS/iPadOS/iOS shells, authoritative terminal/workgroup routing, iPhone/iPad target support, duplicate-navigation cleanup, and regression coverage. Xcode 27 beta UI-runner finalization and the original physical Vision Pro developer-disk-image launch capture remain documented approval-time tooling limitations; later wearer-present SSH evidence is recorded below without retroactively claiming an automated pass.
 
 Publication: PR [#29](https://github.com/msitarzewski/glas.sh/pull/29).
 
@@ -41,7 +41,7 @@ Publication: PR [#29](https://github.com/msitarzewski/glas.sh/pull/29).
 | Live workgroups | `glas.sh/Models.swift:2543`, `glas.sh/SessionManager.swift:32` | Runtime terminal window/tab state |
 | Connection launch | `glas.sh/SessionManager.swift` | The only launch authority |
 | Optional network source | `glas.sh/TailscaleClient.swift` | Visible only when configured |
-| Current hub | `glas.sh/ConnectionManagerView.swift:12` | Refactor and reduce; do not build a parallel hub |
+| Release-entry hub | `glas.sh/ConnectionManagerView.swift:12` | Refactor and reduce; do not build a parallel hub |
 | App scenes | `glas.sh/glas_shApp.swift:12` | Route platform-native library and terminal windows |
 
 ## Reuse and file policy
@@ -152,7 +152,7 @@ Collections are normalized views over profile tags. A collection exists when at 
 - Transparency, tint, blur, materials, themes, ANSI color, tabs, local terminals, and workgroups retain current behavior.
 - The new implementation replaces displaced code instead of living beside it.
 - Duplicate connection-navigation state and host projections are removed; raw native-shell presentation growth is measured and documented rather than represented as a smaller source file.
-- Current suites pass on Apple Silicon macOS 27, visionOS 26.4 and 27, and iOS 27; generic Release builds pass with platform deployment floors at version 26.
+- At release approval, suites passed on Apple Silicon macOS 27, visionOS 26.4 and 27, and iOS 27; generic Release builds passed with platform deployment floors at version 26. Later exact-current and physical-device checkpoints are recorded below.
 
 ## Change-control rule
 
@@ -166,3 +166,15 @@ If unavailable APIs or target membership make a universal iOS/visionOS app targe
 - Direct application smokes: macOS Library/local-terminal route, iPhone compact Library, and iPad three-column Library passed.
 - Physical Vision Pro: signed build and installation passed; CoreDevice launch/render capture limitation is recorded in [Phase 06](./06-validation-and-release.md).
 - Final diff, project/scheme validation, production marker, orphan symbol, and Gitleaks scans passed.
+
+## Post-release regression checkpoint — 2026-08-01
+
+- The Connection Library remains the entry point used by the unified One Base
+  app target on Mac, iPhone, iPad, and Vision Pro.
+- A wearer-present Vision Pro build selected a saved connection and
+  successfully opened an SSH terminal to the development Mac over Tailscale.
+  This supersedes the earlier build/install-only boundary for that functional
+  route without altering the original 2026-07-21 acceptance evidence.
+- The resulting terminal's initial geometry and native session-sidebar
+  dismissal remain open presentation work in Codex Completions Phase 06; the
+  Library projection, selection, and launch routing are not reopened.

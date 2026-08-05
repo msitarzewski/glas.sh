@@ -5,7 +5,7 @@
 - `glas.sh` is the sole application target and shared scheme for iPhone, iPad, visionOS, and native Apple Silicon macOS. Use automatic SDK selection, platform-specific deployment settings, and `SUPPORTS_MACCATALYST = NO`; do not create a platform application target to solve a source-boundary problem.
 - Keep one application `@main` in `glas.sh/glas_shApp.swift`. Compose native scenes inside that authority with compile-time platform branches so AppKit, UIKit, and visionOS each retain their native navigation, windowing, ornaments, and commands.
 - Keep `Platforms/macOS` as a platform implementation boundary, not a product boundary. Complete-file `#if os(macOS)` guards allow its AppKit workspace, local PTY, focused commands, resources, plist, and entitlements to participate in the unified target without leaking into mobile/vision products. Put Mac-specific tests beneath `glas.shTests/macOS` so the public tree mirrors the single app/test target graph.
-- Select plist, entitlements, icons, architectures, and embedded extensions with SDK-conditional build settings. Reuse one application bundle identifier and shared GlassSecretStore access groups across app platforms.
+- Select plist, entitlements, icons, architectures, and embedded extensions with SDK-conditional build settings. Reuse one application bundle identifier and shared GlasSecretStore access groups across app platforms.
 - The widget remains a separate extension target because it is a separate executable. Unit and UI tests remain separate test bundles, but both host the unified application target.
 - Register package products, synchronized source groups, application commands, and scene identifiers once. Platform-specific presentation may branch; shared connection, credential, trust, settings, workgroup, terminal, and appearance authority must not.
 - Retire duplicate targets, products, schemes, test hosts, proxies, and configuration lists only after the unified target passes every available destination and bundle inspection confirms no hidden resource or dependency authority.
@@ -22,6 +22,45 @@
   - iPhone: compact stack drill-down.
 - Presentation may branch by platform, but saved-profile, credential, host-trust, connection, workgroup, and terminal lifecycle behavior stays in existing managers.
 - Explicit connection/workgroup/local launch actions cross the scene boundary only after reusing `SessionManager`; selecting a row reveals detail and does not implicitly create a session except the approved macOS double-click shortcut.
+
+## Glass-Family Connection and Credential Contract
+
+- The product invariant is *define once, find everywhere, connect with minimal
+  intervention*. UI presents **My Connections** consistently across glas.sh and
+  glassdb; implementation details such as CloudKit, Keychain access groups,
+  packages, migrations, and record versions stay out of normal onboarding and
+  connection flows.
+- A neutral, versioned `EndpointProfile` owns only reusable non-secret SSH facts:
+  stable endpoint identity, display name, host, port, username, jump-chain
+  references, tags, timestamps, deletion state, and schema version.
+- Product overlays are keyed by endpoint identity. glas.sh owns terminal and
+  workspace behavior; glassdb owns database and tunnel-use behavior. Neither app
+  copies or reinterprets the other's settings, and shared-profile migration must
+  not reset app-specific presentation or behavior.
+- Endpoints reference a stable Glass-family credential identity rather than
+  embedding a password, private key, passphrase, or hardware signer. GlasSecretStore
+  owns credential identity, credential-kind metadata, availability, Keychain
+  policy, secret material, and host trust; it does not become the endpoint-schema
+  or app-overlay package.
+- Treat three policies as orthogonal:
+  - **App sharing** determines which Glass apps may discover an endpoint and its
+    credential reference.
+  - **Device mobility** determines whether eligible secret material may become
+    available on another Apple device after explicit consent.
+  - **Authentication kind** determines whether the connection uses a password,
+    imported key, device-bound Secure Enclave signer, or another supported method.
+- Synced metadata never implies usable credentials. The local app resolves an
+  honest availability state before connection: ready, still syncing, sign in to
+  iCloud, set up this key on this device, or review host identity. It never
+  silently falls back to a weaker credential.
+- Host trust and optional-network authorization remain explicit security
+  boundaries. The first use of an endpoint on a device may require fingerprint
+  review, local key enrollment, user presence, or network authorization; these
+  are the only acceptable interruptions to the first-class flow.
+- Cross-app and cross-device work must extend the existing `ServerManager`,
+  `SharedDefaults`, GlasSecretStore, Keychain, and iCloud integration points.
+  A neutral shared-model package may be proposed only after the Phase 08 reuse
+  analysis proves that neither repository has a suitable existing target.
 
 ## Terminal Architecture
 - SSH transport via Citadel and `withPTY` interactive sessions.
@@ -63,6 +102,11 @@
     the system leading ornament. Selecting a workgroup `TabSection` reveals that
     same window's native session sidebar. Do not duplicate the ornament modes in
     a custom rail or first in-window column.
+    The current sole top-level `TabSection` exposes the system session sidebar
+    but does not provide a native destination outside that section to dismiss
+    it. Resolve that composition with another native top-level destination or
+    an Apple-supported tab/sidebar API; do not add a custom hide overlay or a
+    second session-navigation model.
   - **Standalone visionOS terminal**: retain the informational top connection
     ornament (server name + `user@host:port`) until the session is represented
     by the shared workgroup shell.
@@ -80,6 +124,10 @@
     tools as separate native toolbar groups; outer icon `HStack`s use six points
     of horizontal edge padding so capsule edges and inter-icon spacing remain
     visually balanced.
+  - **Responsive sidebars**: at compact widths, native sidebars overlay content
+    instead of clipping terminal columns. On Mac, sidebar material extends
+    behind the traffic lights and uses the same system-owned toolbar control as
+    Finder and Safari.
   - **AppKit boundary**: the terminal window coordinator may configure supported
     `NSWindow` material/full-size-content behavior and native toolbar
     flexible-space placement. It must not introduce a custom titlebar accessory,

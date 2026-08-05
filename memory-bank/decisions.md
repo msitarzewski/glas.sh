@@ -6,7 +6,7 @@
 - Context:
   - The native Mac shell proved its AppKit workspace, local PTY, tabs, splits, focused commands, and window-material behavior, but a second application target duplicated product identity, scheme, test host, resource, entitlement, and scene configuration.
   - glassdb demonstrates that one native application target can select iOS, macOS, and visionOS SDK behavior without Catalyst.
-  - Credentials and trust must remain visible across glass apps through GlassSecretStore and the shared Keychain/app-group contract.
+  - Credentials and trust must remain visible across glass apps through GlasSecretStore and the shared Keychain/app-group contract.
 - Decision:
   - Use the existing `glas.sh` target and scheme as the sole application product across iPhone, iPad, visionOS, and native Apple Silicon macOS.
   - Keep one `@main` application and compose the existing native scene graphs through platform boundaries.
@@ -291,7 +291,7 @@
   - Migration is retryable and downgrade-compatible without destructive shared-source cleanup.
   - Orphaned passphrases/tags/hardware keys are detected even when full material retrieval is nil.
   - GlasSecretStore's 75-test suite and app regression coverage protect the lifecycle contract.
-- References: `Packages/GlasSecretStore/Sources/GlasSecretStore/Keychain/SSHKeyKeychainStore.swift`, `glas.sh/SettingsManager.swift`, `memory-bank/releases/codex-completions/02-secrets-authentication-and-host-trust.md`
+- References: `../GlasSecretStore/Sources/GlasSecretStore/Keychain/SSHKeyKeychainStore.swift`, `glas.sh/SettingsManager.swift`, `memory-bank/releases/codex-completions/02-secrets-authentication-and-host-trust.md`
 
 ## 2026-07-19: Native macOS shell reuses the shared terminal core
 - Status: Approved
@@ -366,4 +366,52 @@
     independent spatial-window or full-transparency product invariant.
   - The implementation remains in the existing `codex-completions` Phase 06/07
     program; no new release is created.
+  - 2026-08-01 qualification: Mac/iPad adaptive presentation remains the
+    approved native direction. On visionOS, the current sole top-level
+    `TabSection` makes the session sidebar system-owned but leaves no native
+    route outside the section to dismiss it. The follow-up must refine native
+    tab composition rather than restore a custom ornament/sidebar authority.
 - References: `Platforms/macOS/MacWorkspaceView.swift`, `Platforms/macOS/MacWorkspaceController.swift`, `Platforms/macOS/MacTerminalWindowPolicy.swift`, `glas.sh/VisionTerminalWorkgroupView.swift`, `memory-bank/releases/codex-completions/06-native-platform-foundation.md`, `memory-bank/releases/codex-completions/07-workspaces-and-shell-integration.md`, `memory-bank/systemPatterns.md#Terminal-window-adaptive-presentation-and-ornament-ownership`
+
+## 2026-08-05: Magic / First Class connections are a Glass-family capability
+
+- Status: Approved product and architecture direction; implementation not started
+- Context:
+  - glas.sh and glassdb serve different jobs, but both need the same SSH endpoint
+    and credential identity to reach a remote host.
+  - Re-entering a connection or eligible credential when moving from iPhone to
+    Vision Pro would expose repository, CloudKit, Keychain, and package boundaries
+    that should be invisible in an Apple-native experience.
+  - Secure Enclave keys, host trust, iCloud account state, and secret-sync consent
+    have real security boundaries that the product must explain rather than hide.
+- Decision:
+  - Make **My Connections** the shared user model: define once, find everywhere,
+    and connect with the least intervention compatible with honest security.
+  - Require no proprietary Glass account. Use the user's Apple iCloud/Keychain
+    services and explicit consent for supported cross-device credential mobility.
+  - Separate neutral `EndpointProfile` metadata, product-specific overlays, and
+    GlasSecretStore credential identity/material. Share stable references between
+    the layers rather than copying secrets or application settings.
+  - Treat app sharing, device mobility, and authentication kind as independent
+    policies. An endpoint may be visible in every app even when its credential is
+    still syncing or requires local enrollment.
+  - Keep Secure Enclave identities device-bound. Another device shows the known
+    connection and asks for local key setup; it never substitutes a password or
+    exportable key without an explicit user decision.
+  - Preserve explicit host-fingerprint review, user presence, optional-network
+    authorization, and account-recovery actions when security requires them.
+    Otherwise onboarding and connection use stay in outcome-oriented language.
+- Consequences:
+  - The canonical cross-product acceptance path is glas.sh on iPhone -> glassdb
+    on Vision Pro -> select the same SSH connection as a database tunnel ->
+    complete any required local trust action -> connect without re-entering
+    eligible endpoint or credential data.
+  - The reverse direction and every supported-device combination require the same
+    contract, including delayed-secret, offline, account-change, deletion, and
+    Secure Enclave enrollment behavior.
+  - Phase 08 owns implementation planning across glas.sh, glassdb, and
+    GlasSecretStore. Each external repository retains its own approval, review,
+    migration, and QA gate.
+  - Public marketing claims remain unchanged until implementation and release
+    validation prove the experience.
+- References: `memory-bank/projectbrief.md#Vision`, `memory-bank/productContext.md#Magic--First-Class-Experience`, `memory-bank/systemPatterns.md#Glass-Family-Connection-and-Credential-Contract`, `memory-bank/releases/codex-completions/08-glassdb-metadata-sync.md`

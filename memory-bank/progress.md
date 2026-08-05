@@ -1,5 +1,12 @@
 # Progress
 
+- Adaptive workspace and native chrome checkpoint approved (2026-07-30 through 2026-08-01):
+  - Replaced duplicate/custom terminal tab authorities with model-owned native adaptive tabs while preserving independent windows, Command-T, explicit close, restoration intentions, and transactional tab movement.
+  - Brought Connections and terminal windows onto native full-height sidebar and compact toolbar composition; separated global controls from terminal tools and preserved the transparent terminal-canvas boundary.
+  - Exact-current Mac QA passes 274/274 with zero runtime warnings; visionOS 27, iPadOS 27, and iOS 27 simulator builds pass. User visual review approved the Mac Connections and terminal layouts; the stalled Mac UI harness is not claimed as a pass.
+  - A physical Vision Pro successfully connects to the development Mac over Tailscale/SSH. Initial terminal sizing and a discoverable dismissal path for the native visionOS session sidebar remain open UX work.
+  - Documentation now distinguishes exact-current evidence from historical release totals instead of replacing immutable release records.
+
 - Public repository platform cleanup approved (2026-07-25):
   - Renamed the retained native Mac implementation boundary from `glas.sh-mac` to `Platforms/macOS`; renamed the misleading former app-entry filename to `MacTerminalWindowPolicy.swift`.
   - Moved Mac-only workspace tests beneath `glas.shTests/macOS`, matching the existing single unit-test target.
@@ -14,8 +21,8 @@
   - Retained the widget as a platform-filtered extension and consolidated Mac tests into the shared unit/UI test hosts; removed obsolete Mac app/test targets and the `glas.sh Mac` scheme without deleting Swift source.
   - Final QA: iPhone 232/232, iPad 232/232 plus UI 2/2, visionOS 26.4 229/229 plus smoke, visionOS 27 229/229 plus one UI pass/one explicit simulator-input skip, and a fresh clean native arm64 Mac Release archive/direct launch. The immediately preceding unified-host Mac suite passed 251/251.
   - GlasSecretStore 69/69 and RealityKitContent build pass; project, metadata, entitlement, incomplete-marker, orphan, duplicate-entry, Release-symbol, and tracked-diff secret scans pass.
-  - Approved evidence boundaries remain for physical Vision Pro, distribution trust/notarization, final hosted Mac XCTest after protected `testmanagerd` clears, Computer Use capture, and online dependency-advisory lookup.
-  - Publication commits `904ae0af` and `47b23f12` are tracked by PR [#30](https://github.com/msitarzewski/glas.sh/pull/30), the canonical merge-status record.
+  - Approved evidence boundaries remain for the remainder of the physical Vision Pro matrix, distribution trust/notarization, final hosted Mac XCTest after protected `testmanagerd` clears, Computer Use capture, and online dependency-advisory lookup.
+  - Publication commits `904ae0af` and `47b23f12` were merged by PR [#30](https://github.com/msitarzewski/glas.sh/pull/30); merge commit `d9237f97` is the canonical integration record on `main`.
 
 - Connection Library release approved (2026-07-21):
   - Added one deterministic transient projection for saved profiles, Favorites, Recent, normalized tag Collections, workgroup recipes, selection, filtering, and optional configured Network data.

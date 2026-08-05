@@ -92,3 +92,13 @@ After user approval of implementation:
 The supported evidence matrix and explicitly accepted tooling boundaries are recorded, displaced code and stubs are absent, and the user approves release completion.
 
 **Result:** Passed with the explicitly approved Xcode UI-runner and CoreDevice launch-capture limitations recorded above.
+
+## Post-release physical-device evidence — 2026-08-01
+
+A wearer-present Vision Pro build successfully launched, selected a saved
+connection, and opened an SSH terminal to the development Mac over Tailscale.
+This later evidence supersedes the earlier CoreDevice build/install-only
+boundary for that functional path while preserving the original approval record
+and test counts. Initial terminal sizing and native session-sidebar dismissal
+remain open presentation defects in Codex Completions Phase 06; they do not
+invalidate Connection Library selection or launch routing.

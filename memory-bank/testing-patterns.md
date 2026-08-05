@@ -1,8 +1,10 @@
 # Testing Patterns
 
 ## Test Suite
-- 211 app unit/integration/security/terminal tests pass on iOS 27; 208 pass on each of visionOS 26.4 and visionOS 27; 32 native workspace tests pass on Apple Silicon macOS 27.
-- 76 GlasSecretStore tests across 13 suites under `Packages/GlasSecretStore/Tests`; run with `swift test --package-path Packages/GlasSecretStore` and an isolated scratch path.
+- **Exact-current adaptive-workspace checkpoint (2026-07-30):** macOS 27 ran 274/274 tests with zero build warnings; visionOS 27, iPadOS 27, and iOS 27 simulator builds passed.
+- **Most recent full One Base runtime matrix:** iPhone and iPad 232/232; visionOS 26.4 and 27 229/229; macOS 251/251 before the final render-only delta. The iPad UI harness passed 2/2, the compact-iPhone smoke passed 1/1, and visionOS 27 produced one UI pass plus one explicit simulator-input skip.
+- **Historical Connection Library release matrix:** iOS 211, visionOS 208, and native Mac workspace 32. These counts describe that release checkpoint and must not be presented as exact-current totals.
+- 69 GlasSecretStore tests pass from the shared sibling repository at revision `1ffaa96312b8e4b4d6b82eb82cc40c8f6df6317f`; run with `swift test --package-path ../GlasSecretStore` and an isolated scratch path.
 - Run the app suite via Xcode scheme `glas.sh` or `xcodebuild test`; retain `.xcresult` bundles for release evidence.
 - The shared `glas.shUITests` source is attached to iOS/visionOS and Mac UI-test targets. A buildable harness is not a passing runtime result: Xcode 27 beta may lose the UI worker and block during test-session finalization, which must be reported separately from direct application smoke evidence.
 
@@ -20,7 +22,7 @@
 - **Connection Library**: deduplication, deterministic tie-break ordering, normalized/empty/multi-tag collections, every search field, built-in scopes, optional Network visibility, workgroup recipes, and selection preservation/clearing.
 
 ## Primary Validation
-- Xcode build for visionOS target after functional changes.
+- Build the shared `glas.sh` scheme for every affected destination after functional changes. A build proves compilation only; do not report it as a test pass.
 - Manual terminal smoke tests:
   - SSH connect/disconnect
   - Inline shell input
@@ -32,9 +34,12 @@
   - iPhone compact mode/scope navigation and hidden unconfigured Network;
   - iPad three-column presentation and adaptive row geometry; selection/details UI assertions require a completed runner execution before being claimed;
   - physical Vision Pro signed build/install, with launch/render claimed only after wearer-present confirmation or functioning CoreDevice services.
+- Physical-device truth (2026-08-01): a signed Vision Pro build successfully established SSH to the development Mac over Tailscale. This is partial device evidence, not the completed interaction, accessibility, performance, security, and distribution matrix.
 
 ## Regression Focus
 - Input/focus behavior when switching windows.
 - Ornament interactions and viewport clipping/padding behavior.
+- Native adaptive presentation: compact sidebars overlay rather than clip; full-height sidebar material reaches behind traffic lights on Mac; terminal toolbar groups preserve order and spacing as the window compresses.
+- Vision Pro terminal presentation: the initial terminal scene must open at usable scale, and the native session sidebar must have a discoverable dismissal path. These remain open as of 2026-08-01.
 - Keychain persistence: verify saved passwords survive edit/reconnect cycles.
 - Stream rendering: carriage-return updates render in-place, not stacked.

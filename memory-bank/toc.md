@@ -1,5 +1,7 @@
 # Memory Bank TOC
 
+Last reconciled against the unified target, release ledgers, and recorded QA evidence: **2026-08-01**.
+
 ## Core
 - [Project Brief](./projectbrief.md)
 - [Product Context](./productContext.md)
@@ -24,7 +26,7 @@
   - [Phase 05: Feature Completion and Honest UI](./releases/codex-completions/05-feature-completion-and-honest-ui.md)
   - [Phase 06: Native Platform Foundation](./releases/codex-completions/06-native-platform-foundation.md)
   - [Phase 07: Workspaces and Shell Integration](./releases/codex-completions/07-workspaces-and-shell-integration.md)
-  - [Phase 08: glassdb Metadata Sync](./releases/codex-completions/08-glassdb-metadata-sync.md)
+  - [Phase 08: Glass-Family Connection Sync](./releases/codex-completions/08-glassdb-metadata-sync.md)
   - [Phase 09: Terminal Engine Evaluation](./releases/codex-completions/09-terminal-engine-evaluation.md)
   - [Phase 10: Release Validation and Distribution](./releases/codex-completions/10-release-validation-and-distribution.md)
 - [Connection Library Release Program](./releases/connection-library/README.md)
@@ -55,3 +57,5 @@
   - [Connection Library Release Completion](./tasks/2026-07/210726_connection-library-release.md)
   - [One Base Release Completion](./tasks/2026-07/250726_one-base-release.md)
   - [Public Repository Platform Cleanup](./tasks/2026-07/250726_public-repo-platform-cleanup.md)
+- [2026-08](./tasks/2026-08/README.md)
+  - [Public README and Release-Ledger Reconciliation](./tasks/2026-08/020826_readme-release-ledger-reconciliation.md)
