@@ -16,7 +16,7 @@ Codex agent team
 
 - `agent/connection-library` commit `c9f7a406` preserves all tracked release work.
 - Generated `default.profraw` was excluded.
-- The current project has separate `glas.sh` and `glas.sh Mac` application targets and separate Mac test targets.
+- At the preserved One Base entry baseline, the project had separate `glas.sh` and `glas.sh Mac` application targets and separate Mac test targets. Those obsolete targets were retired by the completed release.
 - glassdb has one application target with `SDKROOT = auto`, iOS/macOS/visionOS support, Catalyst disabled, one product identity, and one platform-adaptive app entry point.
 - Existing release-program structure was reused from `memory-bank/releases/connection-library`.
 

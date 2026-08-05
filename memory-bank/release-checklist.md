@@ -5,7 +5,7 @@
 **Current bundle ID**: `sh.glas.app`
 **Current version**: `1.0` (build 2)
 
-> Status as of 2026-07-17: the `codex-completions` code and automated-QA checkpoint is approved. App Store submission remains paused for matching-Xcode-26, physical Vision Pro, signing, archive, TestFlight, listing, and final go/no-go gates.
+> Status as of 2026-08-01: `codex-completions`, Connection Library, and One Base have approved implementation checkpoints, and One Base is merged to `main` through PR #30. Exact-current Mac tests and cross-platform simulator builds pass. Physical Vision Pro SSH to the development Mac over Tailscale works, but the complete device, matching-Xcode-26, signing, archive, TestFlight, listing, accessibility, performance, and final go/no-go gates remain open.
 
 ---
 
@@ -24,20 +24,32 @@
 - [x] `FUNC-002`: SharePlay is removed from release builds
 - [x] `FUNC-003`, `FUNC-004`: port-forward controls operate shared real tunnels
 - [x] `FUNC-005...013`: inert settings and incomplete feature surfaces are wired or removed
-- [x] Security-critical and feature-flow tests pass: 164/164 on visionOS 26.4 and 164/164 on visionOS 27.0; GlasSecretStore 75/75 across 13 suites
+- [x] Security-critical and feature-flow tests passed at the codex-completions checkpoint: 164/164 on visionOS 26.4 and 164/164 on visionOS 27.0; GlasSecretStore 75/75 across 13 suites
 
 ## Pre-flight (code-side)
 
 - [ ] Current-tree build/test on matching Xcode 26.x / visionOS 26.x (historical pre-hardening Xcode 26.4 evidence is not sufficient)
-- [x] All SPM dependencies at latest
+- [x] SPM dependency graph is resolved and recorded in `Package.resolved`; current pins are documented in `techContext.md`
 - [x] `PrivacyInfo.xcprivacy` in app + widget bundles
 - [x] `CURRENT_PROJECT_VERSION` bumped to 2
 - [x] Vendored audit fixes preserved
-- [ ] Functional hardening branch → `main` merged (PR reviewed and squash-merged)
+- [x] One Base/public target consolidation → `main` merged through PR #30 (`d9237f97`)
+- [ ] Current codex-completions adaptive-workspace follow-up → `main` merged after final UX/device gates
 - [ ] `git tag v1.0.0` on main after merge
 - [ ] One last clean build from main on a fresh DerivedData
 
-## Approved automated checkpoint evidence (2026-07-17)
+## Layered checkpoint evidence
+
+### Exact-current adaptive workspace (2026-07-30)
+
+- [x] macOS 27: 274/274 tests, zero failures/skips/runtime warnings
+- [x] visionOS 27, iPadOS 27, and iOS 27 simulator builds pass
+- [x] Native-chrome diff check and production incomplete-marker scan pass
+- [x] Physical Vision Pro establishes SSH to the development Mac over Tailscale
+- [ ] Resolve initial Vision terminal sizing and expose a discoverable native session-sidebar dismissal route
+- [ ] Complete the remaining physical interaction/accessibility/performance/security matrix
+
+### Codex-completions automated checkpoint (2026-07-17; historical)
 
 - [x] Xcode 27.0 (27A5209h) full test action: 164/164 on visionOS 26.4 arm64 Simulator
 - [x] Xcode 27.0 (27A5209h) full test action: 164/164 on visionOS 27.0 arm64 Simulator
@@ -46,6 +58,36 @@
 - [x] Simulator install and smoke launch on both runtimes using bundle identifier `sh.glas.app`
 - [x] `git diff --check`, production TODO/FIXME/stub scan, and independent post-fix security audits
 - [x] UUID-isolated Gitleaks adjudication: zero actionable production credentials; immutable redacted artifacts recorded in the release README
+
+## Glass-family onboarding and sync gates
+
+These gates apply before any release claims the *Magic / First Class* **My
+Connections** experience. Phase 08 is currently `Not started`; unchecked items
+are requirements, not evidence that sync already ships.
+
+- [ ] First-run onboarding explains **My Connections**, cross-device availability,
+  explicit credential-mobility consent, and truthful local-security actions
+  without requiring CloudKit, Keychain-group, package, or migration vocabulary
+- [ ] Fresh install: create an eligible password/imported-key SSH connection in
+  glas.sh on iPhone, find it in glassdb on Vision Pro, select it as a database
+  SSH tunnel, and connect without re-entering endpoint or credential data
+- [ ] Reverse direction: a supported endpoint defined from glassdb becomes usable
+  from glas.sh under the same contract
+- [ ] Supported Mac/iPad combinations pass the same metadata, overlay, credential,
+  trust, and deletion rules
+- [ ] Delayed secret: metadata may arrive first, UI reports **Still Syncing**, and
+  the selected connection becomes ready without duplication or data loss
+- [ ] Secure Enclave: a known endpoint appears on another device as **Set Up This
+  Key** and never silently substitutes an exportable credential
+- [ ] iCloud unavailable, offline, sign-out, and account-switch paths preserve
+  safe local access, explain the next action, and do not expose another account's
+  records or secrets
+- [ ] Upgrade/migration preserves endpoint IDs, credential references, app
+  overlays, host trust, deletions, and app-version-skew behavior
+- [ ] Credential rotation/revocation and endpoint deletion converge across apps
+  and devices without stale resurrection or phantom readiness
+- [ ] Privacy/security review proves that secret material never enters endpoint
+  metadata or CloudKit metadata payloads and that consent/recovery are explicit
 
 ## Apple Developer Program
 
@@ -83,7 +125,7 @@ Source of truth lives in `memory-bank/app-store-listing.md` — copy directly fr
 The privacy manifest declares no data collection. Match that in the App Privacy questionnaire:
 
 - [ ] "Data not collected" for all categories
-- [ ] No third-party SDKs disclosed (we have none)
+- [ ] Disclose no analytics/telemetry SDKs; separately account for bundled open-source development libraries according to App Store Connect's current requirements
 - [ ] Reasoning: app contacts only user-specified SSH servers + (optional, user-initiated) `api.tailscale.com`; no analytics, telemetry, or first-party servers
 
 ## Screenshots
@@ -114,11 +156,15 @@ The app uses SSH (encrypted) — Apple asks an encryption question on each submi
 
 ## TestFlight smoke test
 
-Before submitting for review, install on real Vision Pro via TestFlight:
+Before submitting for review, install on real Vision Pro via TestFlight and run
+the applicable cross-app/device gates above from signed builds on representative
+iPhone, iPad, and Mac distributions:
 
 - [ ] First-run: app launches, Connections window appears
 - [ ] Add a server (use a known-good SSH host)
 - [ ] Connect: terminal renders, keyboard input works, characters echo
+- [ ] New terminal opens at a readable, usable physical size
+- [ ] Native session sidebar can be shown and dismissed without obscuring terminal work
 - [ ] Disconnect cleanly
 - [ ] Open SFTP browser on a connected session
 - [ ] Download a file with an unusual server-provided name and verify it remains inside the selected destination

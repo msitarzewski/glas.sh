@@ -19,6 +19,14 @@ restoration without an AppKit tab-group mirror. Semantic history/command blocks,
 broader shell integration, and tmux/Zellij discovery remain open, so the phase
 remains In progress.
 
+The 2026-08-01 wearer-present Vision Pro check proves that a real device can
+open an SSH terminal to the development Mac over Tailscale. It does not close
+`WORK-003`: a normal SSH session still ends with its transport, while resumable
+handoff requires the tmux/Zellij discovery, attach, detach, and cross-device
+resume work specified below. The same check exposed open initial-window sizing
+and native session-sidebar dismissal defects; those belong to Phase 06 rather
+than the persistent-shell protocol.
+
 ## Existing architecture to reuse
 
 - Layout presets already preserve server IDs and reconnect fresh rather than restoring dead sockets (`memory-bank/systemPatterns.md#App Lifecycle Pattern`).

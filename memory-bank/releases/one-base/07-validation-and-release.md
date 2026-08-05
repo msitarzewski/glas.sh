@@ -115,4 +115,15 @@ One native app target and one app scheme build, run, test, sign, and archive acr
 - Completion task record: `memory-bank/tasks/2026-07/250726_one-base-release.md`.
 - Publication commits: `904ae0af` and `47b23f12`.
 - Pull request and canonical merge-status record: [#30 — Unify glas.sh with One Base](https://github.com/msitarzewski/glas.sh/pull/30).
+- Merge commit: `d9237f97` on `main`.
 - No destination screenshot or externally hosted archive was created; local artifact paths and the accepted Computer Use limitation remain recorded above.
+
+## Post-release verification — 2026-08-01
+
+A wearer-present Vision Pro build successfully opened an SSH terminal to the
+development Mac over Tailscale. The result confirms that the unified app target
+reaches the physical device and shares the production connection path. The
+initial terminal window remains undersized and the native session sidebar lacks
+a discoverable dismissal action; those presentation defects remain tracked by
+Codex Completions Phase 06 and do not reopen the completed target-consolidation
+gate.

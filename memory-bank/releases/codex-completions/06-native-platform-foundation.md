@@ -10,7 +10,7 @@ Create native Apple-platform shells around shared terminal, SSH, endpoint, and s
 
 ## Current status — QA
 
-The native Apple Silicon/macOS 26+ shell is implemented and user-approved. It reuses the shared session, SSH, trust, settings, theme, and terminal layers while adding AppKit window policy, local PTY transport, platform-native multiwindow workspaces, tabs, splits, focused commands, secure keyboard entry, and native material chrome. The macOS suite passes 20/20 and the shared visionOS suite passes 183/183 on both 26.4 and 27.0 after the parity changes. Native iPadOS/iOS shells and final physical accessibility/performance evidence remain open, so the full phase stays in QA rather than Complete.
+The native Apple Silicon/macOS 26+ shell is implemented and user-approved. It reuses the shared session, SSH, trust, settings, theme, and terminal layers while adding AppKit window policy, local PTY transport, platform-native multiwindow workspaces, tabs, splits, focused commands, secure keyboard entry, and native material chrome. Native iPadOS and iOS shells now ship from the same app target with adaptive and compact presentations. The exact-current Mac suite passes 274/274 and visionOS 27, iPadOS 27, and iOS 27 simulator builds pass. Final physical accessibility/performance evidence and the open Vision Pro geometry/sidebar issues keep the phase in QA rather than Complete.
 
 The approved model-owned adaptive workspace is implemented on
 `codex/native-mac-terminal-chrome`. SwiftUI's `.sidebarAdaptable` tabs own
@@ -20,6 +20,18 @@ terminal scenes now share native unified compact titlebar treatment, one system
 sidebar control, full-height sidebar material, compact toolbar icon sizing, and
 stable separated global/terminal tool clusters. The terminal canvas retains its
 independent opacity, tint, blur, and true-transparency behavior.
+
+One Base subsequently removed the separate Mac app/test targets and scheme.
+The current project has one native `glas.sh` application target and scheme for
+Mac, iPhone, iPad, and Vision Pro, plus the required widget and test bundles.
+PR #30 merged that architecture to `main` at `d9237f97`.
+
+On 2026-08-01, a wearer-present Vision Pro build successfully opened an SSH
+terminal to the development Mac over Tailscale. The initial terminal window is
+undersized and the native session sidebar cannot yet be dismissed because the
+sole top-level `TabSection` has no peer destination. Transport/authentication is
+proven for that route; final native presentation and the broader physical
+device matrix remain open.
 
 ## Sequencing constraint
 
@@ -184,3 +196,7 @@ For every feature, define `supported`, `platform-adapted`, `unavailable`, or `de
   and iOS 27 simulator builds pass; diff and production incomplete-marker scans
   are clean. The Mac UI host harness stalled between launches and was stopped,
   so its full-suite result is deliberately not represented as passing.
+- Physical Vision Pro checkpoint: SSH to the development Mac over Tailscale
+  succeeds; initial terminal sizing and native session-sidebar dismissal remain
+  open, and the exact device OS/build plus full accessibility/performance matrix
+  still require recorded evidence.

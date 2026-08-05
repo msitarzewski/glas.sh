@@ -165,12 +165,24 @@ glasWidgets     ---- separate extension, embedded only where supported
 - OSV online dependency scanning was not run because it would transmit dependency metadata and no offline database was available. Package tests, pinned resolution, Gitleaks, and static security review passed.
 - The plan called for a commit at every phase boundary, but implementation remained one reviewable release diff after baseline `c9f7a406`. The approved release accepts that governance variance; no phase history was fabricated.
 
+## Post-release verification checkpoint — 2026-08-01
+
+- PR #30 is merged to `main` at merge commit `d9237f97`; the unified target and
+  scheme remain the current architecture.
+- A wearer-present Vision Pro build successfully opened an SSH terminal to the
+  development Mac over Tailscale. This adds real-device connectivity evidence
+  without rewriting the original One Base approval boundary above.
+- Initial Vision Pro terminal geometry and native session-sidebar dismissal
+  remain open Codex Completions presentation defects, not One Base target
+  consolidation regressions.
+
 ## Publication
 
 - Post-Connection-Library polish commit: `904ae0af`.
 - One Base implementation and release documentation commit: `47b23f12`.
 - Pull request: [#30 — Unify glas.sh with One Base](https://github.com/msitarzewski/glas.sh/pull/30).
-- The pull request is the canonical merge-status record.
+- Merge commit: `d9237f97` on `main`.
+- The pull request and merge commit are the canonical publication record.
 
 ## Release acceptance criteria
 

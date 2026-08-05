@@ -124,32 +124,46 @@ Exponential backoff (1s → 2s → 4s → 8s → 16s, up to 5 attempts). Cancel 
 
 ## Architecture
 
+glas.sh uses one native Swift 6 application target, one `@main`, one product
+identity (`sh.glas.app`), and one shared `glas.sh` scheme across Apple Silicon
+Mac, iPhone, iPad, and Apple Vision Pro. Shared connection, credential, trust,
+session, terminal, workgroup, theme, and appearance state stays authoritative in
+the application core. Each platform composes that state with its native UI:
+AppKit/SwiftUI workspaces on Mac, adaptive navigation on iPad, compact navigation
+on iPhone, and spatial windows and ornaments on visionOS. Mac is native, not
+Mac Catalyst.
+
 ```
-glas.sh/                          Native visionOS 26 app
-├── Models.swift                  SSH sessions, connections, server config
-├── TerminalWindowView.swift      Terminal UI with glass ornaments
-├── ConnectionManagerView.swift   Server list, Tailscale, layouts
-├── AIAssistant.swift             Foundation Models command and error assistance
-├── SessionRecorder.swift         Asciicast v2 recording engine
-├── TailscaleClient.swift         Tailscale REST API v2 + OAuth
-├── FocusEnvironmentView.swift    Immersive focus environment
-├── NotificationOverlay.swift     In-window notification banners
-├── SFTPBrowserView.swift         File browser with batch operations
-├── PortForwardManager.swift      Local / Remote / Dynamic (SOCKS5) tunnels
-├── SettingsManager.swift         App settings persistence
-├── ServerManager.swift           Server CRUD + shared App Group defaults
-├── SessionManager.swift          Session lifecycle management
-├── KeychainManager.swift         Secure credential storage
-└── TerminalAudioManager.swift    Terminal bell audio
+glas.sh/                          Shared application core and platform scenes
+├── glas_shApp.swift               Sole @main and native scene composition
+├── ConnectionLibrary.swift        Shared Library projection and filtering
+├── ConnectionManagerView.swift    Native connection navigation and actions
+├── Models.swift                   SSH sessions, connections, server config
+├── SessionManager.swift           Authoritative session lifecycle
+├── ServerManager.swift            Server CRUD + shared App Group defaults
+├── KeychainManager.swift          GlasSecretStore integration boundary
+├── TerminalWindowView.swift       Shared terminal scenes and controls
+├── SessionRecorder.swift          Protected asciicast v2 recording
+├── SFTPBrowserView.swift          Safe file browsing and transfer
+├── PortForwardManager.swift       Local / Remote / Dynamic (SOCKS5) tunnels
+└── AIAssistant.swift              On-device command and error assistance
+
+Platforms/macOS/                 Native Mac implementation boundary
+├── MacWorkspaceView.swift          Adaptive tabs, sidebars, and splits
+├── MacWorkspaceController.swift    Window and workspace lifecycle
+├── MacLocalTerminalPaneView.swift  Local PTY terminal
+└── MacTerminalWindowPolicy.swift   AppKit window policy and materials
 
 glasWidgets/                      WidgetKit extension
 ├── ServerHealthWidget.swift      Timeline provider + widget views
 └── glasWidgets.swift             Widget bundle entry point
 
 Packages/
-├── RealityKitContent/            SwiftTerm host wrapper + terminal helpers
-├── Citadel/                      Vendored SSH client library
-└── swift-nio-ssh/                Vendored NIO SSH (patched for compatibility)
+├── RealityKitContent/             Cross-platform SwiftTerm host boundary
+├── Citadel/                       Vendored SSH client library
+└── swift-nio-ssh/                 Vendored NIO SSH compatibility layer
+
+GlasSecretStore                  Pinned shared package for credentials and host trust
 ```
 
 ### Terminal Stack
@@ -157,7 +171,7 @@ Packages/
 | Layer | Technology |
 |-------|-----------|
 | SSH protocol | Citadel + vendored swift-nio-ssh |
-| Terminal rendering | SwiftTerm `TerminalView` via `UIViewRepresentable` |
+| Terminal rendering | SwiftTerm behind the `RealityKitContent` host/engine boundary and native UIKit/AppKit representables |
 | Input path | SwiftTerm delegate → raw bytes → SSH channel |
 | Output path | SSH channel → buffered chunks → SwiftTerm `feed(byteArray:)` |
 | Resize | SwiftTerm callback → `TerminalSession` → remote PTY resize |
@@ -167,9 +181,12 @@ Packages/
 
 ## Requirements
 
-- **Apple Silicon Mac** with the Metal Toolchain installed
-- **Xcode 26.4 or newer** with the visionOS 26 SDK
-- **Apple Vision Pro** for Secure Enclave and on-device AI features
+- **Apple Silicon Mac** with the Xcode Metal Toolchain installed
+- **Xcode 26.4 or newer** with the SDK for the destination you are building
+- **Deployment floor:** macOS 26, iOS/iPadOS 26, or visionOS 26
+- **A supported physical device** for final Secure Enclave and on-device AI validation
+- **Apple Vision Pro hardware** for final eye/hand interaction, spatial-window,
+  transparency, accessibility, and performance validation
 
 ## Build & Run
 
@@ -178,10 +195,27 @@ git clone https://github.com/msitarzewski/glas.sh.git
 cd glas.sh
 open glas.sh.xcodeproj
 
-# Select scheme: glas.sh (not glasWidgets)
-# Select destination: Apple Vision Pro
+# Select the shared glas.sh scheme (not glasWidgets)
+# Select My Mac, an iPhone/iPad simulator or device, or Apple Vision Pro
 # Build and run (⌘R)
 ```
+
+The same application scheme builds every supported destination; the former
+`glas.sh Mac` application target and scheme have been retired. The widget
+remains a separate, platform-filtered extension.
+
+Command-line Release builds use the same shared scheme:
+
+```bash
+xcodebuild -project glas.sh.xcodeproj -scheme glas.sh -configuration Release -destination 'platform=macOS,arch=arm64' build
+xcodebuild -project glas.sh.xcodeproj -scheme glas.sh -configuration Release -destination 'generic/platform=iOS' build
+xcodebuild -project glas.sh.xcodeproj -scheme glas.sh -configuration Release -destination 'generic/platform=visionOS' build
+```
+
+A successful build proves compilation for that destination, not runtime or
+physical-device behavior. Release evidence records builds, test counts,
+simulator runtimes, physical-device checks, and distribution validation
+separately.
 
 ## Project Site
 

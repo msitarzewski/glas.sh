@@ -56,7 +56,7 @@ Distribution remains blocked on the open ledger items, especially matching-Xcode
 - Apple Terminal theme import and iCloud theme/appearance synchronization share the existing settings model with visionOS.
 - SwiftTerm 1.15.0 remains the production terminal engine. The physical Vision Pro drawing failure was repaired without abandoning the tested CoreGraphics path; a speculative engine rewrite remains outside this checkpoint.
 - Final automated evidence: macOS 20/20; visionOS 26.4 183/183; visionOS 27.0 183/183; NIOSSH 331/331; Citadel 39 passed with five expected environment skips; GlasSecretStore 75/75.
-- The macOS Release is a signed thin arm64 binary with hardened runtime, runtime 27.0, bundle identifier `sh.glas.mac`, and a packaged `AppIcon.icns`.
+- At this pre-One-Base checkpoint, the macOS Release was a signed thin arm64 binary with hardened runtime, runtime 27.0, bundle identifier `sh.glas.mac`, and a packaged `AppIcon.icns`. One Base subsequently converged the live product identity to `sh.glas.app`.
 - Final `git diff --check`, production marker scan, and isolated tracked/untracked Gitleaks scans pass.
 
 ## Approved terminal-settings recovery — 2026-07-20
@@ -90,6 +90,37 @@ Distribution remains blocked on the open ledger items, especially matching-Xcode
   is recorded in Phases 06 and 07 without closing the still-open physical-device
   and resumable-shell gates.
 
+## Physical Vision Pro checkpoint — 2026-08-01
+
+- A wearer-present Vision Pro build successfully opened an SSH terminal to the
+  development Mac over its Tailscale address. This supersedes the earlier
+  build/install-only evidence boundary for that specific connectivity path.
+- The real-device session exposed two presentation defects that remain open:
+  the first terminal window opens at an undersized geometry, and the native
+  session sidebar has no discoverable dismissal action while every top-level
+  destination belongs to the sole `TabSection`.
+- Those defects do not invalidate the successful transport/authentication
+  result, but they prevent `PLAT-001`, `PLAT-006`, and the complete physical
+  Vision Pro release gate from being marked `Complete`.
+- The exact device OS/build identifier, transparency-extreme pass,
+  accessibility/input matrix, sustained-output performance, and final native
+  sidebar behavior still require recorded physical-device evidence.
+
+## Approved next product program — 2026-08-05
+
+- After the two open physical Vision Pro presentation defects, Phase 08 is the
+  next cross-repository program: the *Magic / First Class* **My Connections**
+  experience for glas.sh, glassdb, and GlasSecretStore.
+- Product invariant: define an SSH connection once, find it in every supported
+  Glass app on the user's Apple devices, and connect with the least intervention
+  compatible with honest security.
+- Canonical acceptance path: define an eligible connection in glas.sh on iPhone,
+  then select and use it in glassdb on Vision Pro as a database SSH tunnel without
+  re-entering eligible endpoint or credential data.
+- This is approved direction, not implementation evidence. `SYNC-001` through
+  `SYNC-008` remain `Not started`; the public README, site, privacy policy, and
+  App Store listing make no new sync claim.
+
 ## Status vocabulary
 
 | Status | Meaning |
@@ -115,7 +146,7 @@ Distribution remains blocked on the open ledger items, especially matching-Xcode
 | [05](./05-feature-completion-and-honest-ui.md) | Feature completion and honest UI | QA | 01, 03, 04 | Every visible feature completes end to end or is hidden; transparency invariant passes |
 | [06](./06-native-platform-foundation.md) | Native platform foundation | QA | 02, 04 | Shared core boundaries and native platform target plan validated without Vision Pro regression |
 | [07](./07-workspaces-and-shell-integration.md) | Workspaces and shell integration | In progress | 04, 06 | Semantic shell and resumable workspace flows pass platform tests |
-| [08](./08-glassdb-metadata-sync.md) | glassdb metadata synchronization | Not started | 02, 06 | Versioned schema, atomic local sharing, and deterministic optional sync policy |
+| [08](./08-glassdb-metadata-sync.md) | Glass-family connection synchronization | Not started | 02, 06 | My Connections journey, versioned endpoint/credential contract, atomic sharing, and deterministic optional sync policy |
 | [09](./09-terminal-engine-evaluation.md) | Terminal engine evaluation | Not started | 04, 07 | Measured SwiftTerm/libghostty decision recorded with evidence |
 | [10](./10-release-validation-and-distribution.md) | Release validation and distribution | Blocked | 01–09 as applicable | Security, conformance, compatibility, device, TestFlight, and App Store gates pass |
 
@@ -123,11 +154,29 @@ Distribution remains blocked on the open ledger items, especially matching-Xcode
 
 - Branch: `codex/native-mac-terminal-chrome`, based on `origin/main`, with the adaptive workspace and native chrome implementation approved for publication.
 - Toolchain: Xcode 27.0 (27A5209h), SDK 27.0, Metal Toolchain installed.
-- App tests: 183/183 passed on visionOS 26.4 arm64 Simulator and 183/183 passed on visionOS 27.0 arm64 Simulator; native macOS tests pass 20/20.
-- Package tests: NIOSSH 331/331; Citadel 39 passed with five expected live-environment skips; GlasSecretStore 75/75.
+- Exact-current publication checkpoint: the native Mac suite passes 274/274
+  with zero failures, skips, or runtime warnings; visionOS 27, iPadOS 27, and
+  iOS 27 simulator builds pass. The Mac UI host harness stalled between
+  launches and was stopped, so no exact-current full UI-suite pass is claimed.
+- One Base cross-platform release evidence remains the most recent completed
+  full matrix: iPhone/iPad 232/232 each, iPad UI 2/2, compact iPhone UI 1/1,
+  visionOS 26.4/27 229/229 each, visionOS 27 UI one pass plus one explicit
+  simulator-input skip, and the immediately preceding unified-host Mac suite
+  251/251.
+- Package evidence is layered rather than silently overwritten: One Base used
+  GlasSecretStore 69/69 at revision `1ffaa96312b8e4b4d6b82eb82cc40c8f6df6317f`;
+  the earlier native-platform checkpoint recorded NIOSSH 331/331, Citadel 39
+  passes plus five environment skips, and GlasSecretStore 75/75.
 - GlassDBKit's locally executable coverage passed at the prior checkpoint; environment-dependent live-service cases remain external gates.
-- Release architecture: the generic visionOS Release build is an arm64 Mach-O with `LC_BUILD_VERSION` platform `VISIONOS`, minimum OS 26.0, and SDK 27.0.
+- Release architecture: One Base is merged to `main` by PR #30 at merge commit
+  `d9237f97`; one `glas.sh` app target/scheme supports native macOS, iPhone,
+  iPad, and Vision Pro with bundle identity `sh.glas.app`, OS 26+ floors,
+  Apple Silicon, and Catalyst disabled.
 - Defining appearance path: SwiftTerm retains a clear backing; opacity and blur are independent; both zero produces full transparency; selected frost, font, selection, caret, and ANSI colors reach the live terminal. The tools menu uses fixed declaration order so its first action is not clipped by automatic reversal.
+- Physical Vision Pro: SSH from the app to the development Mac over Tailscale
+  succeeds. Initial terminal geometry and native session-sidebar dismissal are
+  open presentation defects; the complete physical release matrix is not yet
+  represented as passing.
 - Security re-audit: the glas.sh and GlasSecretStore recording, SFTP, listener, credential, host-trust, forwarding, generated-command, and deep-link findings are repaired. Credential migration is forward-only and collision-safe; SSH-key deletion is transactional, artifact-aware, and fails closed when an incomplete representation cannot be reconstructed. The external glassdb migration finding remains open until accepted in that repository.
 - Secret scan: the latest accepted immutable artifacts are under `/private/tmp/codex-completions-gitleaks/20260717T230527Z-65126204-c18a-4acb-9430-acb4a17fdbea`; manifest SHA-256 is `91847206a34d2f1ba70f8bacad02c90c8301bc63f5b277f12f60ccf880098d69`. Source reported 6,639 classified non-production detections and history reported 21; actionable production credentials: 0. Tree invariance passed and reports are fully redacted, checksum-verified, and read-only. A subsequent staged-diff scan also reported zero leaks.
 - Remaining gates: a matching Xcode 26.x build/test run, physical Vision Pro transparency/security/input/accessibility/performance validation, live external-service workflows, the full terminal conformance corpus, cross-repository work, explicit completion or deferral of Phases 06–09, and signing/TestFlight/App Store distribution.
@@ -223,21 +272,21 @@ Each item has one owning phase. Cross-cutting phase documents may reference an i
 |---|---|---|---|---|
 | `PLAT-001` | Keep visionOS as the premium reference experience: independent terminals, spatial grouping, adaptive geometry, ornaments, accessibility, and privacy | `../docs/glas.sh-results.txt:198`; product invariant | 06 | QA |
 | `PLAT-002` | Add a native macOS shell with menus, tabs/splits, secure keyboard entry, and local PTY support | `../docs/glas.sh-results.txt:199` | 06 | Complete |
-| `PLAT-003` | Add a native iPadOS shell with multiwindow workspaces, keyboard-first interaction, and adaptive sidebar | `../docs/glas.sh-results.txt:200` | 06 | Not started |
-| `PLAT-004` | Add a native iOS shell with compact session switching, focused terminal presentation, and command accessories | `../docs/glas.sh-results.txt:201` | 06 | Not started |
-| `PLAT-005` | Reuse and incrementally separate existing package code into terminal core, transport/domain, and spatial-only targets | `../docs/glas.sh-results.txt:203` | 06 | QA |
+| `PLAT-003` | Add a native iPadOS shell with multiwindow workspaces, keyboard-first interaction, and adaptive sidebar | `../docs/glas.sh-results.txt:200` | 06 | Complete |
+| `PLAT-004` | Add a native iOS shell with compact session switching, focused terminal presentation, and command accessories | `../docs/glas.sh-results.txt:201` | 06 | Complete |
+| `PLAT-005` | Reuse and incrementally separate existing package code into terminal core, transport/domain, and spatial-only targets | `../docs/glas.sh-results.txt:203` | 06 | Complete |
 | `PLAT-006` | Use visionOS 27 for adaptive geometry, toolbar behavior, accessibility, and privacy rather than gratuitous spectacle | `../docs/glas.sh-results.txt:216` | 06 | QA |
 | `WORK-001` | Add iTerm2-style command blocks, working directory, exit status, semantic selection, and file references | `../docs/glas.sh-results.txt:162` | 07 | In progress |
 | `WORK-002` | Add tabs, splits, semantic history, and layout restoration around fresh/recoverable sessions | `../docs/glas.sh-results.txt:274` | 07 | QA |
 | `WORK-003` | Provide tmux/Zellij discovery plus explicit detach/resume handoff so a remote process can survive disconnection on Vision Pro and be resumed from glas.sh on Mac, iPad, iPhone, or another Vision Pro before considering a custom roaming daemon | `../docs/glas.sh-results.txt:165`; cross-device persistent-terminal requirement | 07 | Not started |
-| `SYNC-001` | Define a versioned `EndpointProfile` with stable identity, host, port, username, jump chain, and tags | `../docs/glas.sh-results.txt:235` | 08 | Not started |
-| `SYNC-002` | Keep terminal and database settings as app-specific overlays | `../docs/glas.sh-results.txt:236` | 08 | Not started |
-| `SYNC-003` | Store same-device metadata atomically in the App Group instead of replacing whole UserDefaults arrays | `../docs/glas.sh-results.txt:237` | 08 | Not started |
-| `SYNC-004` | Make private CloudKit/CKSyncEngine synchronization opt-in and limited to non-secret metadata | `../docs/glas.sh-results.txt:238` | 08 | Not started |
-| `SYNC-005` | Represent device-bound Secure Enclave keys as unavailable on other devices without substituting credentials | `../docs/glas.sh-results.txt:239` | 08 | Not started |
-| `SYNC-006` | Make password/private-key synchronization a separate explicit policy | `../docs/glas.sh-results.txt:242` | 08 | Not started |
-| `SYNC-007` | Define tombstones, `updatedAt`, source device, and deterministic conflicts | `../docs/glas.sh-results.txt:243` | 08 | Not started |
-| `SYNC-008` | Perform reuse analysis before introducing a small shared-model package; do not place endpoint schema in GlasSecretStore or RealityKitContent | `../docs/glas.sh-results.txt:245` | 08 | Not started |
+| `SYNC-001` | Define a versioned neutral `EndpointProfile` with stable endpoint and credential references, reusable SSH facts, timestamps, and deletion state | `../docs/glas.sh-results.txt:235`; Magic / First Class decision | 08 | Not started |
+| `SYNC-002` | Keep terminal, workspace, database, and SSH-tunnel behavior in app-specific overlays keyed by endpoint identity | `../docs/glas.sh-results.txt:236`; Magic / First Class decision | 08 | Not started |
+| `SYNC-003` | Store same-device metadata atomically per record and define the signed/native Mac exchange boundary instead of replacing whole arrays | `../docs/glas.sh-results.txt:237` | 08 | Not started |
+| `SYNC-004` | Make private CloudKit/CKSyncEngine metadata synchronization opt-in, add outcome-oriented onboarding/settings, and keep secrets out of metadata payloads | `../docs/glas.sh-results.txt:238`; Magic / First Class decision | 08 | Not started |
+| `SYNC-005` | Represent credential availability honestly, including delayed arrival and device-bound Secure Enclave enrollment without credential substitution | `../docs/glas.sh-results.txt:239`; Magic / First Class decision | 08 | Not started |
+| `SYNC-006` | Make eligible password/imported-key mobility a separate explicit GlasSecretStore policy with consent, protection, revocation, recovery, and device-bound exclusions | `../docs/glas.sh-results.txt:242`; Magic / First Class decision | 08 | Not started |
+| `SYNC-007` | Define tombstones, timestamps, source device, deterministic conflicts, account changes, offline edits, rotation, and stale-resurrection prevention | `../docs/glas.sh-results.txt:243`; Magic / First Class decision | 08 | Not started |
+| `SYNC-008` | Complete glas.sh/glassdb/GlasSecretStore reuse analysis before proposing a neutral shared-model package; keep endpoint schema out of credential and rendering packages | `../docs/glas.sh-results.txt:245`; Magic / First Class decision | 08 | Not started |
 | `ENG-001` | Run a bounded libghostty integration spike after SwiftTerm hardening | `../docs/glas.sh-results.txt:154` | 09 | Not started |
 | `ENG-002` | Compare engines using fidelity, latency, memory, protocol coverage, accessibility, platform fit, and maintainability | `../docs/glas.sh-results.txt:277` | 09 | Not started |
 
