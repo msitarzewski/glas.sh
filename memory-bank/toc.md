@@ -1,6 +1,6 @@
 # Memory Bank TOC
 
-Last reconciled against the unified target, release ledgers, and recorded QA evidence: **2026-08-01**.
+Last reconciled against the unified target, release ledgers, and recorded QA evidence: **2026-08-09**.
 
 ## Core
 - [Project Brief](./projectbrief.md)
@@ -58,4 +58,5 @@ Last reconciled against the unified target, release ledgers, and recorded QA evi
   - [One Base Release Completion](./tasks/2026-07/250726_one-base-release.md)
   - [Public Repository Platform Cleanup](./tasks/2026-07/250726_public-repo-platform-cleanup.md)
 - [2026-08](./tasks/2026-08/README.md)
+  - [Glass-Family Connection Contract](./tasks/2026-08/090826_glass-connection-contract.md)
   - [Public README and Release-Ledger Reconciliation](./tasks/2026-08/020826_readme-release-ledger-reconciliation.md)

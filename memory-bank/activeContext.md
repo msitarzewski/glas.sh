@@ -1,6 +1,11 @@
 # Active Context
 
-## Current Focus (reconciled 2026-08-01)
+## Current Focus (reconciled 2026-08-09)
+- Phase 08.1/08.8 is complete: GlasSecretStore PR #4 is merged, the
+  Foundation-only GlassConnectionKit version-one endpoint contract is published at
+  `0ced944`, and glassdb PR #7 is merged with exact pins for both shared packages.
+  App-record migration, per-record storage, eligible credential mobility, CloudKit
+  synchronization, onboarding, and physical cross-device acceptance remain open.
 - The One Base release was implementation/QA approved on 2026-07-25. One native `glas.sh` application target and scheme now serve iPhone, iPad, visionOS, and native Apple Silicon macOS.
 - One `@main` application composes the existing native platform scenes. `Platforms/macOS` is the guarded AppKit/local-PTY implementation boundary; the duplicate Mac application/test targets and scheme are retired.
 - The public repository structure was implementation/QA approved on 2026-07-25: Mac sources/resources moved from the misleading `glas.sh-mac` name to `Platforms/macOS`, Mac tests moved beneath `glas.shTests/macOS`, and every moved file retained its original Git blob content.
@@ -34,17 +39,16 @@
   - Resolve the initially undersized Vision terminal scene and provide a discoverable native session-sidebar dismissal route without adding a custom tab/sidebar authority.
   - Re-run final hosted Mac unit/UI tests after the protected stale `testmanagerd` state clears.
   - Run an approved dependency-advisory service or provision an offline OSV database.
-- **Then begin Phase 08: the Magic / First Class Glass-family connection experience.**
+- **Continue Phase 08: the Magic / First Class Glass-family connection experience.**
   - Deliver the user model **My Connections**: define once, find everywhere,
     and connect with the least intervention compatible with honest security.
-  - Establish the neutral endpoint, product-overlay, GlasSecretStore credential,
-    host-trust, consent, and availability contracts before implementation begins
-    in glas.sh, glassdb, or the shared package.
+  - Extend the published neutral endpoint contract into product overlays and
+    per-record migration/storage before any CloudKit synchronization code.
   - Use the canonical acceptance path: define an SSH connection in glas.sh on
     iPhone, then select and use it in glassdb on Vision Pro as the tunnel to a
     database without re-entering eligible connection or credential data.
-  - Keep `SYNC-001` through `SYNC-008` `Not started` until their approved
-    cross-repository implementation and verification actually begin.
+  - Preserve `SYNC-001` and `SYNC-008` as complete foundation work. `SYNC-002`
+    through `SYNC-007` remain open until their implementation and verification.
 - **Close the remaining codex-completions release gates.**
   - Finish physical IME/dictation, hardware-keyboard/accessibility, representative TUI, terminal conformance, and performance evidence.
   - Finish recording export/device policy and cross-repository glassdb acceptance.
@@ -61,7 +65,9 @@
   - iPhone and iPad iOS 27 unit suites pass 232/232 each; iPad full UI passes 2/2 and final compact iPhone smoke passes 1/1 with zero runtime warnings.
   - visionOS 26.4 and 27 unit suites pass 229/229 each; 26.4 app smoke passes and 27 UI completes with one pass plus one explicit simulator-input skip.
   - A fresh exact-current native arm64 Mac Release archive and direct launch pass with zero compiler/analyzer warnings. The immediately preceding unified-host suite passes 251/251; final hosted XCTest is blocked by protected stale `testmanagerd`.
-  - GlasSecretStore passes 69/69 at revision `1ffaa96312b8e4b4d6b82eb82cc40c8f6df6317f`; RealityKitContent builds.
+  - GlasSecretStore passes 76/76 at accepted revision `9be45c9` and hosted CI is
+    green. GlassConnectionKit passes 11/11 plus release build and hosted CI at
+    `0ced944`; RealityKitContent builds.
   - Final diff, project/plist/entitlement, production incomplete-marker, target/scheme/product, duplicate-entry, and tracked-diff Gitleaks scans pass.
 - Resume provisioning, TestFlight, and App Store submission only after the Functional release gates in `release-checklist.md` pass.
 
@@ -159,9 +165,9 @@ Priority definitions:
   - [LocalAuthentication evaluatePolicy](https://developer.apple.com/documentation/localauthentication/lacontext/evaluatepolicy(_:localizedreason:reply:))
   - [Liquid Glass](https://developer.apple.com/documentation/technologyoverviews/liquid-glass)
 
-## Build & Dependency State (verified 2026-08-01)
+## Build & Dependency State (verified 2026-08-09)
 - One Swift 6 `glas.sh` application target and scheme support macOS, iOS/iPadOS, and visionOS 26+; exact-current Xcode 27 destination builds pass. Matching Xcode 26.x archive/runtime proof remains pending.
-- swift-crypto 4.5.1, swift-nio 2.101.3, swift-log 1.14.0, swift-collections 1.6.0, swift-asn1 1.7.1, swift-argument-parser 1.8.2, SwiftTerm 1.15.0, swift-atomics 1.3.1, swift-system 1.7.4, BigInt 6.0.0, GlasSecretStore revision `1ffaa96312b8e4b4d6b82eb82cc40c8f6df6317f`
+- swift-crypto 4.5.1, swift-nio 2.101.3, swift-log 1.14.0, swift-collections 1.6.0, swift-asn1 1.7.1, swift-argument-parser 1.8.2, SwiftTerm 1.15.0, swift-atomics 1.3.1, swift-system 1.7.4, BigInt 6.0.0, GlasSecretStore accepted revision `9be45c91d145333252e3f5b03a5e5b6e6349e3e6`, GlassConnectionKit published revision `0ced944e3a9799201f6563f057f7f760e9e7b988` (glassdb adopted it; glas.sh and GlasSecretStore integration remain staged per Phase 08)
 - Vendored Citadel + swift-nio-ssh stay at original tools versions (5.9 / 5.10) to preserve Swift 5 semantics — bumping their tools versions surfaces strict-concurrency errors in static-var declarations and implicit closure captures.
 - Build: the unified app is Apple Silicon/arm64-only with OS 26.0 deployment floors and current bundle identifier `sh.glas.app`.
 - `CURRENT_PROJECT_VERSION = 2`, `MARKETING_VERSION = 1.0`
