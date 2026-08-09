@@ -415,3 +415,40 @@
   - Public marketing claims remain unchanged until implementation and release
     validation prove the experience.
 - References: `memory-bank/projectbrief.md#Vision`, `memory-bank/productContext.md#Magic--First-Class-Experience`, `memory-bank/systemPatterns.md#Glass-Family-Connection-and-Credential-Contract`, `memory-bank/releases/codex-completions/08-glassdb-metadata-sync.md`
+
+## 2026-08-09: Put the neutral connection contract in GlassConnectionKit
+
+- Status: Approved and implemented at `GlassConnectionKit@0ced944`
+- Context:
+  - Phase 08.1 requires one serialized endpoint identity that glas.sh, glassdb,
+    and GlasSecretStore can reference before any CloudKit record is written.
+  - The reuse audit covered both app models and every existing plausible package.
+    Each candidate owns app UI/behavior, rendering, SSH transport, database
+    transport, or Keychain/trust and would reverse an established boundary or
+    force unrelated dependencies into the shared model.
+- Decision:
+  - Define version-one `EndpointProfile` as a non-secret record containing stable
+    endpoint and credential references, reusable SSH address facts, ordered jump
+    references, normalized tags, explicit app visibility, timestamps, a tombstone,
+    schema version, and a random installation-scoped writer identity.
+  - Define the serialized `EndpointID`, `CredentialID`, and `WriterID` value types
+    in the neutral package. GlasSecretStore alone mints and manages credential
+    identity and material; the shared package supplies only its wire representation.
+  - Create a new Foundation-only Swift package/repository named
+    `GlassConnectionKit`. It owns values plus pure validation, normalization, and
+    version migration. It must not contain persistence, CloudKit, Keychain, host
+    trust, transport, UI, terminal, database, or RealityKit behavior.
+  - Keep glas.sh and glassdb settings in overlays keyed by `EndpointID`. glassdb
+    selects an SSH tunnel through `tunnelEndpointID` and does not retain copied SSH
+    fields after migration.
+  - Preserve existing random UUIDs where their ownership matches, generate and
+    persist explicit mappings otherwise, use tombstones for endpoint deletion, and
+    never derive identity from mutable host/user/port fields.
+- Consequences:
+  - Phase 08.1 and 08.8 are complete and the initial package is published, but no
+    synchronization claim is unlocked.
+  - Phase 08.3/08.4 must choose one logical local-record and private CloudKit
+    namespace before either application writes sync code.
+  - Existing app-specific favorite, color, recency, terminal, workspace, database,
+    and appearance data remain outside the shared record.
+- References: `memory-bank/releases/codex-completions/08-glassdb-metadata-sync.md#Phase-081-discovery-outcome--version-one-contract`, `memory-bank/systemPatterns.md#Glass-Family-Connection-and-Credential-Contract`, `glas.sh/Models.swift:108`, `Packages/RealityKitContent/Package.swift:6`, `Packages/Citadel/Package.swift:6`, `https://github.com/msitarzewski/GlassConnectionKit/commit/0ced944e3a9799201f6563f057f7f760e9e7b988`

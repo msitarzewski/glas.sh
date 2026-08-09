@@ -15,9 +15,16 @@ for SSH tunneling.
 
 - `SYNC-001` through `SYNC-008` from the release ledger.
 
-## Current status — Not started / external approval required
+## Current status — Schema/package foundation complete / migration and sync gated
 
-No CloudKit or shared endpoint-schema implementation is included in the current candidate, and no secret is treated as ordinary synced metadata. The glas.sh-side credential migration is forward-only and collision-safe; the sibling glassdb migration repair is present but still requires its own current test run and cross-repository acceptance. This phase remains open and has not been silently deferred.
+Phase 08.1 and the Phase 08.8 reuse decision were completed on 2026-08-09.
+They define the version-one wire contract, field ownership, migration invariants,
+and the required neutral package boundary below. The separately approved
+`GlassConnectionKit` package is published at exact revision
+`0ced944e3a9799201f6563f057f7f760e9e7b988`. No CloudKit synchronization,
+app-record migration, or secret mobility implementation is included in the current
+candidate, and no secret is treated as ordinary synced metadata. This phase remains
+open and has not been silently deferred.
 
 ## Product Invariant and Canonical Journey
 
@@ -61,9 +68,105 @@ No CloudKit or shared endpoint-schema implementation is included in the current 
   of creating an app-specific secret-sync implementation.
 - Introduce a new shared package only if schema discovery proves that neither repository already has a suitable neutral model target.
 
+## Phase 08.1 discovery outcome — version-one contract
+
+`EndpointProfile` is a versioned, non-secret wire record. Its identity is never
+derived from mutable endpoint fields. The serialized version-one contract is:
+
+| Field | Type | Owner and invariant |
+|---|---|---|
+| `schemaVersion` | `UInt16` | `GlassConnectionKit`; version one on initial publication |
+| `id` | `EndpointID` | Immutable random UUID minted once and preserved by every migration |
+| `displayName` | `String` | Shared user-facing endpoint name; trimmed and non-empty |
+| `host` | `String` | Shared SSH host; trimmed and non-empty, never used as record identity |
+| `port` | `UInt16` | Shared SSH port in `1...65535` |
+| `username` | `String` | Shared SSH username; trimmed and non-empty |
+| `credentialID` | `CredentialID?` | Opaque stable reference only; never secret material or a Keychain account name |
+| `jumpEndpointIDs` | `[EndpointID]` | Ordered, unique endpoint references; no self-reference; graph cycles rejected by the repository layer |
+| `tags` | `[String]` | Shared normalized organization labels; ordered deterministically and deduplicated |
+| `appVisibility` | `EndpointAppVisibility` | App-sharing policy, independent of device mobility and authentication kind |
+| `createdAt` | `Date` | Immutable creation timestamp |
+| `updatedAt` | `Date` | Last semantic record update; not connection recency |
+| `deletedAt` | `Date?` | Tombstone timestamp; deletion is not absence |
+| `lastWriterID` | `WriterID` | Random installation-scoped writer identity; never an Apple hardware identifier |
+
+The shared model package defines the serialized value representations for
+`EndpointID`, `CredentialID`, `WriterID`, `EndpointAppVisibility`, and
+`EndpointProfile`. GlasSecretStore remains the only authority allowed to mint,
+resolve, rotate, revoke, or report availability for a `CredentialID`.
+`EndpointAppVisibility` version one has three stable raw values:
+`glasShOnly`, `glassdbOnly`, and `glassFamily`. Existing records migrate to their
+originating app's value until the user explicitly enables **My Connections**;
+new records created while that feature is enabled use `glassFamily`.
+
+### Field ownership
+
+| Layer | Owns | Explicitly does not own |
+|---|---|---|
+| `GlassConnectionKit` | Neutral IDs, `EndpointProfile`, schema validation, normalization, version migration, and deterministic value comparison | Persistence, CloudKit, Keychain, host trust, SSH transport, UI, terminal behavior, or database behavior |
+| GlasSecretStore | Credential lifecycle, authentication kind, device availability, mobility consent, Keychain policy/material, Secure Enclave enrollment, and host trust | Endpoint fields, app overlays, CloudKit endpoint records, or product UI |
+| glas.sh overlay | Advanced SSH/PTY options, terminal/workspace behavior and appearance, favorite/color/recency presentation, and provenance | Database configuration or credential material |
+| glassdb overlay | Database engine/host/port/user/database/TLS, database credential reference, favorite/color/recency presentation, and `tunnelEndpointID` | Duplicated SSH endpoint fields, terminal settings, or SSH credential material |
+| Phase 08.3/08.4 repositories | Per-record local persistence, one logical CloudKit namespace, conflict application, and sync status | Schema invention or secret synchronization |
+
+Metadata sync consent is a store/account setting, not an `EndpointProfile` field.
+Credential mobility consent is a separate GlasSecretStore policy. `lastConnected`,
+favorite state, colors, database options, terminal appearance, host fingerprints,
+passwords, private keys, and passphrases never enter the shared endpoint record.
+
+### Migration invariants
+
+- glas.sh preserves `ServerConfiguration.id` as `EndpointID`; reusable endpoint
+  fields move to `EndpointProfile` and terminal-only fields remain in its overlay.
+- Existing key-backed credentials may preserve a collision-checked SSH key UUID as
+  `CredentialID`. Password-backed records receive a new random `CredentialID` and
+  are copied through GlasSecretStore's atomic migration path before references
+  change.
+- glassdb preserves `DatabaseConnectionConfig.id` as the database-overlay identity.
+  Its embedded SSH fields either link to an explicitly matched existing endpoint or
+  create a new random `EndpointID`; mutable `user@host:port` data is never hashed
+  into identity. The overlay then stores only `tunnelEndpointID`.
+- Existing records begin with origin-app-only visibility. Migration never opts a
+  user into cross-app or cross-device sharing; the approved onboarding action does.
+- Migrations persist their endpoint/credential mapping before removing duplicate
+  fields, retain a rollback source through cross-app acceptance, and are idempotent.
+- Deleting a database overlay never deletes its endpoint or credential. Endpoint
+  deletion writes a tombstone. Credential deletion is a separate, reference-aware,
+  explicit action owned by GlasSecretStore.
+
+## Phase 08.8 discovery outcome — shared-package decision
+
+The required reuse analysis found no existing neutral target that can be extended
+without reversing an established dependency boundary or importing unrelated UI,
+transport, database, or security behavior:
+
+| Candidate analyzed | Why it cannot own the shared contract |
+|---|---|
+| glas.sh `ServerConfiguration` | Internal app model mixing reusable endpoint fields with credentials, trust, terminal, PTY, appearance, and provenance behavior |
+| glassdb `DatabaseConnectionConfig` | Internal app model mixing database fields with embedded SSH tunnel and credential-policy fields |
+| `RealityKitContent` | Rendering/terminal package with SwiftTerm and RealityKit assets; the wrong dependency direction for glassdb and non-UI models |
+| `Citadel` | SSH transport package coupled to NIO, Crypto, BigInt, and logging |
+| `GlassDBKit` | Database transport package coupled to MySQL, PostgreSQL, TLS, SQLite, and Citadel |
+| GlasSecretStore | Security/Keychain and host-trust boundary; making it own endpoints would conflate discoverable metadata with secret lifecycle and force Security into the neutral layer |
+
+Decision: create a new repository and Swift package named
+`GlassConnectionKit`, with one dependency-free Foundation target and a matching
+test target. Downstream integrations must consume reviewed exact revisions;
+glassdb is the first consumer at `0ced944`. The package contains only the
+versioned values and pure validation/migration behavior above. It contains no
+CloudKit adapter, App Group store, Keychain call, SSH/database transport, SwiftUI,
+or RealityKit code.
+
+The separate package gate was approved and completed at exact revision
+`0ced944e3a9799201f6563f057f7f760e9e7b988`; its 11 contract tests, release build,
+and hosted CI pass. Phase 08.3 and 08.4 must subsequently assign one logical local-
+record and CloudKit namespace before either app writes synchronization code.
+
 ## Work Packages
 
 ### 08.1 Shared schema discovery (`SYNC-001`)
+
+**Status: Complete (2026-08-09); app migration is owned by 08.2/08.3.**
 
 - Inventory glas.sh and glassdb endpoint models and persistence boundaries.
 - Define `EndpointProfile` with a stable `EndpointID`, display name, host, port,
@@ -135,6 +238,8 @@ No CloudKit or shared endpoint-schema implementation is included in the current 
   readiness or deleting the last recoverable local secret.
 
 ### 08.8 Shared-package decision (`SYNC-008`)
+
+**Status: Complete (2026-08-09); package published at `0ced944`.**
 
 - Complete the required reuse analysis across both repositories.
 - Include GlasSecretStore in the contract analysis while preserving its narrow
