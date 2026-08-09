@@ -1,5 +1,19 @@
 # Progress
 
+- Glass-family connection contract foundation completed (2026-08-09):
+  - Reconciled and merged GlasSecretStore PR #4; accepted revision `9be45c9`
+    passes 76/76 tests, release build, and hosted package CI.
+  - Published the Foundation-only GlassConnectionKit at `0ced944` with the
+    version-one non-secret endpoint schema, canonical codec, validation, and 11/11
+    green contract tests plus hosted CI.
+  - Completed Phase 08.1/08.8 schema, field ownership, migration invariants, and
+    exhaustive reuse/package decision; `SYNC-001` and `SYNC-008` are complete.
+  - Merged glassdb PR #7 as `2e40b6d`, pinning both accepted packages and passing
+    106 macOS plus 104 each iPhone/iPad/Vision Pro tests and all hosted CI/security
+    checks.
+  - No CloudKit, synchronizable Keychain, app-record migration, or credential-
+    mobility implementation is claimed; Phase 08.2 through 08.7 remain open.
+
 - Adaptive workspace and native chrome checkpoint approved (2026-07-30 through 2026-08-01):
   - Replaced duplicate/custom terminal tab authorities with model-owned native adaptive tabs while preserving independent windows, Command-T, explicit close, restoration intentions, and transactional tab movement.
   - Brought Connections and terminal windows onto native full-height sidebar and compact toolbar composition; separated global controls from terminal tools and preserved the transparent terminal-canvas boundary.
