@@ -59,8 +59,11 @@
   are the only acceptable interruptions to the first-class flow.
 - Cross-app and cross-device work must extend the existing `ServerManager`,
   `SharedDefaults`, GlasSecretStore, Keychain, and iCloud integration points.
-  A neutral shared-model package may be proposed only after the Phase 08 reuse
-  analysis proves that neither repository has a suitable existing target.
+- The completed Phase 08 reuse analysis found no suitable neutral target in
+  glas.sh, glassdb, RealityKitContent, Citadel, GlassDBKit, or GlasSecretStore.
+  The Foundation-only `GlassConnectionKit`, consumed at a reviewed exact revision,
+  owns only versioned connection value types and pure validation/migration behavior.
+  Persistence, CloudKit, Keychain, trust, transport, and UI stay outside it.
 
 ## Terminal Architecture
 - SSH transport via Citadel and `withPTY` interactive sessions.
