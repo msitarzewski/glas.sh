@@ -2,6 +2,15 @@
 
 ## Tasks Completed
 
+### 2026-08-10: Connection experience and native server-form layout
+
+- Recorded glassdb PR #8 as merged downstream connection-library and unified-workspace evidence without upgrading glas.sh synchronization status.
+- Consolidated Add/Edit Server appearance controls and introduced a compact grouped macOS form while retaining touch/spatial target sizing on iPhone, iPad, and Vision Pro.
+- Built and launched a signed Mac candidate; 274/274 Mac unit tests pass.
+- Preserved the exact visual boundary: the grouped direction is accepted, but a true trailing-aligned value column remains open before final approval.
+- Recorded that local foreground GUI automation requires explicit approval; simulator testing remains allowed.
+- See: [100826_connection-experience-and-server-form-layout.md](./100826_connection-experience-and-server-form-layout.md)
+
 ### 2026-08-09: Glass-family connection contract
 
 - Reconciled and merged GlasSecretStore PR #4 while preserving the exact accepted

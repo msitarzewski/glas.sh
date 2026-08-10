@@ -47,6 +47,67 @@ extension View {
         self.background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         #endif
     }
+
+    @ViewBuilder
+    func terminalServerFormStyle() -> some View {
+        #if os(macOS)
+        self.formStyle(.grouped)
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func terminalServerFormControlWidth() -> some View {
+        #if os(macOS)
+        self.frame(width: 340, alignment: .leading)
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func terminalServerFormSheetSize() -> some View {
+        #if os(macOS)
+        self.frame(
+            minWidth: 600,
+            idealWidth: 640,
+            maxWidth: 680,
+            minHeight: 620,
+            idealHeight: 720,
+            maxHeight: 820
+        )
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func terminalServerFormCancelShortcut() -> some View {
+        #if os(macOS)
+        self.keyboardShortcut(.cancelAction)
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func terminalServerFormDefaultShortcut() -> some View {
+        #if os(macOS)
+        self.keyboardShortcut(.defaultAction)
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func terminalTagDeleteTarget() -> some View {
+        #if os(macOS)
+        self.frame(minWidth: 20, minHeight: 20)
+        #else
+        self.frame(minWidth: 44, minHeight: 44)
+        #endif
+    }
 }
 
 private let supportedAuthenticationMethods: [AuthenticationMethod] = [.password, .sshKey]
@@ -119,17 +180,22 @@ struct AddServerView: View {
                 Section("Connection") {
                     TextField("Display Name", text: $name)
                         .focused($focusedField, equals: .name)
+                        .terminalServerFormControlWidth()
                         .accessibilityIdentifier("add-server-display-name")
                     TextField("Host", text: $host)
                         .terminalTextInputDefaults()
                         .focused($focusedField, equals: .host)
+                        .terminalServerFormControlWidth()
                         .accessibilityIdentifier("add-server-host")
                     TextField("Port", text: $port)
+                        .terminalNumericInput()
                         .focused($focusedField, equals: .port)
+                        .terminalServerFormControlWidth()
                         .accessibilityIdentifier("add-server-port")
                     TextField("Username", text: $username)
                         .terminalTextInputDefaults()
                         .focused($focusedField, equals: .username)
+                        .terminalServerFormControlWidth()
                         .accessibilityIdentifier("add-server-username")
                 }
 
@@ -139,11 +205,13 @@ struct AddServerView: View {
                             Text(method.displayName).tag(method)
                         }
                     }
+                    .terminalServerFormControlWidth()
 
                     if authMethod == .password {
                         SecureField("Password", text: $password)
                             .textContentType(.init(rawValue: ""))
                             .focused($focusedField, equals: .password)
+                            .terminalServerFormControlWidth()
                             .accessibilityIdentifier("add-server-password")
                     } else if authMethod == .sshKey {
                         if settingsManager.sshKeys.isEmpty {
@@ -157,6 +225,7 @@ struct AddServerView: View {
                                     Text("\(key.name) (\(key.keyTypeBadge))").tag(key.id as UUID?)
                                 }
                             }
+                            .terminalServerFormControlWidth()
                         }
                         Button {
                             showingAddSSHKey = true
@@ -206,90 +275,36 @@ struct AddServerView: View {
                 }
 
                 Section("Appearance") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Color Tag")
-                            .font(.headline)
-
-                        HStack(spacing: 12) {
-                            ForEach(ServerColorTag.allCases, id: \.self) { tag in
-                                Button {
-                                    colorTag = tag
-                                } label: {
-                                    Circle()
-                                        .fill(tag.color)
-                                        .frame(width: 44, height: 44)
-                                        .overlay {
-                                            if colorTag == tag {
-                                                Circle()
-                                                    .strokeBorder(.white, lineWidth: 3)
-                                            }
-                                        }
-                                }
-                                .buttonStyle(.plain)
-                                .frame(minWidth: 60, minHeight: 60)
-                                .contentShape(Circle())
-                                .accessibilityLabel("\(tag.rawValue) color")
-                                .accessibilityAddTraits(colorTag == tag ? .isSelected : [])
-                            }
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Tags")
-                            .font(.headline)
-
-                        FlowLayout(spacing: 8) {
-                            ForEach(tags, id: \.self) { tag in
-                                TagChip(tag: tag) {
-                                    tags.removeAll { $0 == tag }
-                                }
-                            }
-
-                            HStack(spacing: 4) {
-                                TextField("Add tag", text: $newTag)
-                                    .textFieldStyle(.plain)
-                                    .frame(width: 80)
-                                    .accessibilityIdentifier("add-server-tag")
-                                    .onSubmit {
-                                        commitPendingTag()
-                                    }
-
-                                if !newTag.isEmpty {
-                                    Button {
-                                        commitPendingTag()
-                                    } label: {
-                                        Image(systemName: "plus.circle.fill")
-                                            .foregroundStyle(.blue)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel("Add tag")
-                                }
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(.regularMaterial, in: .capsule)
-                        }
-                    }
+                    ServerColorTagSelector(selection: $colorTag)
+                    ServerTagsEditor(
+                        tags: $tags,
+                        newTag: $newTag,
+                        textFieldIdentifier: "add-server-tag",
+                        onCommit: commitPendingTag
+                    )
                 }
 
-                Section {
+                Section("Preferences") {
                     Toggle(isOn: $isFavorite) {
                         Label("Favorite", systemImage: "heart.fill")
                     }
                 }
             }
+            .terminalServerFormStyle()
             .navigationTitle(isPrefilledDraft ? "Import Connection" : "Add Server")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
                         dismiss()
                     }
+                    .terminalServerFormCancelShortcut()
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(isPrefilledDraft ? "Save Connection" : "Add Server") {
                         saveServer()
                     }
                     .disabled(!isFormValid)
+                    .terminalServerFormDefaultShortcut()
                 }
             }
             .sheet(isPresented: $showingAddSSHKey) {
@@ -313,6 +328,7 @@ struct AddServerView: View {
                 Text(keychainSaveError ?? "The server could not be saved.")
             }
         }
+        .terminalServerFormSheetSize()
         .onAppear {
             normalizeSelectedSSHKey()
             focusedField = isPrefilledDraft ? .username : .name
@@ -449,12 +465,19 @@ struct EditServerView: View {
                 Section("Connection") {
                     TextField("Name", text: $name)
                         .focused($focusedField, equals: .name)
+                        .terminalServerFormControlWidth()
                     TextField("Host", text: $host)
+                        .terminalTextInputDefaults()
                         .focused($focusedField, equals: .host)
+                        .terminalServerFormControlWidth()
                     TextField("Port", text: $port)
+                        .terminalNumericInput()
                         .focused($focusedField, equals: .port)
+                        .terminalServerFormControlWidth()
                     TextField("Username", text: $username)
+                        .terminalTextInputDefaults()
                         .focused($focusedField, equals: .username)
+                        .terminalServerFormControlWidth()
                 }
 
                 Section("Authentication") {
@@ -463,11 +486,13 @@ struct EditServerView: View {
                             Text(method.displayName).tag(method)
                         }
                     }
+                    .terminalServerFormControlWidth()
 
                     if authMethod == .password {
                         SecureField("Password", text: $password)
                             .textContentType(.init(rawValue: ""))
                             .focused($focusedField, equals: .password)
+                            .terminalServerFormControlWidth()
                         if requiresPasswordUpgrade {
                             Label {
                                 Text("Re-enter this password once to upgrade it. Earlier releases used an address-based Keychain account shared with glassdb; glas.sh will not import that ambiguous credential.")
@@ -476,6 +501,7 @@ struct EditServerView: View {
                             }
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .terminalServerFormControlWidth()
                         }
                     } else if authMethod == .sshKey {
                         if settingsManager.sshKeys.isEmpty {
@@ -489,6 +515,7 @@ struct EditServerView: View {
                                     Text("\(key.name) (\(key.keyTypeBadge))").tag(key.id as UUID?)
                                 }
                             }
+                            .terminalServerFormControlWidth()
                         }
                         Button {
                             showingAddSSHKey = true
@@ -538,69 +565,13 @@ struct EditServerView: View {
                 }
 
                 Section("Appearance") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Color Tag")
-                            .font(.headline)
-
-                        HStack(spacing: 12) {
-                            ForEach(ServerColorTag.allCases, id: \.self) { tag in
-                                Button {
-                                    colorTag = tag
-                                } label: {
-                                    Circle()
-                                        .fill(tag.color)
-                                        .frame(width: 44, height: 44)
-                                        .overlay {
-                                            if colorTag == tag {
-                                                Circle()
-                                                    .strokeBorder(.white, lineWidth: 3)
-                                            }
-                                        }
-                                }
-                                .buttonStyle(.plain)
-                                .frame(minWidth: 60, minHeight: 60)
-                                .contentShape(Circle())
-                                .accessibilityLabel("\(tag.rawValue) color")
-                                .accessibilityAddTraits(colorTag == tag ? .isSelected : [])
-                            }
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Tags")
-                            .font(.headline)
-
-                        FlowLayout(spacing: 8) {
-                            ForEach(tags, id: \.self) { tag in
-                                TagChip(tag: tag) {
-                                    tags.removeAll { $0 == tag }
-                                }
-                            }
-
-                            HStack(spacing: 4) {
-                                TextField("Add tag", text: $newTag)
-                                    .textFieldStyle(.plain)
-                                    .frame(width: 80)
-                                    .onSubmit {
-                                        commitPendingTag()
-                                    }
-
-                                if !newTag.isEmpty {
-                                    Button {
-                                        commitPendingTag()
-                                    } label: {
-                                        Image(systemName: "plus.circle.fill")
-                                            .foregroundStyle(.blue)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel("Add tag")
-                                }
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(.regularMaterial, in: .capsule)
-                        }
-                    }
+                    ServerColorTagSelector(selection: $colorTag)
+                    ServerTagsEditor(
+                        tags: $tags,
+                        newTag: $newTag,
+                        textFieldIdentifier: "edit-server-tag",
+                        onCommit: commitPendingTag
+                    )
                 }
 
                 Section("Preferences") {
@@ -609,6 +580,7 @@ struct EditServerView: View {
                     }
                 }
             }
+            .terminalServerFormStyle()
             .navigationTitle("Edit Server")
             .sheet(isPresented: $showingAddSSHKey) {
                 AddSSHKeyView()
@@ -627,6 +599,7 @@ struct EditServerView: View {
                     Button("Cancel") {
                         dismiss()
                     }
+                    .terminalServerFormCancelShortcut()
                 }
 
                 ToolbarItem(placement: .confirmationAction) {
@@ -634,6 +607,7 @@ struct EditServerView: View {
                         saveChanges()
                     }
                     .disabled(!isFormValid)
+                    .terminalServerFormDefaultShortcut()
                 }
             }
             .alert("Save Failed", isPresented: Binding(
@@ -645,6 +619,7 @@ struct EditServerView: View {
                 Text(keychainSaveError ?? "The server changes could not be saved.")
             }
         }
+        .terminalServerFormSheetSize()
         .onAppear {
             normalizeSelectedSSHKey()
             focusedField = .name
@@ -722,6 +697,135 @@ struct EditServerView: View {
 
 // MARK: - Supporting Views
 
+private struct ServerColorTagSelector: View {
+    @Binding var selection: ServerColorTag
+
+    var body: some View {
+        #if os(macOS)
+        LabeledContent("Color tag") {
+            HStack(spacing: 8) {
+                colorButtons
+            }
+            .frame(width: 340, alignment: .leading)
+        }
+        #else
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Color tag")
+                .font(.subheadline.weight(.semibold))
+
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 60), spacing: 12)],
+                alignment: .leading,
+                spacing: 8
+            ) {
+                colorButtons
+            }
+        }
+        #endif
+    }
+
+    @ViewBuilder
+    private var colorButtons: some View {
+        ForEach(ServerColorTag.allCases, id: \.self) { tag in
+            Button {
+                selection = tag
+            } label: {
+                Circle()
+                    .fill(tag.color)
+                    .frame(width: swatchSize, height: swatchSize)
+                    .overlay {
+                        if selection == tag {
+                            Circle()
+                                .strokeBorder(.primary, lineWidth: 2)
+                                .padding(2)
+                        }
+                    }
+            }
+            .buttonStyle(.plain)
+            .frame(minWidth: targetSize, minHeight: targetSize)
+            .contentShape(Circle())
+            .accessibilityLabel("\(tag.rawValue) color")
+            .accessibilityAddTraits(selection == tag ? .isSelected : [])
+        }
+    }
+
+    private var swatchSize: CGFloat {
+        #if os(macOS)
+        26
+        #else
+        44
+        #endif
+    }
+
+    private var targetSize: CGFloat {
+        #if os(macOS)
+        32
+        #else
+        60
+        #endif
+    }
+}
+
+private struct ServerTagsEditor: View {
+    @Binding var tags: [String]
+    @Binding var newTag: String
+    let textFieldIdentifier: String
+    let onCommit: () -> Void
+
+    var body: some View {
+        #if os(macOS)
+        LabeledContent("Tags") {
+            editor
+                .frame(width: 340, alignment: .leading)
+        }
+        #else
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Tags")
+                .font(.subheadline.weight(.semibold))
+            editor
+        }
+        #endif
+    }
+
+    private var editor: some View {
+        FlowLayout(spacing: 8) {
+            ForEach(tags, id: \.self) { tag in
+                TagChip(tag: tag) {
+                    tags.removeAll { $0 == tag }
+                }
+            }
+
+            HStack(spacing: 4) {
+                TextField("Add tag", text: $newTag)
+                    .textFieldStyle(.plain)
+                    .frame(width: tagEntryWidth)
+                    .accessibilityIdentifier(textFieldIdentifier)
+                    .onSubmit(onCommit)
+
+                if !newTag.isEmpty {
+                    Button(action: onCommit) {
+                        Image(systemName: "plus.circle.fill")
+                            .foregroundStyle(.blue)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Add tag")
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.regularMaterial, in: .capsule)
+        }
+    }
+
+    private var tagEntryWidth: CGFloat {
+        #if os(macOS)
+        120
+        #else
+        100
+        #endif
+    }
+}
+
 struct TagChip: View {
     let tag: String
     let onDelete: () -> Void
@@ -737,7 +841,7 @@ struct TagChip: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
-            .frame(minWidth: 44, minHeight: 44)
+            .terminalTagDeleteTarget()
             .contentShape(Circle())
             .accessibilityLabel("Remove \(tag)")
         }

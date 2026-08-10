@@ -1,6 +1,16 @@
 # Active Context
 
-## Current Focus (reconciled 2026-08-09)
+## Current Focus (reconciled 2026-08-10)
+- The current glas.sh server-form candidate consolidates Add/Edit appearance
+  controls and adopts a bounded compact grouped form on macOS without changing
+  connection, credential, routing, or persistence behavior. A signed Mac build
+  passes and 274/274 Mac unit tests pass. Manual review confirmed the native
+  grouped direction and identified one open visual refinement: editable values
+  must align to a common trailing axis before final approval.
+- glassdb PR [#8](https://github.com/msitarzewski/glassdb.app/pull/8) merged as
+  `4b18f79`, carrying the full-row connection selection, simplified actions/detail,
+  and unified SQL workspace reviewed after the Phase 08 contract publication.
+  This is downstream UX evidence, not glas.sh app migration or cross-device sync.
 - Phase 08.1/08.8 is complete: GlasSecretStore PR #4 is merged, the
   Foundation-only GlassConnectionKit version-one endpoint contract is published at
   `0ced944`, and glassdb PR #7 is merged with exact pins for both shared packages.
@@ -12,7 +22,8 @@
 - Product identity is unified as `sh.glas.app`; SDK-specific plist, entitlements, icons, and widget filtering preserve shared GlasSecretStore, app-group, Keychain, iCloud, terminal, and platform behavior.
 - The approved One Base release was merged to `main` through PR [#30](https://github.com/msitarzewski/glas.sh/pull/30); merge commit `d9237f97` and GitHub are the canonical publication record.
 - This completion is not an App Store distribution decision. Physical Vision Pro SSH to the development Mac over Tailscale now works, but the full device matrix, initial terminal sizing, native session-sidebar dismissal, distribution certificate trust/notarization, final hosted Mac XCTest after the render-only delta, and external dependency-advisory querying retain explicit evidence boundaries in the release dashboard.
-- Working branch: `codex/native-mac-terminal-chrome`.
+- Working branch: `codex/server-form-layout` (based on
+  `codex/native-mac-terminal-chrome`).
 
 ## What's Next
 - **Preserve the completed One Base publication.**
@@ -49,6 +60,8 @@
     database without re-entering eligible connection or credential data.
   - Preserve `SYNC-001` and `SYNC-008` as complete foundation work. `SYNC-002`
     through `SYNC-007` remain open until their implementation and verification.
+  - Finish the glas.sh native server-form value-column alignment and manual Add/Edit
+    acceptance without changing the shared connection or credential contract.
 - **Close the remaining codex-completions release gates.**
   - Finish physical IME/dictation, hardware-keyboard/accessibility, representative TUI, terminal conformance, and performance evidence.
   - Finish recording export/device policy and cross-repository glassdb acceptance.
@@ -59,6 +72,11 @@
   - Output-only recording default, protected/bounded storage, fail-closed deletion, redacted diagnostics, SFTP no-clobber transfer, and deterministic AI confirmation.
   - SharePlay and unused AI summaries removed, HTML Preview Debug-only, unsupported SSH Agent/inert settings absent, and forwarding backed by the shared manager.
 - **Current automated evidence.**
+  - The 2026-08-10 server-form candidate passes a signed native Mac Debug build
+    and 274/274 Mac unit tests. A focused local Mac UI run failed before form
+    validation at the existing Window-menu recovery assertion, so no UI pass is
+    claimed. Local foreground GUI automation now requires explicit user approval;
+    simulator work remains allowed.
   - The 2026-07-30 adaptive-workspace publication checkpoint passes 274/274 native Mac unit tests with zero failures, skips, or runtime warnings. Exact-current visionOS 27, iPadOS 27, and iOS 27 simulator builds also pass.
   - The final native-chrome diff check and production incomplete-marker scan are clean. User visual review approved the Connections and terminal layouts. The unbounded Mac UI harness was stopped after its host runner stalled between app launches; no UI-suite pass is claimed for that run.
   - Public platform-boundary cleanup passes 251/251 Mac tests, iPhone 17 Pro and Vision Pro 27 simulator builds, and simulator install/launch smokes on both products.

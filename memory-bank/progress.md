@@ -1,5 +1,20 @@
 # Progress
 
+- Connection experience and native server-form candidate recorded (2026-08-10):
+  - glassdb PR #8 merged as `4b18f79`, preserving the direct full-row connection
+    interaction, simplified detail/action hierarchy, and unified SQL workspace.
+  - glas.sh Add/Edit Server now share compact macOS grouped-form treatment and
+    reusable appearance controls while retaining existing platform, manager,
+    GlasSecretStore, validation, routing, and save boundaries.
+  - Signed native Mac Debug build passes; 274/274 Mac unit tests pass.
+  - Manual review confirms the grouped-form direction but requires one common
+    trailing value axis before final visual approval. This remains open work.
+  - A focused local Mac UI test failed before form coverage at the existing
+    Window-menu recovery assertion; no UI pass is claimed. Foreground local GUI
+    automation is opt-in, while simulator validation remains available.
+  - No Phase 08 app migration, CloudKit, synchronizable credential, or canonical
+    cross-device tunnel acceptance is claimed by this presentation work.
+
 - Glass-family connection contract foundation completed (2026-08-09):
   - Reconciled and merged GlasSecretStore PR #4; accepted revision `9be45c9`
     passes 76/76 tests, release build, and hosted package CI.

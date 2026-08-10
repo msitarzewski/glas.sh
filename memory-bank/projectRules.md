@@ -27,6 +27,10 @@
 ## Collaboration
 - Use PR-first workflow for all non-trivial changes.
 - Keep branch naming with `codex/` prefix for feature branches.
+- Local foreground GUI automation is opt-in. Do not run macOS XCUITests or other
+  automation that opens, focuses, or drives application windows on the user's
+  active desktop without explicit approval. Simulator builds, tests, launches,
+  and non-interactive builds/unit tests remain permitted.
 
 ## Documentation Tone and Status Labeling
 - Use neutral, operational language in memory-bank files.

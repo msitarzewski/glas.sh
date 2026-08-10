@@ -1,12 +1,30 @@
 # Testing Patterns
 
 ## Test Suite
+- **Server-form candidate checkpoint (2026-08-10):** signed native Mac Debug build
+  and 274/274 Mac unit tests pass. Manual review accepted the grouped-form
+  direction and found trailing value alignment still open. A focused local Mac UI
+  test failed before form coverage at the existing Window-menu recovery assertion;
+  no UI pass is claimed.
 - **Exact-current adaptive-workspace checkpoint (2026-07-30):** macOS 27 ran 274/274 tests with zero build warnings; visionOS 27, iPadOS 27, and iOS 27 simulator builds passed.
 - **Most recent full One Base runtime matrix:** iPhone and iPad 232/232; visionOS 26.4 and 27 229/229; macOS 251/251 before the final render-only delta. The iPad UI harness passed 2/2, the compact-iPhone smoke passed 1/1, and visionOS 27 produced one UI pass plus one explicit simulator-input skip.
 - **Historical Connection Library release matrix:** iOS 211, visionOS 208, and native Mac workspace 32. These counts describe that release checkpoint and must not be presented as exact-current totals.
 - 69 GlasSecretStore tests pass from the shared sibling repository at revision `1ffaa96312b8e4b4d6b82eb82cc40c8f6df6317f`; run with `swift test --package-path ../GlasSecretStore` and an isolated scratch path.
 - Run the app suite via Xcode scheme `glas.sh` or `xcodebuild test`; retain `.xcresult` bundles for release evidence.
 - The shared `glas.shUITests` source is attached to iOS/visionOS and Mac UI-test targets. A buildable harness is not a passing runtime result: Xcode 27 beta may lose the UI worker and block during test-session finalization, which must be reported separately from direct application smoke evidence.
+
+## Interactive Test Execution Boundary
+
+- Simulator builds, simulator tests, simulator launches, and non-interactive
+  command-line builds/unit tests are allowed as normal QA.
+- Local foreground macOS GUI automation is not normal QA because it can take
+  focus and drive the user's active desktop. Run it only after explicit approval
+  for that specific foreground test session.
+- Prefer signed builds plus user-driven manual visual/interaction review for local
+  Mac UI changes. Hosted CI UI execution does not take over the user's desktop and
+  remains valid when the runner is reliable.
+- Stopping a disruptive UI runner is not a waiver and is not a pass; record the
+  last completed assertion and continue with non-foreground evidence.
 
 ## Test Categories
 - **ServerManager**: CRUD operations, persistence via UserDefaults, duplicate handling, tag management.
