@@ -122,5 +122,6 @@ changes concurrently.
 ## Artifacts
 
 - glas.sh branch: `agent/glass-editor-sftp-m4`
+- glas.sh PR: [#33](https://github.com/msitarzewski/glas.sh/pull/33)
 - GlassEditorKit repository: https://github.com/msitarzewski/GlassEditorKit
 - Integration authority: `../GlassEditorKit/INTEGRATION.md#Part-B`

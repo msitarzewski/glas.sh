@@ -7,9 +7,9 @@
   verified transport, and surfaces forced remote/local conflicts for an explicit
   user decision. macOS passes 278/278 tests, Citadel passes with five
   environment-gated skips, macOS and visionOS builds pass, and signed manual
-  open/edit/save plus forced-conflict acceptance pass. Publication is the current
-  action; the local package path must become a pinned GitHub dependency before a
-  release.
+  open/edit/save plus forced-conflict acceptance pass. Ready-for-review PR
+  [#33](https://github.com/msitarzewski/glas.sh/pull/33) is open and mergeable;
+  the local package path must become a pinned GitHub dependency before a release.
 - The native Mac connection-experience checkpoint is merged to `main` through PR
   [#31](https://github.com/msitarzewski/glas.sh/pull/31) as squash commit
   `9de9ef15`. Add/Edit use
@@ -35,6 +35,7 @@
 
 ## What's Next
 - **Publish and preserve GlassEditorKit remote-editing M4.**
+  - Review and merge PR [#33](https://github.com/msitarzewski/glas.sh/pull/33).
   - Keep GlassEditorKit at the decision/UI boundary and glas.sh at the verified
     byte-transport boundary.
   - Pin the package to GitHub before release and retain the signed forced-conflict
