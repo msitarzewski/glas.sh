@@ -80,6 +80,7 @@
 		BB0000010000000000000023 /* Exceptions for "macOS" folder in "glas.sh" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				AppIcon.icon,
 				Assets.xcassets,
 				Info.plist,
 			);

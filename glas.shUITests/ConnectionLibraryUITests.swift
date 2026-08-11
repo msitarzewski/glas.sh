@@ -874,7 +874,7 @@ final class ConnectionLibraryUITests: XCTestCase {
         let edit = app.buttons["Edit"].firstMatch
         XCTAssertTrue(edit.waitForExistence(timeout: 5))
         activate(edit)
-        XCTAssertTrue(app.navigationBars["Edit Server"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Edit Connection"].waitForExistence(timeout: 5))
 
         let favorite = app.switches["Favorite"].firstMatch
         makeHittable(favorite)
@@ -889,7 +889,7 @@ final class ConnectionLibraryUITests: XCTestCase {
             "The native Favorite switch should be on before saving the edited connection."
         )
 
-        let save = app.navigationBars["Edit Server"].buttons["Save"].firstMatch
+        let save = app.navigationBars["Edit Connection"].buttons["Save Changes"].firstMatch
         XCTAssertTrue(save.waitForExistence(timeout: 3))
         XCTAssertTrue(save.isEnabled)
         activate(save)
@@ -1170,7 +1170,7 @@ final class ConnectionLibraryUITests: XCTestCase {
     @MainActor
     private func dismissPresentedEditorIfNeeded() {
         let cancel = app.buttons["Cancel"].firstMatch
-        if (app.navigationBars["Add Server"].exists || app.navigationBars["Edit Server"].exists),
+        if (app.navigationBars["Add Server"].exists || app.navigationBars["Edit Connection"].exists),
            cancel.exists {
             activate(cancel)
         }

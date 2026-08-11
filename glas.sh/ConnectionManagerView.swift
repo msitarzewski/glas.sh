@@ -61,7 +61,7 @@ struct ConnectionManagerView: View {
     @State private var pendingTrustChallenge: HostKeyTrustChallenge?
     @State private var connectionFailureMessage: String?
     @State private var pendingLegacyAlgorithmServer: ServerConfiguration?
-    @State private var quickConnectPasswordPrompt: ServerConfiguration?
+    @State private var passwordPromptServer: ServerConfiguration?
     @State private var quickConnectPassword: String = ""
     @State private var quickConnectUsername: String = ""
     @State private var quickConnectPort: String = "22"
@@ -185,42 +185,12 @@ struct ConnectionManagerView: View {
         } message: { server in
             Text("\(server.name) permits obsolete SSH algorithms. They provide weaker protection and should only be used for a server you control when upgrading it is not currently possible.")
         }
-        .alert("Enter Password", isPresented: quickConnectPasswordPromptBinding) {
-            SecureField("Password", text: $quickConnectPassword)
-            Button("Connect") {
-                if let config = quickConnectPasswordPrompt {
-                    let password = quickConnectPassword
-                    quickConnectPassword = ""
-                    Task { @MainActor in
-                        do {
-                            let launch = try await sessionManager.createTransientAuthorizedSession(
-                                for: config,
-                                settingsManager: settingsManager,
-                                password: password
-                            )
-                            if launch.session.state == .connected {
-                                presentTerminalWindow(for: launch.session)
-                            } else if let challenge = launch.session.pendingHostKeyChallenge {
-                                stageHostKeyChallenge(
-                                    challenge,
-                                    for: launch.session
-                                )
-                            } else if case .error(let message) = launch.session.state {
-                                connectionFailureMessage = message
-                                sessionManager.closeSession(launch.session)
-                            }
-                        } catch {
-                            connectionFailureMessage = error.localizedDescription
-                        }
-                    }
-                }
-            }
-            Button("Cancel", role: .cancel) {
-                quickConnectPassword = ""
-            }
-        } message: {
-            if let config = quickConnectPasswordPrompt {
-                Text("Enter password for \(config.username)@\(config.host):\(config.port)")
+        .sheet(item: $passwordPromptServer) { server in
+            ConnectionPasswordPromptSheet(
+                server: server,
+                savesPassword: serverManager.server(for: server.id) != nil
+            ) { password in
+                await submitPassword(password, for: server)
             }
         }
         .task {
@@ -645,7 +615,7 @@ struct ConnectionManagerView: View {
             if let config = quickConnectConfig {
                 Section("Quick Connect") {
                     Button {
-                        quickConnectPasswordPrompt = config
+                        passwordPromptServer = config
                     } label: {
                         Label(
                             "Connect to \(config.username)@\(config.host):\(config.port)",
@@ -709,7 +679,7 @@ struct ConnectionManagerView: View {
         .searchFocused($searchIsFocused)
         .onSubmit(of: .search) {
             if let config = quickConnectConfig {
-                quickConnectPasswordPrompt = config
+                passwordPromptServer = config
             }
         }
         .onChange(of: servers.map(\.id)) { _, visibleIDs in
@@ -1639,6 +1609,20 @@ struct ConnectionManagerView: View {
         }
 
         #if os(macOS)
+        do {
+            _ = try sessionManager.prepareConnection(for: server)
+        } catch {
+            if let promptServer = Self.targetPasswordPromptServer(
+                for: error,
+                requestedServerID: server.id
+            ) {
+                passwordPromptServer = promptServer
+            } else {
+                connectionFailureMessage = error.localizedDescription
+            }
+            return
+        }
+
         openWindow(
             id: "workspace",
             value: MacWorkspaceLaunchRequest(
@@ -1767,16 +1751,55 @@ struct ConnectionManagerView: View {
         )
     }
 
-    private var quickConnectPasswordPromptBinding: Binding<Bool> {
-        Binding(
-            get: { quickConnectPasswordPrompt != nil },
-            set: { isPresented in
-                if !isPresented {
-                    quickConnectPasswordPrompt = nil
-                    quickConnectPassword = ""
-                }
+    static func targetPasswordPromptServer(
+        for error: Error,
+        requestedServerID: UUID
+    ) -> ServerConfiguration? {
+        guard let sessionError = error as? SessionOpenError,
+              case .missingPassword(let server, .target) = sessionError,
+              server.id == requestedServerID else {
+            return nil
+        }
+        return server
+    }
+
+    private func submitPassword(
+        _ password: String,
+        for server: ServerConfiguration
+    ) async -> String? {
+        if let savedServer = serverManager.server(for: server.id) {
+            do {
+                try serverManager.updateServerOrThrow(savedServer, password: password)
+                connectToServer(savedServer)
+                return nil
+            } catch {
+                return "The password could not be saved in Keychain. \(error.localizedDescription)"
             }
-        )
+        }
+
+        do {
+            let launch = try await sessionManager.createTransientAuthorizedSession(
+                for: server,
+                settingsManager: settingsManager,
+                password: password
+            )
+            if launch.session.state == .connected {
+                presentTerminalWindow(for: launch.session)
+                return nil
+            }
+            if let challenge = launch.session.pendingHostKeyChallenge {
+                stageHostKeyChallenge(challenge, for: launch.session)
+                return nil
+            }
+            if case .error(let message) = launch.session.state {
+                sessionManager.closeSession(launch.session)
+                return message
+            }
+            sessionManager.closeSession(launch.session)
+            return "The server did not establish a terminal session."
+        } catch {
+            return error.localizedDescription
+        }
     }
 
     private func retryPendingConnection() {
@@ -2558,6 +2581,134 @@ private struct ServerInfoView: View {
     private var selectedSSHKey: StoredSSHKey? {
         guard let keyID = server.sshKeyID else { return nil }
         return settingsManager.sshKeys.first(where: { $0.id == keyID })
+    }
+}
+
+// MARK: - Connection Password Prompt
+
+private struct ConnectionPasswordPromptSheet: View {
+    let server: ServerConfiguration
+    let savesPassword: Bool
+    let onSubmit: @MainActor (String) async -> String?
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var password = ""
+    @State private var failureMessage: String?
+    @State private var isSubmitting = false
+    @State private var submissionTask: Task<Void, Never>?
+    @FocusState private var passwordIsFocused: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 18) {
+                Image(systemName: "key.fill")
+                    .font(.system(size: 34, weight: .medium))
+                    .foregroundStyle(.tint)
+                    .frame(width: 44, height: 44)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Password Required")
+                        .font(.title2.weight(.semibold))
+
+                    Text(promptMessage)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    SecureField("Password", text: $password)
+                        .textContentType(.init(rawValue: ""))
+                        .textFieldStyle(.roundedBorder)
+                        .focused($passwordIsFocused)
+                        .disabled(isSubmitting)
+                        .onSubmit(submit)
+                        .accessibilityIdentifier("connection-password-prompt.password")
+
+                    if savesPassword {
+                        Label("This password will be stored securely in Keychain.", systemImage: "checkmark.shield")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let failureMessage {
+                        Label(failureMessage, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("connection-password-prompt.error")
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(24)
+
+            Divider()
+
+            HStack(spacing: 10) {
+                Spacer()
+                Button("Cancel", role: .cancel) {
+                    password = ""
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                .disabled(isSubmitting)
+
+                Button(actionTitle) {
+                    submit()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(password.isEmpty || isSubmitting)
+                .accessibilityIdentifier("connection-password-prompt.submit")
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+            .background(.bar)
+        }
+        .frame(width: 480)
+        .onAppear {
+            passwordIsFocused = true
+        }
+        .onDisappear {
+            submissionTask?.cancel()
+            submissionTask = nil
+            password = ""
+        }
+        .interactiveDismissDisabled(isSubmitting)
+    }
+
+    private var promptMessage: String {
+        let endpoint = "\(server.username)@\(server.host):\(server.port)"
+        if savesPassword {
+            return "Enter the password for \(endpoint) to save it and connect."
+        }
+        return "Enter the password for \(endpoint) to connect."
+    }
+
+    private var actionTitle: String {
+        if isSubmitting {
+            return savesPassword ? "Saving…" : "Connecting…"
+        }
+        return savesPassword ? "Save & Connect" : "Connect"
+    }
+
+    private func submit() {
+        guard !password.isEmpty, !isSubmitting else { return }
+        failureMessage = nil
+        isSubmitting = true
+        let submittedPassword = password
+        submissionTask = Task { @MainActor in
+            let failure = await onSubmit(submittedPassword)
+            guard !Task.isCancelled else { return }
+            isSubmitting = false
+            if let failure {
+                failureMessage = failure
+                passwordIsFocused = true
+            } else {
+                password = ""
+                dismiss()
+            }
+            submissionTask = nil
+        }
     }
 }
 

@@ -186,7 +186,7 @@ struct MacWorkspaceView: View {
 }
 
 private struct MacWorkspaceTabContent: View {
-    @State private var controller: MacWorkspaceController
+    private let controller: MacWorkspaceController
     @State private var secureKeyboardEntry = MacSecureKeyboardEntry.shared
     @State private var persistentStateReady = false
     @State private var showingPaneCloseConfirmation = false
@@ -203,7 +203,7 @@ private struct MacWorkspaceTabContent: View {
         onNewTab: @escaping () -> Void,
         onCloseEmptyTab: @escaping () -> Void
     ) {
-        _controller = State(initialValue: controller)
+        self.controller = controller
         self.onNewTab = onNewTab
         self.onCloseEmptyTab = onCloseEmptyTab
     }
@@ -300,27 +300,28 @@ private struct MacWorkspaceTabContent: View {
         let isFocused = controller.focusedPaneID == pane.id
         switch pane.intent.kind {
         case .local:
-            let runtime = controller.localRuntime(for: pane.id)
-            let recorder = controller.recorder(for: pane.id)
-            MacLocalTerminalPaneView(
-                runtime: runtime,
-                recorder: recorder,
-                workspaceID: controller.workspaceID,
-                isFocused: isFocused,
-                showsPaneChrome: showsPaneChrome,
-                findRequestNonce: findNonce(for: pane.id),
-                claimStartupCommand: { controller.claimStartupCommand(for: pane.id) },
-                onFocus: { controller.focus(pane.id) },
-                onDisconnect: {
-                    let closesWorkspace = controller.state.root?.panes.count == 1
-                    controller.removePane(pane.id, sessionManager: sessionManager)
-                    if closesWorkspace {
-                        onCloseEmptyTab()
-                    }
-                },
-                hostModel: runtime.model,
-                processState: runtime.processState
-            )
+            if let runtime = controller.localRuntime(for: pane.id),
+               let recorder = controller.recorder(for: pane.id) {
+                MacLocalTerminalPaneView(
+                    runtime: runtime,
+                    recorder: recorder,
+                    workspaceID: controller.workspaceID,
+                    isFocused: isFocused,
+                    showsPaneChrome: showsPaneChrome,
+                    findRequestNonce: findNonce(for: pane.id),
+                    claimStartupCommand: { controller.claimStartupCommand(for: pane.id) },
+                    onFocus: { controller.focus(pane.id) },
+                    onDisconnect: {
+                        let closesWorkspace = controller.state.root?.panes.count == 1
+                        controller.removePane(pane.id, sessionManager: sessionManager)
+                        if closesWorkspace {
+                            onCloseEmptyTab()
+                        }
+                    },
+                    hostModel: runtime.model,
+                    processState: runtime.processState
+                )
+            }
         case .ssh:
             if !persistentStateReady {
                 ProgressView("Loading saved hosts…")
@@ -339,6 +340,15 @@ private struct MacWorkspaceTabContent: View {
                             pane.id,
                             sessionManager: sessionManager
                         )
+                    },
+                    onSessionEndedCleanly: {
+                        let closesWorkspace = controller.completeCleanSSHExit(
+                            pane.id,
+                            sessionManager: sessionManager
+                        )
+                        if closesWorkspace {
+                            onCloseEmptyTab()
+                        }
                     }
                 )
                 .overlay {

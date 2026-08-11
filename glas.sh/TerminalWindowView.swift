@@ -66,6 +66,9 @@ struct TerminalWindowView: View {
     /// SSH session ends. The owner removes the live session and presents retry
     /// state instead of allowing this view to dismiss the workspace window.
     var onSessionRequestedClose: (() -> Void)? = nil
+    /// A successful remote shell exit completes the pane instead of presenting
+    /// the retry state reserved for disconnect actions and connection failures.
+    var onSessionEndedCleanly: (() -> Void)? = nil
     @Environment(SessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
     #if os(iOS)
@@ -118,7 +121,8 @@ struct TerminalWindowView: View {
         showsMacPaneChrome: Bool = false,
         externalSearchRequestNonce: UInt64 = 0,
         onNewTerminalTab: (() -> Void)? = nil,
-        onSessionRequestedClose: (() -> Void)? = nil
+        onSessionRequestedClose: (() -> Void)? = nil,
+        onSessionEndedCleanly: (() -> Void)? = nil
     ) {
         self.session = session
         self.ownsSessionLifecycle = ownsSessionLifecycle
@@ -128,6 +132,7 @@ struct TerminalWindowView: View {
         self.externalSearchRequestNonce = externalSearchRequestNonce
         self.onNewTerminalTab = onNewTerminalTab
         self.onSessionRequestedClose = onSessionRequestedClose
+        self.onSessionEndedCleanly = onSessionEndedCleanly
         _terminalHostModel = ObservedObject(wrappedValue: session.terminalHostModel)
     }
     
@@ -191,7 +196,7 @@ struct TerminalWindowView: View {
                 }
             }
             .onChange(of: session.closeWindowNonce) { _, _ in
-                closeTerminalSession()
+                closeTerminalAfterCleanExit()
             }
             .onDisappear {
                 handleTerminalDisappear()
@@ -954,6 +959,16 @@ struct TerminalWindowView: View {
             onSessionRequestedClose()
         } else {
             sessionManager.closeSession(session)
+        }
+    }
+
+    private func closeTerminalAfterCleanExit() {
+        if ownsSessionLifecycle {
+            closeTerminalSession()
+        } else if let onSessionEndedCleanly {
+            onSessionEndedCleanly()
+        } else {
+            closeTerminalSession()
         }
     }
 

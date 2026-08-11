@@ -2,6 +2,19 @@
 
 ## Tasks Completed
 
+### 2026-08-11: Connection experience and native server-form layout
+
+- Completed the native trailing-aligned Add/Edit connection forms while preserving
+  the existing transactional persistence and credential boundaries.
+- Added the saved-profile password prompt, isolated Localhost test data from shared
+  app defaults, restored the asset-catalog Mac icon, and made clean SSH exit close
+  its pane/tab/window.
+- Repaired a stale-pane lifecycle crash found during the first manual exit smoke;
+  276/276 Mac tests and the rebuilt user-controlled retest pass.
+- Verified iOS and visionOS simulator builds plus a valid signed arm64 Mac Release.
+- Recorded local foreground GUI automation as explicit opt-in.
+- See: [100826_connection-experience-and-server-form-layout.md](./100826_connection-experience-and-server-form-layout.md)
+
 ### 2026-08-09: Glass-family connection contract
 
 - Reconciled and merged GlasSecretStore PR #4 while preserving the exact accepted

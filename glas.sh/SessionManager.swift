@@ -790,11 +790,11 @@ enum SessionOpenError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missingPassword(let server, let location):
-            return "No saved password was found for \(location.description) \(server.name). Open Edit Server and save its password in Keychain, then try again."
+            return "No saved password was found for \(location.description) \(server.name). Open Edit Connection and save its password in Keychain, then try again."
         case .credentialUnavailable(let server, let location):
             return "The credential for \(location.description) \(server.name) is unavailable. Unlock the device and try again."
         case .sshKeyNotFound(let server, let location):
-            return "The SSH key for \(location.description) \(server.name) is unavailable. Choose an available key in Edit Server and try again."
+            return "The SSH key for \(location.description) \(server.name) is unavailable. Choose an available key in Edit Connection and try again."
         case .invalidSSHKey(let server, let location):
             return "The SSH key for \(location.description) \(server.name) is invalid or corrupt. Import the key again and retry."
         case .unsupportedAgent(let server, let location):

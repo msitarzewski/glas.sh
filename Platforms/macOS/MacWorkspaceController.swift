@@ -185,27 +185,23 @@ final class MacWorkspaceController {
         sessionsByPaneID[paneID]
     }
 
-    func localRuntime(for paneID: UUID) -> SwiftTermLocalProcessRuntime {
+    func localRuntime(for paneID: UUID) -> SwiftTermLocalProcessRuntime? {
+        guard !isClosed,
+              state.root?.pane(id: paneID)?.intent.kind == .local else { return nil }
         if let runtime = localRuntimesByPaneID[paneID] {
             return runtime
         }
-        precondition(
-            state.root?.pane(id: paneID)?.intent.kind == .local,
-            "Local terminal runtime requested for a non-local pane"
-        )
         let runtime = SwiftTermLocalProcessRuntime()
         localRuntimesByPaneID[paneID] = runtime
         return runtime
     }
 
-    func recorder(for paneID: UUID) -> SessionRecorder {
+    func recorder(for paneID: UUID) -> SessionRecorder? {
+        guard !isClosed,
+              state.root?.pane(id: paneID) != nil else { return nil }
         if let recorder = recordersByPaneID[paneID] {
             return recorder
         }
-        precondition(
-            state.root?.pane(id: paneID) != nil,
-            "Recorder requested for an unknown terminal pane"
-        )
         let recorder = SessionRecorder()
         recordersByPaneID[paneID] = recorder
         return recorder
@@ -308,6 +304,15 @@ final class MacWorkspaceController {
         }
         loadingPaneIDs.remove(paneID)
         errorsByPaneID[paneID] = "The SSH session ended. Retry to reconnect."
+    }
+
+    @discardableResult
+    func completeCleanSSHExit(_ paneID: UUID, sessionManager: SessionManager) -> Bool {
+        guard !isClosed,
+              state.root?.pane(id: paneID)?.intent.kind == .ssh else { return false }
+        let closesWorkspace = state.root?.panes.count == 1
+        removePane(paneID, sessionManager: sessionManager)
+        return closesWorkspace
     }
 
     func requestFindInFocusedPane() {

@@ -1,5 +1,24 @@
 # Progress
 
+- Native Mac connection experience approved (2026-08-11):
+  - Reconciled Add and Edit into native grouped forms with Apple-owned navigation
+    titles, one trailing value axis, shared controls, and unchanged transactional
+    `ServerManager`/GlasSecretStore save paths.
+  - Replaced the non-native password alert with a focused secure sheet that saves
+    passwords for known profiles and keeps transient Quick Connect credentials in
+    memory only.
+  - A clean remote SSH `exit` now removes the pane and closes an empty tab/window.
+    The first manual smoke exposed a stale-pane SwiftUI precondition crash; resource
+    acquisition now rejects retired panes, 276/276 tests pass, and the user reported
+    the rebuilt manual retest as flawless.
+  - Isolated the remaining favorite-toggle test from shared app defaults, preventing
+    the Localhost fixture from contaminating the real connection catalog.
+  - iOS and visionOS simulator builds pass. The exact-current signed Mac Release is
+    thin arm64, uses hardened runtime, and satisfies its designated requirement.
+  - No local foreground GUI automation ran after the user requested complete control
+    of the desktop; direct user review supplies the final Add/Edit/password/exit UI
+    evidence.
+
 - Glass-family connection contract foundation completed (2026-08-09):
   - Reconciled and merged GlasSecretStore PR #4; accepted revision `9be45c9`
     passes 76/76 tests, release build, and hosted package CI.
