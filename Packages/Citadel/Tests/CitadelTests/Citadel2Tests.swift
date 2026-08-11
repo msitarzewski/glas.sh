@@ -368,6 +368,7 @@ final class Citadel2Tests: XCTestCase {
         client.setServerExtensions([
             ("hardlink@openssh.com", "1"),
             ("fsync@openssh.com", "1"),
+            ("posix-rename@openssh.com", "1"),
         ])
         XCTAssertEqual(client.serverExtensionVersion(for: "hardlink@openssh.com"), "1")
         XCTAssertTrue(client.supportsExtension("hardlink@openssh.com", version: "1"))
@@ -383,6 +384,17 @@ final class Citadel2Tests: XCTestCase {
         XCTAssertEqual(hardLink.requestName, "hardlink@openssh.com")
         XCTAssertEqual(hardLink.payload.readSSHString(), "/retained.partial")
         XCTAssertEqual(hardLink.payload.readSSHString(), "/existing-target")
+
+        let renameRequest = try client.makePOSIXRenameRequest(
+            at: "/retained.partial",
+            to: "/existing-target"
+        )
+        guard case .extended(var rename) = renameRequest else {
+            return XCTFail("Expected POSIX rename extension request")
+        }
+        XCTAssertEqual(rename.requestName, "posix-rename@openssh.com")
+        XCTAssertEqual(rename.payload.readSSHString(), "/retained.partial")
+        XCTAssertEqual(rename.payload.readSSHString(), "/existing-target")
 
         var handle = ByteBuffer()
         handle.writeBytes([0xCA, 0xFE])
@@ -401,6 +413,7 @@ final class Citadel2Tests: XCTestCase {
         client.setServerExtensions([
             ("hardlink@openssh.com", "2"),
             ("fsync@openssh.com", "0"),
+            ("posix-rename@openssh.com", "2"),
         ])
 
         do {
@@ -417,8 +430,48 @@ final class Citadel2Tests: XCTestCase {
         } catch SFTPError.unsupportedExtension(let name) {
             XCTAssertEqual(name, "fsync@openssh.com")
         }
+
+        do {
+            _ = try client.makePOSIXRenameRequest(at: "/old", to: "/new")
+            XCTFail("Wrong POSIX rename version must be rejected")
+        } catch SFTPError.unsupportedExtension(let name) {
+            XCTAssertEqual(name, "posix-rename@openssh.com")
+        }
         XCTAssertNil(try channel.readOutbound(as: SFTPMessage.self))
         XCTAssertNoThrow(try channel.finish())
+    }
+
+    func testPOSIXRenameSendsAdvertisedAtomicReplacementRequest() async throws {
+        let (channel, client) = try await makeAsyncTestingSFTPClient()
+        client.setServerExtensions([("posix-rename@openssh.com", "1")])
+        let rename = Task {
+            try await client.posixRename(
+                at: "/.glas-sh-upload.partial",
+                to: "/report.txt"
+            )
+        }
+        defer { rename.cancel() }
+
+        let message = try await nextSFTPOutboundMessage(from: channel)
+        guard case .extended(var request) = message else {
+            throw EmbeddedSFTPTestError.unexpectedOutbound(message.debugDescription)
+        }
+        XCTAssertEqual(request.requestName, "posix-rename@openssh.com")
+        XCTAssertEqual(request.payload.readSSHString(), "/.glas-sh-upload.partial")
+        XCTAssertEqual(request.payload.readSSHString(), "/report.txt")
+        XCTAssertEqual(request.payload.readableBytes, 0)
+
+        let response = try await channel.writeInbound(SFTPMessage.status(.init(
+            requestId: request.requestId,
+            errorCode: .ok,
+            message: "",
+            languageTag: "en"
+        )))
+        XCTAssertTrue(response.isEmpty)
+        try await rename.value
+        XCTAssertTrue(client.responses.responses.isEmpty)
+        let finishState = try await channel.finish()
+        XCTAssertTrue(finishState.isClean)
     }
 
     func testExistingHardLinkTargetStatusFailsThePendingRequest() throws {

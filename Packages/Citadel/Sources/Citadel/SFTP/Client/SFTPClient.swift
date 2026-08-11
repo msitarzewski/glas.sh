@@ -539,6 +539,32 @@ public final class SFTPClient: Sendable {
         ))
     }
 
+    /// Atomically renames `oldPath` to `newPath`, replacing the destination when
+    /// it already exists. Requires OpenSSH's advertised
+    /// `posix-rename@openssh.com` extension.
+    public func posixRename(at oldPath: String, to newPath: String) async throws {
+        let response = try await sendRequest(try makePOSIXRenameRequest(at: oldPath, to: newPath))
+        guard case .status(let status) = response, status.errorCode == .ok else {
+            throw SFTPError.invalidResponse
+        }
+    }
+
+    internal func makePOSIXRenameRequest(at oldPath: String, to newPath: String) throws -> SFTPRequest {
+        let extensionName = "posix-rename@openssh.com"
+        guard supportsExtension(extensionName, version: "1") else {
+            throw SFTPError.unsupportedExtension(extensionName)
+        }
+
+        var payload = ByteBuffer()
+        payload.writeSSHString(oldPath)
+        payload.writeSSHString(newPath)
+        return .extended(.init(
+            requestId: allocateRequestId(),
+            requestName: extensionName,
+            payload: payload
+        ))
+    }
+
     /// Get the canonical absolute path.
     ///
     /// - Parameter path: Path to resolve

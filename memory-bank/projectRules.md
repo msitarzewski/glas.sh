@@ -26,7 +26,11 @@
 
 ## Collaboration
 - Use PR-first workflow for all non-trivial changes.
-- Keep branch naming with `codex/` prefix for feature branches.
+- Keep branch naming with `agent/` prefix for feature branches.
+- GitHub CLI authentication is stored in macOS Keychain. Run authenticated `gh`
+  operations outside the workspace sandbox so the Keychain-backed session is
+  visible. Never ask the user to reauthenticate based only on a sandboxed `gh`
+  failure; retry the same operation outside the sandbox first.
 - Local foreground GUI automation is opt-in. Do not run macOS XCUITests or other
   automation that opens, focuses, or drives application windows on the user's
   active desktop without explicit approval for that test session. Non-interactive

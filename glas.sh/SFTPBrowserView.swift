@@ -12,6 +12,8 @@ import NIOFoundationCompat
 import UniformTypeIdentifiers
 import CryptoKit
 import Darwin
+import GlassEditorCore
+import GlassEditorUI
 
 nonisolated private enum SFTPTransferError: LocalizedError {
     case unsafeName
@@ -21,6 +23,7 @@ nonisolated private enum SFTPTransferError: LocalizedError {
     case sizeMismatch(expected: UInt64, actual: UInt64)
     case checksumMismatch
     case atomicCommitUnavailable
+    case atomicReplacementUnavailable
     case invalidResumePartial
     case sourceChanged
     case remoteSourceChanged
@@ -44,6 +47,8 @@ nonisolated private enum SFTPTransferError: LocalizedError {
             return "The remote file checksum did not match the local source."
         case .atomicCommitUnavailable:
             return "This server does not advertise atomic no-clobber upload support."
+        case .atomicReplacementUnavailable:
+            return "This server does not advertise atomic remote-file replacement support."
         case .invalidResumePartial:
             return "The interrupted transfer could not be resumed because its partial content no longer matches the source."
         case .sourceChanged:
@@ -65,7 +70,32 @@ nonisolated private enum SFTPLocalOpenError: Error {
 }
 
 nonisolated private struct SFTPUploadWorkerFailure: Error, Sendable {
+    enum Kind: Sendable {
+        case general
+        case remoteTargetChanged
+        case commitOutcomeUnknown
+    }
+
     let message: String
+    let kind: Kind
+
+    init(message: String, kind: Kind = .general) {
+        self.message = message
+        self.kind = kind
+    }
+}
+
+nonisolated private enum SFTPUploadCommitPolicy: Sendable {
+    case createNoClobber
+    case replaceExisting(expectedStat: RemoteStat, expectedDigest: ContentDigest)
+}
+
+nonisolated private struct SFTPRemoteCommitGuardFailure: Error, Sendable {}
+
+nonisolated private struct SFTPUploadResult: Sendable {
+    let cleanupWarning: Bool
+    let committedStat: RemoteStat?
+    let committedDigest: ContentDigest
 }
 
 nonisolated private enum SFTPLocalProtectionClass: Int32 {
@@ -143,6 +173,7 @@ nonisolated enum SFTPLocalResumeDecision: Equatable, Sendable {
 struct SFTPBrowserView: View {
     let sessionID: UUID
     @Environment(SessionManager.self) private var sessionManager
+    @Environment(SettingsManager.self) private var settingsManager
     @Environment(\.dismiss) private var dismiss
 
     @State private var sftpClient: SFTPClient?
@@ -168,6 +199,7 @@ struct SFTPBrowserView: View {
     // Selection
     @State private var selectedFilenames: Set<String> = []
     @State private var showingFileInfo: SFTPPathComponent?
+    @State private var remoteEditorDocument: SFTPRemoteEditorDocument?
     @State private var showingBatchDeleteConfirmation = false
 
     // Filtering
@@ -255,6 +287,31 @@ struct SFTPBrowserView: View {
             if let entry = showingFileInfo {
                 fileInfoSheet(for: entry)
             }
+        }
+        .sheet(item: $remoteEditorDocument) { document in
+            SFTPRemoteEditorView(
+                document: document,
+                surfaceCondition: remoteEditorSurfaceCondition,
+                save: { observation in
+                    await saveRemoteEditor(document, authorizedObservation: observation)
+                },
+                checkRemote: {
+                    await checkRemoteEditor(document)
+                },
+                resolveConflict: { resolution, observation in
+                    await resolveRemoteEditorConflict(
+                        resolution,
+                        document: document,
+                        observation: observation
+                    )
+                },
+                localCopySaved: {
+                    await reloadRemoteEditor(document)
+                },
+                close: {
+                    remoteEditorDocument = nil
+                }
+            )
         }
     }
 
@@ -464,6 +521,16 @@ struct SFTPBrowserView: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             } else {
+                Button {
+                    beginRemoteEdit(entry)
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Edit \(entry.filename)")
+
                 Button {
                     showingFileInfo = entry
                 } label: {
@@ -698,6 +765,329 @@ struct SFTPBrowserView: View {
     }
 
     // MARK: - File Operations
+
+    nonisolated static let remoteEditorConfiguration = GlassEditorConfiguration()
+
+    private var remoteEditorSurfaceCondition: SurfaceCondition {
+        let sessionOverride = settingsManager.sessionOverride(for: sessionID)
+        let appearance = TerminalGlassAppearance.resolved(
+            globalOpacity: settingsManager.windowOpacity,
+            globalBlur: settingsManager.blurBackground,
+            sessionOverride: sessionOverride
+        )
+        let material = MaterialWeight(
+            rawValue: sessionOverride?.glassFrost ?? settingsManager.glassFrost
+        ) ?? .ultraThin
+        return SurfaceCondition(
+            windowOpacity: appearance.opacity,
+            backing: .material(material)
+        )
+    }
+
+    private func beginRemoteEdit(_ entry: SFTPPathComponent) {
+        guard transferTask == nil, operationInProgress == nil else { return }
+        transferTask = Task {
+            await openRemoteEditor(entry)
+            transferTask = nil
+        }
+    }
+
+    private func openRemoteEditor(_ entry: SFTPPathComponent) async {
+        guard let client = sftpClient, let session else { return }
+        guard Self.isSafeBasename(entry.filename) else {
+            error = SFTPTransferError.unsafeName.localizedDescription
+            return
+        }
+
+        let path = remotePath(for: entry.filename)
+        let configuration = Self.remoteEditorConfiguration
+        operationInProgress = "Opening \(entry.filename)…"
+        defer { operationInProgress = nil }
+
+        do {
+            let observation = try await Self.readVerifiedRemoteObservation(
+                client: client,
+                path: path,
+                maximumBytes: configuration.largeFileByteCeiling
+            )
+            let ref = RemoteDocumentRef(
+                connectionID: sessionID,
+                host: session.server.host,
+                path: path
+            )
+            let snapshot = try DocumentLoader.load(
+                fromData: observation.data,
+                origin: .remote(ref),
+                configuration: configuration,
+                openedDigest: observation.digest,
+                openedStat: observation.stat
+            )
+            let model = GlassEditorModel(
+                snapshot: snapshot,
+                configuration: configuration,
+                language: LanguageID.forFileExtension(
+                    (entry.filename as NSString).pathExtension
+                ),
+                surfaceCondition: remoteEditorSurfaceCondition
+            )
+            remoteEditorDocument = SFTPRemoteEditorDocument(
+                filename: entry.filename,
+                remotePath: path,
+                model: model,
+                remoteSession: RemoteDocumentSession(
+                    ref: ref,
+                    openedStat: observation.stat,
+                    openedDigest: observation.digest
+                )
+            )
+        } catch {
+            self.error = "Could not open \(entry.filename) for editing: \(error.localizedDescription)"
+        }
+    }
+
+    private func checkRemoteEditor(
+        _ document: SFTPRemoteEditorDocument,
+        requiresDigest: Bool = false
+    ) async {
+        guard let client = sftpClient, requiresDigest || !document.isWorking else { return }
+
+        do {
+            let attributes = try await client.getLinkAttributes(at: document.remotePath)
+            let currentStat = Self.remoteStat(from: attributes)
+            let tierOne = ConflictDetector.classify(
+                session: document.remoteSession,
+                currentStat: currentStat,
+                currentDigest: nil,
+                localDirty: document.model.isDirty
+            )
+            guard requiresDigest || tierOne != .noConflict else {
+                document.model.conflictState = .noConflict
+                return
+            }
+
+            let observation = try await Self.readVerifiedRemoteObservation(
+                client: client,
+                path: document.remotePath,
+                maximumBytes: document.model.configuration.largeFileByteCeiling
+            )
+            let resolved = ConflictDetector.classify(
+                session: document.remoteSession,
+                currentStat: observation.stat,
+                currentDigest: observation.digest,
+                localDirty: document.model.isDirty
+            )
+            if resolved == .noConflict {
+                document.model.conflictState = .noConflict
+                document.conflictPrompt = nil
+            } else {
+                document.surfaceConflict(resolved, observation: observation)
+            }
+        } catch {
+            document.surfaceConflict(.indeterminate, observation: nil)
+        }
+    }
+
+    private func saveRemoteEditor(
+        _ document: SFTPRemoteEditorDocument,
+        authorizedObservation: SFTPRemoteFileObservation?
+    ) async {
+        guard let client = sftpClient, let session else { return }
+        guard !document.isWorking else { return }
+        guard document.model.isDirty || authorizedObservation != nil else { return }
+
+        document.isWorking = true
+        document.statusMessage = "Checking the remote file…"
+        defer {
+            document.isWorking = false
+            document.statusMessage = nil
+        }
+
+        do {
+            let commitObservation: SFTPRemoteFileObservation
+            if let authorizedObservation {
+                commitObservation = authorizedObservation
+            } else {
+                let current: SFTPRemoteFileObservation
+                do {
+                    current = try await Self.readVerifiedRemoteObservation(
+                        client: client,
+                        path: document.remotePath,
+                        maximumBytes: document.model.configuration.largeFileByteCeiling
+                    )
+                } catch {
+                    document.surfaceConflict(.indeterminate, observation: nil)
+                    return
+                }
+                let conflict = ConflictDetector.classify(
+                    session: document.remoteSession,
+                    currentStat: current.stat,
+                    currentDigest: current.digest,
+                    localDirty: document.model.isDirty
+                )
+                guard conflict == .noConflict else {
+                    document.surfaceConflict(conflict, observation: current)
+                    return
+                }
+                commitObservation = current
+            }
+
+            let encoded = try EncodingDetector.encode(
+                document.model.text,
+                as: document.model.snapshot.encoding
+            )
+            document.statusMessage = "Uploading and verifying \(document.filename)…"
+            let result = try await Self.uploadRemoteEditorBytes(
+                encoded,
+                client: client,
+                serverID: session.server.id,
+                remoteDirectory: (document.remotePath as NSString).deletingLastPathComponent,
+                filename: document.filename,
+                targetPath: document.remotePath,
+                expectedRemote: commitObservation,
+                maximumBytes: document.model.configuration.largeFileByteCeiling
+            )
+            guard let committedStat = result.committedStat else {
+                throw SFTPTransferError.remoteSourceChanged
+            }
+            document.remoteSession = document.remoteSession.updatingAfterSave(
+                stat: committedStat,
+                digest: result.committedDigest
+            )
+            document.model.markClean()
+            document.model.conflictState = .noConflict
+            document.conflictPrompt = nil
+            if result.cleanupWarning {
+                document.errorMessage = "The remote file was saved, but a tracked local cleanup record remains."
+            }
+            await loadDirectory()
+        } catch let failure as SFTPUploadWorkerFailure {
+            if failure.kind == .commitOutcomeUnknown {
+                await reconcileRemoteEditorAfterUnknownCommit(document)
+            } else if failure.kind == .remoteTargetChanged {
+                await checkRemoteEditor(document, requiresDigest: true)
+                if document.model.conflictState == .noConflict {
+                    document.errorMessage = "Save stopped before commit because the remote file could not be verified continuously. Try saving again."
+                }
+            } else {
+                document.errorMessage = failure.message
+            }
+        } catch {
+            document.errorMessage = "Save failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func reconcileRemoteEditorAfterUnknownCommit(
+        _ document: SFTPRemoteEditorDocument
+    ) async {
+        guard let client = sftpClient else {
+            document.surfaceConflict(.indeterminate, observation: nil)
+            return
+        }
+
+        do {
+            let observation = try await Self.readVerifiedRemoteObservation(
+                client: client,
+                path: document.remotePath,
+                maximumBytes: document.model.configuration.largeFileByteCeiling
+            )
+            let encoded = try EncodingDetector.encode(
+                document.model.text,
+                as: document.model.snapshot.encoding
+            )
+            if observation.data == encoded {
+                document.remoteSession = document.remoteSession.updatingAfterSave(
+                    stat: observation.stat,
+                    digest: observation.digest
+                )
+                document.model.markClean()
+                document.model.conflictState = .noConflict
+                document.conflictPrompt = nil
+                await loadDirectory()
+                return
+            }
+
+            let conflict = ConflictDetector.classify(
+                session: document.remoteSession,
+                currentStat: observation.stat,
+                currentDigest: observation.digest,
+                localDirty: document.model.isDirty
+            )
+            if conflict == .noConflict {
+                document.errorMessage = "The server did not confirm the atomic replacement. The remote file is unchanged; try saving again."
+            } else {
+                document.surfaceConflict(conflict, observation: observation)
+            }
+        } catch {
+            document.surfaceConflict(.indeterminate, observation: nil)
+        }
+    }
+
+    private func resolveRemoteEditorConflict(
+        _ resolution: ConflictResolution,
+        document: SFTPRemoteEditorDocument,
+        observation: SFTPRemoteFileObservation?
+    ) async {
+        switch resolution {
+        case .overwriteRemote:
+            await saveRemoteEditor(document, authorizedObservation: observation)
+        case .discardLocalAndReload:
+            await reloadRemoteEditor(document, preferredObservation: observation)
+        case .saveLocalCopy:
+            break
+        case .keepEditing:
+            document.conflictPrompt = nil
+        }
+    }
+
+    private func reloadRemoteEditor(
+        _ document: SFTPRemoteEditorDocument,
+        preferredObservation: SFTPRemoteFileObservation? = nil
+    ) async {
+        guard let client = sftpClient, !document.isWorking else { return }
+        document.isWorking = true
+        document.statusMessage = "Reloading \(document.filename)…"
+        defer {
+            document.isWorking = false
+            document.statusMessage = nil
+        }
+
+        do {
+            let observation: SFTPRemoteFileObservation
+            if let preferredObservation {
+                observation = preferredObservation
+            } else {
+                observation = try await Self.readVerifiedRemoteObservation(
+                    client: client,
+                    path: document.remotePath,
+                    maximumBytes: document.model.configuration.largeFileByteCeiling
+                )
+            }
+            let snapshot = try DocumentLoader.load(
+                fromData: observation.data,
+                origin: document.model.snapshot.origin,
+                configuration: document.model.configuration,
+                openedDigest: observation.digest,
+                openedStat: observation.stat
+            )
+            try document.model.adoptReloadedContent(snapshot)
+            document.remoteSession = document.remoteSession.updatingAfterSave(
+                stat: observation.stat,
+                digest: observation.digest
+            )
+            document.conflictPrompt = nil
+        } catch {
+            document.errorMessage = "Reload failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func remoteEditorConflictDescription(_ state: ConflictState) -> String {
+        switch state {
+        case .noConflict: "None"
+        case .remoteChangedLocalClean: "Remote changed"
+        case .remoteChangedLocalDirty: "Conflicting changes"
+        case .indeterminate: "Unknown"
+        }
+    }
 
     private func downloadSelectedFiles() async {
         let filesToDownload = sortedEntries.filter {
@@ -1184,6 +1574,138 @@ struct SFTPBrowserView: View {
     }
 
     @concurrent
+    private static func readVerifiedRemoteObservation(
+        client: SFTPClient,
+        path: String,
+        maximumBytes: UInt64
+    ) async throws -> SFTPRemoteFileObservation {
+        let remoteFile = try await client.openFile(filePath: path, flags: .read)
+        do {
+            let sourceAttributes = try await remoteFile.readAttributes()
+            guard sourceAttributes.isRegularFile else {
+                throw SFTPTransferError.remoteFileIsNotRegular
+            }
+            guard let expectedSize = sourceAttributes.size else {
+                throw SFTPTransferError.missingRemoteSize
+            }
+            guard expectedSize <= maximumBytes else {
+                throw EditorError.fileTooLarge(bytes: expectedSize, ceiling: maximumBytes)
+            }
+            guard expectedSize <= UInt64(Int.max) else {
+                throw EditorError.fileTooLarge(bytes: expectedSize, ceiling: maximumBytes)
+            }
+
+            var data = Data()
+            data.reserveCapacity(Int(expectedSize))
+            var hasher = SHA256()
+            var offset: UInt64 = 0
+            while true {
+                try Task.checkCancellation()
+                let chunk = try await remoteFile.read(from: offset, length: 262_144)
+                guard chunk.readableBytes > 0 else { break }
+                let chunkData = Data(buffer: chunk)
+                data.append(chunkData)
+                hasher.update(data: chunkData)
+                offset += UInt64(chunkData.count)
+                guard offset <= maximumBytes else {
+                    throw EditorError.fileTooLarge(bytes: offset, ceiling: maximumBytes)
+                }
+            }
+
+            let completedAttributes = try await remoteFile.readAttributes()
+            guard completedAttributes.isRegularFile,
+                  completedAttributes.size == sourceAttributes.size,
+                  completedAttributes.accessModificationTime?.modificationTime
+                    == sourceAttributes.accessModificationTime?.modificationTime else {
+                throw SFTPTransferError.remoteSourceChanged
+            }
+            guard offset == expectedSize else {
+                throw SFTPTransferError.sizeMismatch(expected: expectedSize, actual: offset)
+            }
+            guard let digest = ContentDigest(bytes: Array(hasher.finalize())) else {
+                throw SFTPTransferError.checksumMismatch
+            }
+            try await remoteFile.close()
+            return SFTPRemoteFileObservation(
+                data: data,
+                stat: remoteStat(from: completedAttributes),
+                digest: digest
+            )
+        } catch {
+            try? await remoteFile.close()
+            throw error
+        }
+    }
+
+    nonisolated static func remoteStat(from attributes: SFTPFileAttributes) -> RemoteStat {
+        let modificationSeconds = attributes.accessModificationTime.map {
+            Int64($0.modificationTime.timeIntervalSince1970.rounded(.towardZero))
+        }
+        return RemoteStat(
+            size: attributes.size,
+            modificationSeconds: modificationSeconds,
+            modificationNanoseconds: nil
+        )
+    }
+
+    @concurrent
+    private static func uploadRemoteEditorBytes(
+        _ data: Data,
+        client: SFTPClient,
+        serverID: UUID,
+        remoteDirectory: String,
+        filename: String,
+        targetPath: String,
+        expectedRemote: SFTPRemoteFileObservation,
+        maximumBytes: UInt64
+    ) async throws -> SFTPUploadResult {
+        let stagingDirectoryURL = try uploadMetadataDirectory()
+        let stagingDirectory = try openLocalDirectoryNoFollow(at: stagingDirectoryURL)
+        defer { try? stagingDirectory.directory.close() }
+
+        let stagingName = ".glas-sh-editor-\(UUID().uuidString).source"
+        let staged = try createProtectedTemporaryFile(
+            in: stagingDirectory.directory,
+            name: stagingName
+        )
+        var stagedIdentity = staged.identity
+        do {
+            try staged.file.write(contentsOf: data)
+            try staged.file.synchronize()
+            stagedIdentity = try localFileIdentity(for: staged.file)
+            try setProtection(.complete, for: staged.file, matching: stagedIdentity)
+            try staged.file.close()
+
+            let result = try await performReplacementUpload(
+                client: client,
+                sourceURL: stagingDirectoryURL.appendingPathComponent(stagingName),
+                serverID: serverID,
+                remoteDirectory: remoteDirectory,
+                sourceName: filename,
+                finalName: filename,
+                targetPath: targetPath,
+                maximumUploadBytes: maximumBytes,
+                expectedStat: expectedRemote.stat,
+                expectedDigest: expectedRemote.digest
+            )
+            try removeLocalFileIfMatching(
+                in: stagingDirectory.directory,
+                name: stagingName,
+                identity: stagedIdentity
+            )
+            return result
+        } catch {
+            try? staged.file.close()
+            try? removeLocalFileIfMatching(
+                in: stagingDirectory.directory,
+                name: stagingName,
+                identity: stagedIdentity
+            )
+            throw error
+        }
+    }
+
+    @concurrent
     private static func performUpload(
         client: SFTPClient,
         sourceURL: URL,
@@ -1194,8 +1716,70 @@ struct SFTPBrowserView: View {
         targetPath: String,
         maximumUploadBytes: UInt64
     ) async throws -> Bool {
-        guard client.supportsExtension("hardlink@openssh.com", version: "1") else {
-            throw SFTPTransferError.atomicCommitUnavailable
+        try await performVerifiedUpload(
+            client: client,
+            sourceURL: sourceURL,
+            serverID: serverID,
+            remoteDirectory: remoteDirectory,
+            sourceName: sourceName,
+            finalName: finalName,
+            targetPath: targetPath,
+            maximumUploadBytes: maximumUploadBytes,
+            commitPolicy: .createNoClobber
+        ).cleanupWarning
+    }
+
+    @concurrent
+    private static func performReplacementUpload(
+        client: SFTPClient,
+        sourceURL: URL,
+        serverID: UUID,
+        remoteDirectory: String,
+        sourceName: String,
+        finalName: String,
+        targetPath: String,
+        maximumUploadBytes: UInt64,
+        expectedStat: RemoteStat,
+        expectedDigest: ContentDigest
+    ) async throws -> SFTPUploadResult {
+        try await performVerifiedUpload(
+            client: client,
+            sourceURL: sourceURL,
+            serverID: serverID,
+            remoteDirectory: remoteDirectory,
+            sourceName: sourceName,
+            finalName: finalName,
+            targetPath: targetPath,
+            maximumUploadBytes: maximumUploadBytes,
+            commitPolicy: .replaceExisting(
+                expectedStat: expectedStat,
+                expectedDigest: expectedDigest
+            )
+        )
+    }
+
+    @concurrent
+    private static func performVerifiedUpload(
+        client: SFTPClient,
+        sourceURL: URL,
+        serverID: UUID,
+        remoteDirectory: String,
+        sourceName: String,
+        finalName: String,
+        targetPath: String,
+        maximumUploadBytes: UInt64,
+        commitPolicy: SFTPUploadCommitPolicy
+    ) async throws -> SFTPUploadResult {
+        var replacementCommitMayHaveRun = false
+        switch commitPolicy {
+        case .createNoClobber:
+            guard client.supportsExtension("hardlink@openssh.com", version: "1") else {
+                throw SFTPTransferError.atomicCommitUnavailable
+            }
+        case .replaceExisting:
+            guard client.supportsExtension("posix-rename@openssh.com", version: "1") else {
+                throw SFTPTransferError.atomicReplacementUnavailable
+            }
         }
 
         let openedSource = try openLocalSourceNoFollow(at: sourceURL)
@@ -1366,22 +1950,125 @@ struct SFTPBrowserView: View {
                 throw SFTPTransferError.remoteSourceChanged
             }
 
-            try checkCancellationBeforeCommit()
-            try await client.hardLink(at: partialPath, to: targetPath)
-            try await remoteFile.close()
-            do {
-                try await client.remove(at: partialPath)
-                try FileManager.default.removeItem(at: recordURL)
-                return false
-            } catch {
-                return true
+            guard let committedDigest = ContentDigest(bytes: Array(remoteDigest)) else {
+                throw SFTPTransferError.checksumMismatch
+            }
+
+            switch commitPolicy {
+            case .createNoClobber:
+                // Preserve the established import path exactly: the verified partial is
+                // exposed through an atomic no-clobber hard link, then cleaned up.
+                try checkCancellationBeforeCommit()
+                try await client.hardLink(at: partialPath, to: targetPath)
+                try await remoteFile.close()
+                do {
+                    try await client.remove(at: partialPath)
+                    try FileManager.default.removeItem(at: recordURL)
+                    return SFTPUploadResult(
+                        cleanupWarning: false,
+                        committedStat: nil,
+                        committedDigest: committedDigest
+                    )
+                } catch {
+                    return SFTPUploadResult(
+                        cleanupWarning: true,
+                        committedStat: nil,
+                        committedDigest: committedDigest
+                    )
+                }
+
+            case .replaceExisting(let expectedStat, let expectedDigest):
+                // The human authorization applies to the remote identity that was
+                // observed before upload. Re-check immediately before the atomic rename
+                // so another writer cannot hide inside the upload interval.
+                let currentTarget: SFTPRemoteFileObservation
+                do {
+                    currentTarget = try await readVerifiedRemoteObservation(
+                        client: client,
+                        path: targetPath,
+                        maximumBytes: maximumUploadBytes
+                    )
+                } catch {
+                    throw SFTPRemoteCommitGuardFailure()
+                }
+                guard currentTarget.stat == expectedStat,
+                      currentTarget.digest == expectedDigest else {
+                    throw SFTPRemoteCommitGuardFailure()
+                }
+
+                let targetAttributes: SFTPFileAttributes
+                do {
+                    targetAttributes = try await client.getLinkAttributes(at: targetPath)
+                } catch {
+                    throw SFTPRemoteCommitGuardFailure()
+                }
+                guard remoteStat(from: targetAttributes) == currentTarget.stat else {
+                    throw SFTPRemoteCommitGuardFailure()
+                }
+                if let permissions = targetAttributes.permissions {
+                    var replacementAttributes = SFTPFileAttributes.none
+                    // Preserve normal rwx/sticky behavior but do not re-arm setuid or
+                    // setgid bits onto newly written content.
+                    replacementAttributes.permissions = permissions & 0o1777
+                    try await remoteFile.setAttributes(to: replacementAttributes)
+                }
+                let committedAttributes = try await remoteFile.readAttributes()
+                guard committedAttributes.isRegularFile,
+                      committedAttributes.size == verifiedHandleAttributes.size else {
+                    throw SFTPTransferError.remoteSourceChanged
+                }
+
+                try checkCancellationBeforeCommit()
+                replacementCommitMayHaveRun = true
+                try await client.posixRename(at: partialPath, to: targetPath)
+                try await remoteFile.close()
+
+                let cleanupWarning: Bool
+                do {
+                    try FileManager.default.removeItem(at: recordURL)
+                    cleanupWarning = false
+                } catch {
+                    cleanupWarning = true
+                }
+                return SFTPUploadResult(
+                    cleanupWarning: cleanupWarning,
+                    committedStat: remoteStat(from: committedAttributes),
+                    committedDigest: committedDigest
+                )
             }
         } catch {
             try? await remoteFile.close()
-            let message = error is CancellationError
-                ? "Upload cancelled. A hidden partial may remain and will be validated before any future resume; no final file was exposed."
-                : "Upload of \(finalName) failed: \(error.localizedDescription). A hidden partial may remain and will be validated before any future resume; no incomplete final file was exposed."
-            throw SFTPUploadWorkerFailure(message: message)
+            switch commitPolicy {
+            case .createNoClobber:
+                let message = error is CancellationError
+                    ? "Upload cancelled. A hidden partial may remain and will be validated before any future resume; no final file was exposed."
+                    : "Upload of \(finalName) failed: \(error.localizedDescription). A hidden partial may remain and will be validated before any future resume; no incomplete final file was exposed."
+                throw SFTPUploadWorkerFailure(message: message)
+
+            case .replaceExisting:
+                // Editor saves are bounded to the in-memory editor ceiling, so retrying
+                // from the model is preferable to orphaning a resume record whose local
+                // staging file is intentionally short-lived.
+                try? await client.remove(at: partialPath)
+                try? FileManager.default.removeItem(at: recordURL)
+                let kind: SFTPUploadWorkerFailure.Kind
+                if error is SFTPRemoteCommitGuardFailure {
+                    kind = .remoteTargetChanged
+                } else if replacementCommitMayHaveRun {
+                    kind = .commitOutcomeUnknown
+                } else {
+                    kind = .general
+                }
+                let message: String
+                if replacementCommitMayHaveRun {
+                    message = "The server did not confirm whether \(finalName) was replaced. glas.sh will verify the remote bytes before allowing another save."
+                } else if error is CancellationError {
+                    message = "Save cancelled. The original remote file was not replaced."
+                } else {
+                    message = "Save of \(finalName) failed: \(error.localizedDescription). The original remote file was not replaced."
+                }
+                throw SFTPUploadWorkerFailure(message: message, kind: kind)
+            }
         }
     }
 
@@ -1489,7 +2176,7 @@ struct SFTPBrowserView: View {
         )
     }
 
-    static func openLocalDirectoryNoFollow(
+    nonisolated static func openLocalDirectoryNoFollow(
         at url: URL
     ) throws -> (directory: FileHandle, identity: SFTPLocalDirectoryIdentity) {
         let descriptor = url.path.withCString { path in
@@ -1507,7 +2194,7 @@ struct SFTPBrowserView: View {
         }
     }
 
-    private static func localEntryIdentityNoFollow(
+    nonisolated private static func localEntryIdentityNoFollow(
         in directory: FileHandle,
         name: String
     ) throws -> SFTPLocalFileIdentity {
@@ -1640,7 +2327,7 @@ struct SFTPBrowserView: View {
         return opened.identity
     }
 
-    private static func setProtection(
+    nonisolated private static func setProtection(
         _ protection: SFTPLocalProtectionClass,
         for file: FileHandle,
         matching identity: SFTPLocalFileIdentity
@@ -1656,7 +2343,7 @@ struct SFTPBrowserView: View {
         }
     }
 
-    static func removeLocalFileIfMatching(
+    nonisolated static func removeLocalFileIfMatching(
         in directory: FileHandle,
         name: String,
         identity: SFTPLocalFileIdentity
@@ -1699,7 +2386,7 @@ struct SFTPBrowserView: View {
         }
     }
 
-    static func createProtectedTemporaryFile(
+    nonisolated static func createProtectedTemporaryFile(
         in directory: FileHandle,
         name: String
     ) throws -> (file: FileHandle, identity: SFTPLocalFileIdentity) {
@@ -2041,6 +2728,22 @@ struct SFTPBrowserView: View {
                     let ext = (entry.filename as NSString).pathExtension
                     if !ext.isEmpty {
                         LabeledContent("Type", value: ext.uppercased())
+                    }
+                }
+
+                Section("Editor") {
+                    if let document = remoteEditorDocument,
+                       document.remotePath == remotePath(for: entry.filename) {
+                        LabeledContent(
+                            "Conflict",
+                            value: remoteEditorConflictDescription(document.model.conflictState)
+                        )
+                    }
+                    Button {
+                        showingFileInfo = nil
+                        beginRemoteEdit(entry)
+                    } label: {
+                        Label("Edit Remote File", systemImage: "pencil")
                     }
                 }
 

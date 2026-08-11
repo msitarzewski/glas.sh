@@ -9,6 +9,9 @@
   - `xcodebuild -project glas.sh.xcodeproj -scheme glas.sh -configuration Release -destination 'generic/platform=iOS' build`
   - `xcodebuild -project glas.sh.xcodeproj -scheme glas.sh -configuration Release -destination 'platform=macOS,arch=arm64' build`
 - Use an explicit simulator/device destination and retain `.xcresult` output for release evidence.
+- Builds with `CODE_SIGNING_ALLOWED=NO` are valid for noninteractive compilation
+  and test isolation only. Keychain, app-group, entitlement, and credential-flow
+  acceptance must use a normally signed build with bundle identifier `sh.glas.app`.
 
 ## Supported Build Matrix
 - Deployment floor: macOS 26.0, iOS/iPadOS 26.0, and visionOS 26.0.

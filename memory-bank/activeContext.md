@@ -1,6 +1,15 @@
 # Active Context
 
 ## Current Focus (reconciled 2026-08-11)
+- GlassEditorKit remote SFTP editing M4 is implementation-, QA-, and manual-
+  acceptance-approved on `agent/glass-editor-sftp-m4`. The SFTP browser opens
+  bounded remote files in `GlassEditorView`, saves through glas.sh's existing
+  verified transport, and surfaces forced remote/local conflicts for an explicit
+  user decision. macOS passes 278/278 tests, Citadel passes with five
+  environment-gated skips, macOS and visionOS builds pass, and signed manual
+  open/edit/save plus forced-conflict acceptance pass. Publication is the current
+  action; the local package path must become a pinned GitHub dependency before a
+  release.
 - The native Mac connection-experience checkpoint is merged to `main` through PR
   [#31](https://github.com/msitarzewski/glas.sh/pull/31) as squash commit
   `9de9ef15`. Add/Edit use
@@ -25,6 +34,11 @@
 - This completion is not an App Store distribution decision. Physical Vision Pro SSH to the development Mac over Tailscale now works, but the full device matrix, initial terminal sizing, native session-sidebar dismissal, distribution certificate trust/notarization, final hosted Mac XCTest after the render-only delta, and external dependency-advisory querying retain explicit evidence boundaries in the release dashboard.
 
 ## What's Next
+- **Publish and preserve GlassEditorKit remote-editing M4.**
+  - Keep GlassEditorKit at the decision/UI boundary and glas.sh at the verified
+    byte-transport boundary.
+  - Pin the package to GitHub before release and retain the signed forced-conflict
+    acceptance test for future package/Citadel upgrades.
 - **Preserve the completed native Mac connection-experience publication.**
   - PR [#31](https://github.com/msitarzewski/glas.sh/pull/31), reviewed head
     `4790fd82`, and squash commit `9de9ef15` are the canonical publication record.
