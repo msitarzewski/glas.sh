@@ -18,6 +18,9 @@
   - No local foreground GUI automation ran after the user requested complete control
     of the desktop; direct user review supplies the final Add/Edit/password/exit UI
     evidence.
+  - Published through PR [#31](https://github.com/msitarzewski/glas.sh/pull/31) as
+    squash commit `9de9ef15`. The merge tree exactly matches reviewed head
+    `4790fd82`, including all 19 intended files.
 
 - Glass-family connection contract foundation completed (2026-08-09):
   - Reconciled and merged GlasSecretStore PR #4; accepted revision `9be45c9`

@@ -200,5 +200,14 @@ native Mac connection-experience work completed on
 
 ### Publication
 
-- glas.sh branch: `codex/native-mac-terminal-chrome`
-- glas.sh PR: [#31](https://github.com/msitarzewski/glas.sh/pull/31)
+- glas.sh reviewed branch head: `4790fd829d90c5f02297e4f35cc9b4896cf8f14f`
+- glas.sh PR: [#31](https://github.com/msitarzewski/glas.sh/pull/31), merged by
+  `msitarzewski` at `2026-08-11T07:51:50Z`.
+- Canonical `main` squash commit:
+  [`9de9ef150019a911bb7552c616e0fa99bc75e766`](https://github.com/msitarzewski/glas.sh/commit/9de9ef150019a911bb7552c616e0fa99bc75e766)
+- The reviewed head and squash commit both resolve to tree
+  `d0c159a4a3df6baa09a04670b6fa6645fab3ad32`; all 19 intended files landed with
+  1,216 additions and 427 deletions.
+- Repository governance allowed the owner merge: one approving review is configured,
+  but administrator enforcement is disabled. No PR reviews or hosted status checks
+  were recorded. Commit signatures are not required; the squash commit is unsigned.

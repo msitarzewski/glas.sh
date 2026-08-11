@@ -13,6 +13,8 @@
   276/276 Mac tests and the rebuilt user-controlled retest pass.
 - Verified iOS and visionOS simulator builds plus a valid signed arm64 Mac Release.
 - Recorded local foreground GUI automation as explicit opt-in.
+- Published through PR [#31](https://github.com/msitarzewski/glas.sh/pull/31) as
+  squash commit `9de9ef15`; the merge tree exactly matches reviewed head `4790fd82`.
 - See: [100826_connection-experience-and-server-form-layout.md](./100826_connection-experience-and-server-form-layout.md)
 
 ### 2026-08-09: Glass-family connection contract
