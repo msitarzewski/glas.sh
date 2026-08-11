@@ -3601,12 +3601,20 @@ struct glas_shTests {
     }
 
     @Test @MainActor func serverManagerToggleFavorite() {
-        let manager = ServerManager(loadImmediately: false)
+        let suiteName = "sh.glas.test.server-manager.toggle-favorite.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let manager = ServerManager(loadImmediately: false, defaults: defaults)
+        #if os(macOS)
+        let username = NSUserName()
+        #else
+        let username = "user"
+        #endif
         var server = ServerConfiguration(
-            name: "Fav Server",
-            host: "fav.example.com",
+            name: "Localhost",
+            host: "localhost",
             port: 22,
-            username: "user"
+            username: username
         )
         server.isFavorite = false
         manager.servers.append(server)
@@ -3619,7 +3627,10 @@ struct glas_shTests {
     }
 
     @Test @MainActor func serverManagerUpdateServer() {
-        let manager = ServerManager(loadImmediately: false)
+        let suiteName = "sh.glas.test.server-manager.update.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let manager = ServerManager(loadImmediately: false, defaults: defaults)
         let server = ServerConfiguration(
             name: "Original",
             host: "original.example.com",
@@ -3635,6 +3646,7 @@ struct glas_shTests {
 
         #expect(manager.servers.first?.name == "Updated")
         #expect(manager.servers.first?.host == "updated.example.com")
+        #expect(defaults.data(forKey: UserDefaultsKeys.servers) != nil)
     }
 
     // MARK: - Connection Library Projection Tests
@@ -6772,6 +6784,41 @@ struct glas_shTests {
         } catch {
             Issue.record("Expected SessionOpenError, received \(error)")
         }
+    }
+
+    @Test @MainActor func onlyRequestedTargetMissingPasswordRoutesToConnectionPrompt() {
+        let requested = ServerConfiguration(
+            name: "Requested",
+            host: "requested.example.com",
+            username: "operator"
+        )
+        let other = ServerConfiguration(
+            name: "Other",
+            host: "other.example.com",
+            username: "operator"
+        )
+
+        let targetError = SessionOpenError.missingPassword(
+            server: requested,
+            location: .target
+        )
+        #expect(ConnectionManagerView.targetPasswordPromptServer(
+            for: targetError,
+            requestedServerID: requested.id
+        )?.id == requested.id)
+
+        #expect(ConnectionManagerView.targetPasswordPromptServer(
+            for: targetError,
+            requestedServerID: other.id
+        ) == nil)
+        #expect(ConnectionManagerView.targetPasswordPromptServer(
+            for: SessionOpenError.missingPassword(server: other, location: .jumpHost(1)),
+            requestedServerID: requested.id
+        ) == nil)
+        #expect(ConnectionManagerView.targetPasswordPromptServer(
+            for: SessionOpenError.credentialUnavailable(server: requested, location: .target),
+            requestedServerID: requested.id
+        ) == nil)
     }
 
     @Test @MainActor func initialLaunchPreparesEveryCredentialBeforeSessionRegistration() async {

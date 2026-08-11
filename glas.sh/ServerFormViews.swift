@@ -47,9 +47,24 @@ extension View {
         self.background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         #endif
     }
+
 }
 
 private let supportedAuthenticationMethods: [AuthenticationMethod] = [.password, .sshKey]
+
+@ViewBuilder
+private func serverFormLabeledContent<Content: View>(
+    _ label: String,
+    @ViewBuilder content: () -> Content
+) -> some View {
+    #if os(macOS)
+    LabeledContent(label) {
+        content()
+    }
+    #else
+    content()
+    #endif
+}
 
 // MARK: - Add Server View
 
@@ -114,170 +129,39 @@ struct AddServerView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("Connection") {
-                    TextField("Display Name", text: $name)
-                        .focused($focusedField, equals: .name)
-                        .accessibilityIdentifier("add-server-display-name")
-                    TextField("Host", text: $host)
-                        .terminalTextInputDefaults()
-                        .focused($focusedField, equals: .host)
-                        .accessibilityIdentifier("add-server-host")
-                    TextField("Port", text: $port)
-                        .focused($focusedField, equals: .port)
-                        .accessibilityIdentifier("add-server-port")
-                    TextField("Username", text: $username)
-                        .terminalTextInputDefaults()
-                        .focused($focusedField, equals: .username)
-                        .accessibilityIdentifier("add-server-username")
-                }
-
-                Section("Authentication") {
-                    Picker("Method", selection: $authMethod) {
-                        ForEach(supportedAuthenticationMethods, id: \.self) { method in
-                            Text(method.displayName).tag(method)
-                        }
-                    }
-
-                    if authMethod == .password {
-                        SecureField("Password", text: $password)
-                            .textContentType(.init(rawValue: ""))
-                            .focused($focusedField, equals: .password)
-                            .accessibilityIdentifier("add-server-password")
-                    } else if authMethod == .sshKey {
-                        if settingsManager.sshKeys.isEmpty {
-                            Text("No SSH keys available. Add one to continue.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Picker("SSH Key", selection: $sshKeyID) {
-                                Text("Select a key").tag(nil as UUID?)
-                                ForEach(settingsManager.sshKeys) { key in
-                                    Text("\(key.name) (\(key.keyTypeBadge))").tag(key.id as UUID?)
-                                }
-                            }
-                        }
-                        Button {
-                            showingAddSSHKey = true
-                        } label: {
-                            Label("Add SSH Key", systemImage: "plus.circle")
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                }
-
-                Section("Routing") {
-                    if jumpHostIDs.isEmpty {
-                        Text("Direct connection")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(Array(jumpHostIDs.enumerated()), id: \.offset) { index, hopID in
-                            if let hop = serverManager.servers.first(where: { $0.id == hopID }) {
-                                HStack {
-                                    Label {
-                                        Text("Hop \(index + 1): \(hop.name)")
-                                    } icon: {
-                                        Image(systemName: "\(index + 1).circle.fill")
-                                            .foregroundStyle(.blue)
-                                    }
-                                    Spacer()
-                                    Button {
-                                        jumpHostIDs.remove(at: index)
-                                    } label: {
-                                        Image(systemName: "minus.circle.fill")
-                                            .foregroundStyle(.red)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel("Remove hop \(index + 1)")
-                                }
-                            }
-                        }
-                        .onMove { from, to in
-                            jumpHostIDs.move(fromOffsets: from, toOffset: to)
-                        }
-                    }
-
-                    Button {
-                        showingJumpHostPicker = true
-                    } label: {
-                        Label("Add Jump Host", systemImage: "plus.circle")
-                    }
-                }
-
-                Section("Appearance") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Color Tag")
-                            .font(.headline)
-
-                        HStack(spacing: 12) {
-                            ForEach(ServerColorTag.allCases, id: \.self) { tag in
-                                Button {
-                                    colorTag = tag
-                                } label: {
-                                    Circle()
-                                        .fill(tag.color)
-                                        .frame(width: 44, height: 44)
-                                        .overlay {
-                                            if colorTag == tag {
-                                                Circle()
-                                                    .strokeBorder(.white, lineWidth: 3)
-                                            }
-                                        }
-                                }
-                                .buttonStyle(.plain)
-                                .frame(minWidth: 60, minHeight: 60)
-                                .contentShape(Circle())
-                                .accessibilityLabel("\(tag.rawValue) color")
-                                .accessibilityAddTraits(colorTag == tag ? .isSelected : [])
-                            }
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Tags")
-                            .font(.headline)
-
-                        FlowLayout(spacing: 8) {
-                            ForEach(tags, id: \.self) { tag in
-                                TagChip(tag: tag) {
-                                    tags.removeAll { $0 == tag }
-                                }
-                            }
-
-                            HStack(spacing: 4) {
-                                TextField("Add tag", text: $newTag)
-                                    .textFieldStyle(.plain)
-                                    .frame(width: 80)
-                                    .accessibilityIdentifier("add-server-tag")
-                                    .onSubmit {
-                                        commitPendingTag()
-                                    }
-
-                                if !newTag.isEmpty {
-                                    Button {
-                                        commitPendingTag()
-                                    } label: {
-                                        Image(systemName: "plus.circle.fill")
-                                            .foregroundStyle(.blue)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel("Add tag")
-                                }
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(.regularMaterial, in: .capsule)
-                        }
-                    }
-                }
-
-                Section {
-                    Toggle(isOn: $isFavorite) {
-                        Label("Favorite", systemImage: "heart.fill")
-                    }
-                }
+        platformEditor
+            .onAppear {
+                normalizeSelectedSSHKey()
+                focusedField = isPrefilledDraft ? .username : .name
             }
+            .onChange(of: authMethod) { _, _ in
+                normalizeSelectedSSHKey()
+            }
+            .onChange(of: settingsManager.sshKeys.map(\.id)) { _, _ in
+                normalizeSelectedSSHKey()
+            }
+    }
+
+    @ViewBuilder
+    private var platformEditor: some View {
+        #if os(macOS)
+        editor
+            .frame(
+                minWidth: 600,
+                idealWidth: 640,
+                maxWidth: 680,
+                minHeight: 620,
+                idealHeight: 720,
+                maxHeight: 820
+            )
+        #else
+        editor
+        #endif
+    }
+
+    private var editor: some View {
+        NavigationStack {
+            platformForm
             .navigationTitle(isPrefilledDraft ? "Import Connection" : "Add Server")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -290,6 +174,9 @@ struct AddServerView: View {
                         saveServer()
                     }
                     .disabled(!isFormValid)
+                    #if os(macOS)
+                    .keyboardShortcut(.defaultAction)
+                    #endif
                 }
             }
             .sheet(isPresented: $showingAddSSHKey) {
@@ -313,15 +200,235 @@ struct AddServerView: View {
                 Text(keychainSaveError ?? "The server could not be saved.")
             }
         }
-        .onAppear {
-            normalizeSelectedSSHKey()
-            focusedField = isPrefilledDraft ? .username : .name
+    }
+
+    @ViewBuilder
+    private var platformForm: some View {
+        #if os(macOS)
+        Form { formSections }
+            .formStyle(.grouped)
+        #else
+        Form { formSections }
+        #endif
+    }
+
+    @ViewBuilder
+    private var formSections: some View {
+        Section("Connection") {
+            addTextField("Name", text: $name, field: .name, identifier: "add-server-display-name")
+            addTextField("Host", text: $host, field: .host, identifier: "add-server-host")
+            serverFormLabeledContent("Port") {
+                TextField("Port", text: $port)
+                    .terminalNumericInput()
+                    .focused($focusedField, equals: .port)
+                    .serverFormTextFieldPresentation()
+                    .accessibilityIdentifier("add-server-port")
+            }
+            addTextField("Username", text: $username, field: .username, identifier: "add-server-username")
         }
-        .onChange(of: authMethod) { _, _ in
-            normalizeSelectedSSHKey()
+
+        Section("Authentication") {
+            serverFormLabeledContent("Method") {
+                Picker("Method", selection: $authMethod) {
+                    ForEach(supportedAuthenticationMethods, id: \.self) { method in
+                        Text(method.displayName).tag(method)
+                    }
+                }
+                .serverFormControlPresentation()
+            }
+
+            if authMethod == .password {
+                serverFormLabeledContent("Password") {
+                    SecureField("Password", text: $password)
+                        .textContentType(.init(rawValue: ""))
+                        .focused($focusedField, equals: .password)
+                        .serverFormTextFieldPresentation()
+                        .accessibilityIdentifier("add-server-password")
+                }
+            } else if authMethod == .sshKey {
+                #if os(macOS)
+                serverFormLabeledContent("SSH Key") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        addSSHKeySelection
+                        Button("Add SSH Key", systemImage: "plus.circle") {
+                            showingAddSSHKey = true
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .serverFormControlPresentation()
+                }
+                #else
+                addSSHKeySelection
+                Button("Add SSH Key", systemImage: "plus.circle") {
+                    showingAddSSHKey = true
+                }
+                .buttonStyle(.bordered)
+                #endif
+            }
         }
-        .onChange(of: settingsManager.sshKeys.map(\.id)) { _, _ in
-            normalizeSelectedSSHKey()
+
+        Section("Routing") {
+            #if os(macOS)
+            serverFormLabeledContent("Route") {
+                routingEditor.serverFormControlPresentation()
+            }
+            #else
+            routingEditor
+            #endif
+        }
+
+        Section("Appearance") {
+            #if os(macOS)
+            serverFormLabeledContent("Color tag") {
+                colorTagPicker.serverFormControlPresentation()
+            }
+            serverFormLabeledContent("Collections") {
+                collectionEditor.serverFormControlPresentation()
+            }
+            #else
+            mobileColorTagEditor
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Tags")
+                    .font(.headline)
+                collectionEditor
+            }
+            #endif
+        }
+
+        Section("Preferences") {
+            Toggle("Favorite", systemImage: "heart.fill", isOn: $isFavorite)
+        }
+    }
+
+    @ViewBuilder
+    private var addSSHKeySelection: some View {
+        if settingsManager.sshKeys.isEmpty {
+            Text("No SSH keys available. Add one to continue.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            Picker("SSH Key", selection: $sshKeyID) {
+                Text("Select a key").tag(nil as UUID?)
+                ForEach(settingsManager.sshKeys) { key in
+                    Text("\(key.name) (\(key.keyTypeBadge))").tag(key.id as UUID?)
+                }
+            }
+            .serverFormControlPresentation()
+        }
+    }
+
+    private var routingEditor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if jumpHostIDs.isEmpty {
+                Text("Direct connection")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(jumpHostIDs.enumerated()), id: \.offset) { index, hopID in
+                    if let hop = serverManager.servers.first(where: { $0.id == hopID }) {
+                        HStack {
+                            Label("Hop \(index + 1): \(hop.name)", systemImage: "\(index + 1).circle.fill")
+                            Spacer()
+                            Button("Remove hop \(index + 1)", systemImage: "minus.circle.fill") {
+                                jumpHostIDs.remove(at: index)
+                            }
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.red)
+                        }
+                    }
+                }
+                .onMove { from, to in
+                    jumpHostIDs.move(fromOffsets: from, toOffset: to)
+                }
+            }
+
+            Button("Add Jump Host", systemImage: "plus.circle") {
+                showingJumpHostPicker = true
+            }
+        }
+    }
+
+    private var colorTagPicker: some View {
+        Picker("Color tag", selection: $colorTag) {
+            ForEach(ServerColorTag.allCases, id: \.self) { tag in
+                Label(tag.rawValue.capitalized, systemImage: "circle.fill")
+                    .foregroundStyle(tag.color)
+                    .tag(tag)
+            }
+        }
+    }
+
+    private var mobileColorTagEditor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Color Tag")
+                .font(.headline)
+            HStack(spacing: 12) {
+                ForEach(ServerColorTag.allCases, id: \.self) { tag in
+                    Button {
+                        colorTag = tag
+                    } label: {
+                        Circle()
+                            .fill(tag.color)
+                            .frame(width: 44, height: 44)
+                            .overlay {
+                                if colorTag == tag {
+                                    Circle().strokeBorder(.white, lineWidth: 3)
+                                }
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .frame(minWidth: 60, minHeight: 60)
+                    .contentShape(Circle())
+                    .accessibilityLabel("\(tag.rawValue) color")
+                    .accessibilityAddTraits(colorTag == tag ? .isSelected : [])
+                }
+            }
+        }
+    }
+
+    private var collectionEditor: some View {
+        FlowLayout(spacing: 8) {
+            ForEach(tags, id: \.self) { tag in
+                TagChip(tag: tag) {
+                    tags.removeAll { $0 == tag }
+                }
+            }
+
+            HStack(spacing: 4) {
+                TextField("Add collection", text: $newTag)
+                    .textFieldStyle(.plain)
+                    .frame(width: 110)
+                    .accessibilityIdentifier("add-server-tag")
+                    .onSubmit { commitPendingTag() }
+
+                if !newTag.isEmpty {
+                    Button("Add collection", systemImage: "plus.circle.fill") {
+                        commitPendingTag()
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Add collection")
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.regularMaterial, in: .capsule)
+        }
+    }
+
+    @ViewBuilder
+    private func addTextField(
+        _ label: String,
+        text: Binding<String>,
+        field: Field,
+        identifier: String
+    ) -> some View {
+        serverFormLabeledContent(label) {
+            TextField(label, text: text)
+                .terminalTextInputDefaults()
+                .focused($focusedField, equals: field)
+                .serverFormTextFieldPresentation()
+                .accessibilityIdentifier(identifier)
         }
     }
 
@@ -381,7 +488,7 @@ struct AddServerView: View {
     }
 }
 
-// MARK: - Edit Server View
+// MARK: - Edit Connection View
 
 struct EditServerView: View {
     let server: ServerConfiguration
@@ -444,172 +551,51 @@ struct EditServerView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("Connection") {
-                    TextField("Name", text: $name)
-                        .focused($focusedField, equals: .name)
-                    TextField("Host", text: $host)
-                        .focused($focusedField, equals: .host)
-                    TextField("Port", text: $port)
-                        .focused($focusedField, equals: .port)
-                    TextField("Username", text: $username)
-                        .focused($focusedField, equals: .username)
-                }
-
-                Section("Authentication") {
-                    Picker("Method", selection: $authMethod) {
-                        ForEach(supportedAuthenticationMethods, id: \.self) { method in
-                            Text(method.displayName).tag(method)
-                        }
-                    }
-
-                    if authMethod == .password {
-                        SecureField("Password", text: $password)
-                            .textContentType(.init(rawValue: ""))
-                            .focused($focusedField, equals: .password)
-                        if requiresPasswordUpgrade {
-                            Label {
-                                Text("Re-enter this password once to upgrade it. Earlier releases used an address-based Keychain account shared with glassdb; glas.sh will not import that ambiguous credential.")
-                            } icon: {
-                                Image(systemName: "key.horizontal")
-                            }
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        }
-                    } else if authMethod == .sshKey {
-                        if settingsManager.sshKeys.isEmpty {
-                            Text("No SSH keys available. Add one to continue.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Picker("SSH Key", selection: $sshKeyID) {
-                                Text("Select a key").tag(nil as UUID?)
-                                ForEach(settingsManager.sshKeys) { key in
-                                    Text("\(key.name) (\(key.keyTypeBadge))").tag(key.id as UUID?)
-                                }
-                            }
-                        }
-                        Button {
-                            showingAddSSHKey = true
-                        } label: {
-                            Label("Add SSH Key", systemImage: "plus.circle")
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                }
-
-                Section("Routing") {
-                    if jumpHostIDs.isEmpty {
-                        Text("Direct connection")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(Array(jumpHostIDs.enumerated()), id: \.offset) { index, hopID in
-                            if let hop = serverManager.servers.first(where: { $0.id == hopID }) {
-                                HStack {
-                                    Label {
-                                        Text("Hop \(index + 1): \(hop.name)")
-                                    } icon: {
-                                        Image(systemName: "\(index + 1).circle.fill")
-                                            .foregroundStyle(.blue)
-                                    }
-                                    Spacer()
-                                    Button {
-                                        jumpHostIDs.remove(at: index)
-                                    } label: {
-                                        Image(systemName: "minus.circle.fill")
-                                            .foregroundStyle(.red)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel("Remove hop \(index + 1)")
-                                }
-                            }
-                        }
-                        .onMove { from, to in
-                            jumpHostIDs.move(fromOffsets: from, toOffset: to)
-                        }
-                    }
-
-                    Button {
-                        showingJumpHostPicker = true
-                    } label: {
-                        Label("Add Jump Host", systemImage: "plus.circle")
-                    }
-                }
-
-                Section("Appearance") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Color Tag")
-                            .font(.headline)
-
-                        HStack(spacing: 12) {
-                            ForEach(ServerColorTag.allCases, id: \.self) { tag in
-                                Button {
-                                    colorTag = tag
-                                } label: {
-                                    Circle()
-                                        .fill(tag.color)
-                                        .frame(width: 44, height: 44)
-                                        .overlay {
-                                            if colorTag == tag {
-                                                Circle()
-                                                    .strokeBorder(.white, lineWidth: 3)
-                                            }
-                                        }
-                                }
-                                .buttonStyle(.plain)
-                                .frame(minWidth: 60, minHeight: 60)
-                                .contentShape(Circle())
-                                .accessibilityLabel("\(tag.rawValue) color")
-                                .accessibilityAddTraits(colorTag == tag ? .isSelected : [])
-                            }
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Tags")
-                            .font(.headline)
-
-                        FlowLayout(spacing: 8) {
-                            ForEach(tags, id: \.self) { tag in
-                                TagChip(tag: tag) {
-                                    tags.removeAll { $0 == tag }
-                                }
-                            }
-
-                            HStack(spacing: 4) {
-                                TextField("Add tag", text: $newTag)
-                                    .textFieldStyle(.plain)
-                                    .frame(width: 80)
-                                    .onSubmit {
-                                        commitPendingTag()
-                                    }
-
-                                if !newTag.isEmpty {
-                                    Button {
-                                        commitPendingTag()
-                                    } label: {
-                                        Image(systemName: "plus.circle.fill")
-                                            .foregroundStyle(.blue)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel("Add tag")
-                                }
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(.regularMaterial, in: .capsule)
-                        }
-                    }
-                }
-
-                Section("Preferences") {
-                    Toggle(isOn: $isFavorite) {
-                        Label("Favorite", systemImage: "heart.fill")
+        platformEditor
+            .onAppear {
+                normalizeSelectedSSHKey()
+                focusedField = .name
+                if authMethod == .password {
+                    do {
+                        let saved = try serverManager.password(for: server)
+                        password = saved
+                        requiresPasswordUpgrade = false
+                    } catch SecretStoreError.notFound {
+                        requiresPasswordUpgrade = true
+                    } catch {
+                        keychainSaveError = "The saved password could not be read: \(error.localizedDescription)"
                     }
                 }
             }
-            .navigationTitle("Edit Server")
+            .onChange(of: authMethod) { _, _ in
+                normalizeSelectedSSHKey()
+            }
+            .onChange(of: settingsManager.sshKeys.map(\.id)) { _, _ in
+                normalizeSelectedSSHKey()
+            }
+    }
+
+    @ViewBuilder
+    private var platformEditor: some View {
+        #if os(macOS)
+        editor
+            .frame(
+                minWidth: 600,
+                idealWidth: 640,
+                maxWidth: 680,
+                minHeight: 620,
+                idealHeight: 720,
+                maxHeight: 820
+            )
+        #else
+        editor
+        #endif
+    }
+
+    private var editor: some View {
+        NavigationStack {
+            platformForm
+            .navigationTitle("Edit Connection")
             .sheet(isPresented: $showingAddSSHKey) {
                 AddSSHKeyView()
                     .environment(settingsManager)
@@ -630,10 +616,13 @@ struct EditServerView: View {
                 }
 
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button("Save Changes") {
                         saveChanges()
                     }
                     .disabled(!isFormValid)
+                    #if os(macOS)
+                    .keyboardShortcut(.defaultAction)
+                    #endif
                 }
             }
             .alert("Save Failed", isPresented: Binding(
@@ -645,26 +634,257 @@ struct EditServerView: View {
                 Text(keychainSaveError ?? "The server changes could not be saved.")
             }
         }
-        .onAppear {
-            normalizeSelectedSSHKey()
-            focusedField = .name
-            if authMethod == .password {
-                do {
-                    let saved = try serverManager.password(for: server)
-                    password = saved
-                    requiresPasswordUpgrade = false
-                } catch SecretStoreError.notFound {
-                    requiresPasswordUpgrade = true
-                } catch {
-                    keychainSaveError = "The saved password could not be read: \(error.localizedDescription)"
+    }
+
+    @ViewBuilder
+    private var platformForm: some View {
+        #if os(macOS)
+        Form { formSections }
+            .formStyle(.grouped)
+        #else
+        Form { formSections }
+        #endif
+    }
+
+    @ViewBuilder
+    private var formSections: some View {
+        Section("Connection") {
+            editTextField("Name", text: $name, field: .name)
+            editTextField("Host", text: $host, field: .host)
+            editTextField("Port", text: $port, field: .port)
+            editTextField("Username", text: $username, field: .username)
+        }
+
+        Section("Authentication") {
+            serverFormLabeledContent("Method") {
+                Picker("Method", selection: $authMethod) {
+                    ForEach(supportedAuthenticationMethods, id: \.self) { method in
+                        Text(method.displayName).tag(method)
+                    }
                 }
+                .serverFormControlPresentation()
+            }
+
+            if authMethod == .password {
+                serverFormLabeledContent("Password") {
+                    SecureField("Password", text: $password)
+                        .textContentType(.init(rawValue: ""))
+                        .focused($focusedField, equals: .password)
+                        .serverFormTextFieldPresentation()
+                }
+                if requiresPasswordUpgrade {
+                    Label {
+                        Text("Re-enter this password once to upgrade it. Earlier releases used an address-based Keychain account shared with glassdb; glas.sh will not import that ambiguous credential.")
+                    } icon: {
+                        Image(systemName: "key.horizontal")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            } else if authMethod == .sshKey {
+                #if os(macOS)
+                serverFormLabeledContent("SSH Key") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if settingsManager.sshKeys.isEmpty {
+                            Text("No SSH keys available. Add one to continue.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Picker("SSH Key", selection: $sshKeyID) {
+                                Text("Select a key").tag(nil as UUID?)
+                                ForEach(settingsManager.sshKeys) { key in
+                                    Text("\(key.name) (\(key.keyTypeBadge))").tag(key.id as UUID?)
+                                }
+                            }
+                            .serverFormControlPresentation()
+                        }
+                        Button("Add SSH Key", systemImage: "plus.circle") {
+                            showingAddSSHKey = true
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                #else
+                if settingsManager.sshKeys.isEmpty {
+                    Text("No SSH keys available. Add one to continue.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Picker("SSH Key", selection: $sshKeyID) {
+                        Text("Select a key").tag(nil as UUID?)
+                        ForEach(settingsManager.sshKeys) { key in
+                            Text("\(key.name) (\(key.keyTypeBadge))").tag(key.id as UUID?)
+                        }
+                    }
+                }
+                Button("Add SSH Key", systemImage: "plus.circle") {
+                    showingAddSSHKey = true
+                }
+                .buttonStyle(.bordered)
+                #endif
             }
         }
-        .onChange(of: authMethod) { _, _ in
-            normalizeSelectedSSHKey()
+
+        Section("Routing") {
+            #if os(macOS)
+            serverFormLabeledContent("Route") {
+                VStack(alignment: .leading, spacing: 8) {
+                    if jumpHostIDs.isEmpty {
+                        Text("Direct connection")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(Array(jumpHostIDs.enumerated()), id: \.offset) { index, hopID in
+                            if let hop = serverManager.servers.first(where: { $0.id == hopID }) {
+                                HStack {
+                                    Label("Hop \(index + 1): \(hop.name)", systemImage: "\(index + 1).circle.fill")
+                                    Spacer()
+                                    Button("Remove hop \(index + 1)", systemImage: "minus.circle.fill") {
+                                        jumpHostIDs.remove(at: index)
+                                    }
+                                    .labelStyle(.iconOnly)
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(.red)
+                                }
+                            }
+                        }
+                        .onMove { from, to in
+                            jumpHostIDs.move(fromOffsets: from, toOffset: to)
+                        }
+                    }
+
+                    Button("Add Jump Host", systemImage: "plus.circle") {
+                        showingJumpHostPicker = true
+                    }
+                }
+                .serverFormControlPresentation()
+            }
+            #else
+            if jumpHostIDs.isEmpty {
+                Text("Direct connection")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(jumpHostIDs.enumerated()), id: \.offset) { index, hopID in
+                    if let hop = serverManager.servers.first(where: { $0.id == hopID }) {
+                        HStack {
+                            Label("Hop \(index + 1): \(hop.name)", systemImage: "\(index + 1).circle.fill")
+                            Spacer()
+                            Button("Remove hop \(index + 1)", systemImage: "minus.circle.fill") {
+                                jumpHostIDs.remove(at: index)
+                            }
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.red)
+                        }
+                    }
+                }
+                .onMove { from, to in
+                    jumpHostIDs.move(fromOffsets: from, toOffset: to)
+                }
+            }
+            Button("Add Jump Host", systemImage: "plus.circle") {
+                showingJumpHostPicker = true
+            }
+            #endif
         }
-        .onChange(of: settingsManager.sshKeys.map(\.id)) { _, _ in
-            normalizeSelectedSSHKey()
+
+        Section("Appearance") {
+            #if os(macOS)
+            serverFormLabeledContent("Color tag") {
+                Picker("Color tag", selection: $colorTag) {
+                    ForEach(ServerColorTag.allCases, id: \.self) { tag in
+                        Label(tag.rawValue.capitalized, systemImage: "circle.fill")
+                            .foregroundStyle(tag.color)
+                            .tag(tag)
+                    }
+                }
+                .serverFormControlPresentation()
+            }
+
+            serverFormLabeledContent("Collections") {
+                collectionEditor.serverFormControlPresentation()
+            }
+            #else
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Color Tag")
+                    .font(.headline)
+
+                HStack(spacing: 12) {
+                    ForEach(ServerColorTag.allCases, id: \.self) { tag in
+                        Button {
+                            colorTag = tag
+                        } label: {
+                            Circle()
+                                .fill(tag.color)
+                                .frame(width: 44, height: 44)
+                                .overlay {
+                                    if colorTag == tag {
+                                        Circle()
+                                            .strokeBorder(.white, lineWidth: 3)
+                                    }
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .frame(minWidth: 60, minHeight: 60)
+                        .contentShape(Circle())
+                        .accessibilityLabel("\(tag.rawValue) color")
+                        .accessibilityAddTraits(colorTag == tag ? .isSelected : [])
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Tags")
+                    .font(.headline)
+                collectionEditor
+            }
+            #endif
+        }
+
+        Section("Preferences") {
+            Toggle("Favorite", systemImage: "heart.fill", isOn: $isFavorite)
+        }
+    }
+
+    @ViewBuilder
+    private func editTextField(
+        _ label: String,
+        text: Binding<String>,
+        field: Field
+    ) -> some View {
+        serverFormLabeledContent(label) {
+            TextField(label, text: text)
+                .focused($focusedField, equals: field)
+                .serverFormTextFieldPresentation()
+        }
+    }
+
+    private var collectionEditor: some View {
+        FlowLayout(spacing: 8) {
+            ForEach(tags, id: \.self) { tag in
+                TagChip(tag: tag) {
+                    tags.removeAll { $0 == tag }
+                }
+            }
+
+            HStack(spacing: 4) {
+                TextField("Add collection", text: $newTag)
+                    .textFieldStyle(.plain)
+                    .frame(width: 110)
+                    .onSubmit { commitPendingTag() }
+
+                if !newTag.isEmpty {
+                    Button("Add collection", systemImage: "plus.circle.fill") {
+                        commitPendingTag()
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Add collection")
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.regularMaterial, in: .capsule)
         }
     }
 
@@ -717,6 +937,31 @@ struct EditServerView: View {
             return
         }
         sshKeyID = settingsManager.sshKeys.first?.id
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func serverFormControlPresentation() -> some View {
+        #if os(macOS)
+        self
+            .labelsHidden()
+            .frame(width: 340, alignment: .leading)
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func serverFormTextFieldPresentation() -> some View {
+        #if os(macOS)
+        self
+            .labelsHidden()
+            .textFieldStyle(.roundedBorder)
+            .frame(width: 340, alignment: .leading)
+        #else
+        self
+        #endif
     }
 }
 

@@ -1,6 +1,14 @@
 # Active Context
 
-## Current Focus (reconciled 2026-08-09)
+## Current Focus (reconciled 2026-08-11)
+- The native Mac connection-experience checkpoint is implementation, automated-QA,
+  and manual-review approved on `codex/native-mac-terminal-chrome`. Add/Edit use
+  native grouped forms with a common trailing value column; password-less saved
+  profiles prompt through a Keychain-oriented sheet; clean SSH `exit` closes the
+  pane/tab/window without presenting a failure; and the conventional asset-catalog
+  icon is authoritative. Exact-current Mac QA passes 276/276, iOS and visionOS
+  simulator builds pass, and the signed arm64 Release satisfies its designated
+  requirement. Foreground UI automation was not run after the user stopped it.
 - Phase 08.1/08.8 is complete: GlasSecretStore PR #4 is merged, the
   Foundation-only GlassConnectionKit version-one endpoint contract is published at
   `0ced944`, and glassdb PR #7 is merged with exact pins for both shared packages.
@@ -15,6 +23,10 @@
 - Working branch: `codex/native-mac-terminal-chrome`.
 
 ## What's Next
+- **Publish the approved native Mac connection-experience checkpoint.**
+  - Commit and push `codex/native-mac-terminal-chrome`, update PR #31 with exact
+    QA and manual evidence, obtain its required review, and merge through branch
+    protection.
 - **Preserve the completed One Base publication.**
   - PR [#30](https://github.com/msitarzewski/glas.sh/pull/30) and merge commit `d9237f97` are the canonical review and merge record.
   - Retain baseline `c9f7a406` and the approved single-diff governance variance.

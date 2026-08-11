@@ -142,6 +142,10 @@
     SSH/local-process lifetime, explicit close, and transactional window moves.
   - `onDisappear`, sidebar visibility, size-class transitions, and `TabView`
     reconstruction must never close sessions or workgroups.
+  - A SwiftUI pane graph may finish a layout pass after model-owned pane or tab
+    retirement. Injected workspace controllers remain parent-owned references, and
+    render-time runtime/recorder acquisition must return unavailable for retired or
+    closed panes; it must never trap or recreate resources after ownership ends.
   - Window restoration persists reconnectable intentions and stable IDs, not
     sockets or view-owned live transport state.
 - Terminal-local settings presented via system `.sheet()` (not custom modal overlays) for Liquid Glass styling, gesture dismissal, and accessibility.

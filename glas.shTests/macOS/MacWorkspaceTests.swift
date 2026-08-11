@@ -1274,6 +1274,32 @@ struct MacWorkspaceTests {
         #expect(controller.focusedPane?.intent == .local)
     }
 
+    @Test @MainActor func cleanSSHExitRemovesItsPaneAndClosesOnlyAnEmptyTab() throws {
+        let fixture = try WorkspaceDefaultsFixture()
+        defer { fixture.cleanup() }
+        let controller = MacWorkspaceController(
+            workspaceID: fixture.workspaceID,
+            defaults: fixture.defaults
+        )
+        let sessionManager = SessionManager(loadImmediately: false)
+        let localPaneID = try #require(controller.focusedPaneID)
+
+        controller.addPane(intent: .ssh(serverID: UUID()), axis: .horizontal)
+        let sshPaneID = try #require(controller.focusedPaneID)
+
+        #expect(!controller.completeCleanSSHExit(sshPaneID, sessionManager: sessionManager))
+        #expect(controller.state.root?.paneIDs == [localPaneID])
+        #expect(controller.error(for: sshPaneID) == nil)
+
+        controller.removePane(localPaneID, sessionManager: sessionManager)
+        controller.addPane(intent: .ssh(serverID: UUID()), axis: .horizontal)
+        let onlyPaneID = try #require(controller.focusedPaneID)
+
+        #expect(controller.completeCleanSSHExit(onlyPaneID, sessionManager: sessionManager))
+        #expect(controller.isEmpty)
+        #expect(controller.error(for: onlyPaneID) == nil)
+    }
+
     @Test @MainActor func controllerPersistsOnlyBoundedNonsecretRestorationData() throws {
         let fixture = try WorkspaceDefaultsFixture()
         defer { fixture.cleanup() }
@@ -1366,7 +1392,7 @@ struct MacWorkspaceTests {
         #expect(window.selectedTab.localRuntimesByPaneID.isEmpty)
     }
 
-    @Test @MainActor func paneOwnedRecorderSurvivesViewReconstructionUntilPaneClose() throws {
+    @Test @MainActor func paneOwnedResourcesSurviveReconstructionAndRetireWithPane() throws {
         let fixture = try WorkspaceDefaultsFixture()
         defer { fixture.cleanup() }
         let controller = MacWorkspaceController(
@@ -1375,12 +1401,17 @@ struct MacWorkspaceTests {
         )
         let sessionManager = SessionManager(loadImmediately: false)
         let paneID = try #require(controller.focusedPaneID)
-        let first = controller.recorder(for: paneID)
-        let reconstructed = controller.recorder(for: paneID)
+        let runtime = try #require(controller.localRuntime(for: paneID))
+        let first = try #require(controller.recorder(for: paneID))
+        let reconstructed = try #require(controller.recorder(for: paneID))
 
         #expect(first === reconstructed)
+        #expect(controller.localRuntimesByPaneID[paneID] === runtime)
         #expect(controller.recordersByPaneID[paneID] === first)
         controller.removePane(paneID, sessionManager: sessionManager)
+        #expect(controller.localRuntime(for: paneID) == nil)
+        #expect(controller.recorder(for: paneID) == nil)
+        #expect(controller.localRuntimesByPaneID[paneID] == nil)
         #expect(controller.recordersByPaneID[paneID] == nil)
     }
 
