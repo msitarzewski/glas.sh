@@ -1,5 +1,15 @@
 # Progress
 
+- GlassEditorKit remote SFTP editing M4 approved (2026-08-11):
+  - Added explicit remote-file editing without changing SFTP row multi-select.
+  - Reused glas.sh's bounded, SHA-256-verified transfer layer for all bytes and
+    GlassEditorKit only for editing UI and conflict decisions.
+  - Added verified atomic replacement through negotiated OpenSSH POSIX rename
+    while preserving the existing exclusive no-clobber import behavior.
+  - Passed 278/278 glas.sh tests, Citadel regression coverage, macOS and visionOS
+    builds, and signed manual open/edit/save plus forced-conflict acceptance.
+  - Local-path package integration is intentional for co-development and remains
+    a release pinning gate.
 - Native Mac connection experience approved (2026-08-11):
   - Reconciled Add and Edit into native grouped forms with Apple-owned navigation
     titles, one trailing value axis, shared controls, and unchanged transactional

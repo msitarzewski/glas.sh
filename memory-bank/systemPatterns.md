@@ -242,6 +242,21 @@
 - `SFTPPathComponent` provides filename, longname, attributes (size, permissions, times).
 - Validate remote basenames and retained-directory containment. Downloads use protected identity-bound partials with explicit collision/resume policy and atomic commit; uploads use exclusive no-clobber creation and exact-size verification.
 
+## Remote Editor Decision and Transport Boundary
+- GlassEditorKit owns document decoding/editing UI and the remote-conflict decision
+  model. It never receives an SFTP client and never reads or writes remote bytes.
+- glas.sh owns bounded streaming, SHA-256 verification, remote stat capture,
+  upload/resume identity, commit, readback, and `SFTPTransferError` translation.
+- Opening captures a digest plus size and coarse modification time. SFTP v3
+  timestamps have unknown nanoseconds; represent that as `nil` rather than false
+  precision.
+- Save classifies the stat first and re-reads/re-hashes when the stat differs or is
+  indeterminate. A dirty or indeterminate conflict is surfaced for an explicit
+  user decision; never auto-resolve or silently overwrite.
+- Ordinary imports retain exclusive no-clobber creation. Authorized editor
+  replacements use a verified temporary upload followed by the negotiated OpenSSH
+  POSIX rename extension because hard links cannot replace an existing target.
+
 ## Quick Connect Pattern
 - Search bar in ConnectionManagerView parses `user@host` or `user@host:port` via `quickConnectConfig` computed property.
 - Matching pattern shows "Quick Connect" row above server list.

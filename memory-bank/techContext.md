@@ -29,8 +29,14 @@
 - BigInt 6.0.0
 - SwiftTerm 1.15.0
 - GlasSecretStore revision `1ffaa96312b8e4b4d6b82eb82cc40c8f6df6317f`
+- GlassEditorKit local path `../GlassEditorKit` during M4 co-development
 
 `RealityKitContent` (`Packages/RealityKitContent`, swift-tools-version 6.2) owns the SwiftTerm renderer boundary. Citadel (`Packages/Citadel`) and vendored `swift-nio-ssh` remain local source dependencies; GlasSecretStore is resolved from the shared GitHub repository so glas.sh and glassdb can use the same credential authority. SwiftTerm 1.15.0 requires the Xcode Metal Toolchain component (`xcodebuild -downloadComponent MetalToolchain`) for the Metal-backed renderer.
+
+GlassEditorKit supplies the shared editor UI and remote-conflict decision types.
+The local path avoids retagging during joint development; it must be replaced with
+a pinned GitHub dependency before release. glas.sh remains the sole owner of SFTP
+transport and never delegates remote bytes to the package.
 
 ## Build Targets
 - `glas.sh` — the sole application target across Mac, iPhone, iPad, and Vision Pro

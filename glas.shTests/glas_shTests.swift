@@ -11,6 +11,8 @@ import Foundation
 import GlasSecretStore
 import NIOCore
 import NIOSSH
+import Citadel
+import GlassEditorCore
 import RealityKitContent
 import SwiftUI
 #if canImport(UIKit)
@@ -4592,6 +4594,29 @@ struct glas_shTests {
         #expect(!SFTPBrowserView.isSafeBasename("zero\u{200B}width.txt"))
         #expect(!SFTPBrowserView.isSafeBasename("re\u{301}sume\u{301}.txt"))
         #expect(SFTPBrowserView.isSafeBasename("r\u{00E9}sum\u{00E9}.txt"))
+    }
+
+    @Test func sftpRemoteEditorUsesOneEightMiBCeiling() {
+        #expect(
+            SFTPBrowserView.remoteEditorConfiguration.largeFileByteCeiling
+                == 8 * 1024 * 1024
+        )
+    }
+
+    @Test func sftpV3RemoteStatNeverInventsNanoseconds() {
+        let attributes = SFTPFileAttributes(
+            size: 4_096,
+            accessModificationTime: .init(
+                accessTime: Date(timeIntervalSince1970: 1_700_000_000),
+                modificationTime: Date(timeIntervalSince1970: 1_700_000_123.875)
+            )
+        )
+
+        let stat = SFTPBrowserView.remoteStat(from: attributes)
+
+        #expect(stat.size == 4_096)
+        #expect(stat.modificationSeconds == 1_700_000_123)
+        #expect(stat.modificationNanoseconds == nil)
     }
 
     @Test func sftpContainmentRejectsParentTraversal() {

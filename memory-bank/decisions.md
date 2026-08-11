@@ -452,3 +452,41 @@
   - Existing app-specific favorite, color, recency, terminal, workspace, database,
     and appearance data remain outside the shared record.
 - References: `memory-bank/releases/codex-completions/08-glassdb-metadata-sync.md#Phase-081-discovery-outcome--version-one-contract`, `memory-bank/systemPatterns.md#Glass-Family-Connection-and-Credential-Contract`, `glas.sh/Models.swift:108`, `Packages/RealityKitContent/Package.swift:6`, `Packages/Citadel/Package.swift:6`, `https://github.com/msitarzewski/GlassConnectionKit/commit/0ced944e3a9799201f6563f057f7f760e9e7b988`
+
+## 2026-08-11: Keep remote editor decisions separate from SFTP transport
+
+- Status: Approved.
+- Context: GlassEditorKit provides reusable editing and remote-conflict semantics,
+  while glas.sh already has a mature SFTP layer with bounded streaming, SHA-256
+  verification, remote-change detection, resumable identity, atomic commit, and
+  application-specific error taxonomy.
+- Decision:
+  - GlassEditorKit owns document/editor state and conflict classification only.
+    It receives snapshots and observations, never an SFTP client or credentials.
+  - glas.sh owns every remote byte and uses one 8 MiB ceiling for both streaming
+    admission and editor configuration.
+  - Dirty or indeterminate concurrent changes require a user-selected resolution;
+    last-write-wins is prohibited.
+  - Preserve exclusive no-clobber behavior for ordinary uploads. Authorized
+    editor replacement uploads verify a temporary file, revalidate the target,
+    and commit with negotiated `posix-rename@openssh.com` because the existing
+    hard-link commit cannot replace a target.
+  - Represent unavailable SFTP v3 timestamp nanoseconds as unknown (`nil`).
+- Alternatives:
+  - Let GlassEditorKit write remote data — rejected because it duplicates and
+    weakens glas.sh's verified transfer authority.
+  - Reuse hard-link commit for replacement — rejected because hard links cannot
+    atomically replace an existing path.
+  - Silently overwrite after a stat change — rejected because it violates user-
+    owned conflict resolution and can destroy concurrent work.
+- Consequences:
+  - The shared editor can be reused by glas.sh and later glassdb surfaces without
+    becoming a transport package.
+  - Citadel exposes the negotiated atomic-rename primitive, while glas.sh retains
+    verification and commit policy.
+  - Release packaging must replace the local GlassEditorKit path with a pinned
+    GitHub dependency.
+- References: `memory-bank/tasks/2026-08/110826_glass-editor-sftp-m4.md`,
+  `memory-bank/systemPatterns.md#Remote-Editor-Decision-and-Transport-Boundary`,
+  `glas.sh/SFTPBrowserView.swift:795`, `glas.sh/SFTPBrowserView.swift:1762`,
+  `glas.sh/SFTPRemoteEditorView.swift:68`

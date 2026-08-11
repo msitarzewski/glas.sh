@@ -12,6 +12,7 @@
 		BB0000010000000000000024 /* Mac Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000025 /* Mac Assets.xcassets */; platformFilter = macos; };
 		D1A2B3C4E5F6789000AABB01 /* GlasSecretStore in Frameworks */ = {isa = PBXBuildFile; productRef = D1A2B3C4E5F6789000AABB02 /* GlasSecretStore */; };
 		E2A2B3C4E5F6789000AABB01 /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = E2A2B3C4E5F6789000AABB02 /* Citadel */; };
+		C4ED17000000000000000001 /* GlassEditorKit in Frameworks */ = {isa = PBXBuildFile; productRef = C4ED17000000000000000002 /* GlassEditorKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -133,6 +134,7 @@
 				4C2451562E71897700F37CC4 /* RealityKitContent in Frameworks */,
 				E2A2B3C4E5F6789000AABB01 /* Citadel in Frameworks */,
 				D1A2B3C4E5F6789000AABB01 /* GlasSecretStore in Frameworks */,
+				C4ED17000000000000000001 /* GlassEditorKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -219,6 +221,7 @@
 				4C2451552E71897700F37CC4 /* RealityKitContent */,
 				E2A2B3C4E5F6789000AABB02 /* Citadel */,
 				D1A2B3C4E5F6789000AABB02 /* GlasSecretStore */,
+				C4ED17000000000000000002 /* GlassEditorKit */,
 			);
 			productName = glas.sh;
 			productReference = 4C2451502E71897700F37CC4 /* glas.sh.app */;
@@ -329,6 +332,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				E2A2B3C4E5F6789000AABB03 /* XCLocalSwiftPackageReference "Packages/Citadel" */,
+				C4ED17000000000000000003 /* XCLocalSwiftPackageReference "../GlassEditorKit" */,
 				D1A2B3C4E5F6789000AABB03 /* XCRemoteSwiftPackageReference "GlasSecretStore" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -875,6 +879,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/Citadel;
 		};
+		C4ED17000000000000000003 /* XCLocalSwiftPackageReference "../GlassEditorKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../GlassEditorKit;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -902,6 +910,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = E2A2B3C4E5F6789000AABB03 /* XCLocalSwiftPackageReference "Packages/Citadel" */;
 			productName = Citadel;
+		};
+		C4ED17000000000000000002 /* GlassEditorKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C4ED17000000000000000003 /* XCLocalSwiftPackageReference "../GlassEditorKit" */;
+			productName = GlassEditorKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
