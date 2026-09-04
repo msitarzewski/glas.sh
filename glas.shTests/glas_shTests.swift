@@ -2591,6 +2591,122 @@ struct glas_shTests {
         #expect(credentialReads == 0)
     }
 
+    @Test @MainActor func serverFormAcceptsAValidPasswordConnection() {
+        let input = ServerFormView.ValidationInput(
+            name: "Production",
+            host: "example.com",
+            port: "22",
+            username: "operator",
+            authMethod: .password,
+            password: " secret with spaces ",
+            sshKeyID: nil,
+            availableSSHKeyIDs: [],
+            usesAppDefaultTerminalSize: true,
+            initialTerminalColumns: 0,
+            initialTerminalRows: 0
+        )
+
+        #expect(ServerFormView.validationIssues(for: input).isEmpty)
+    }
+
+    @Test @MainActor func serverFormReportsFieldSpecificConnectionAndTerminalIssues() {
+        let input = ServerFormView.ValidationInput(
+            name: " \n ",
+            host: "\t",
+            port: "65536",
+            username: "  ",
+            authMethod: .password,
+            password: "",
+            sshKeyID: nil,
+            availableSSHKeyIDs: [],
+            usesAppDefaultTerminalSize: false,
+            initialTerminalColumns: 19,
+            initialTerminalRows: 7
+        )
+
+        let issues = ServerFormView.validationIssues(for: input)
+
+        #expect(Set(issues.keys) == Set([
+            .name,
+            .host,
+            .port,
+            .username,
+            .password,
+            .terminalSize
+        ]))
+        #expect(issues[.host] == "Enter the SSH server hostname or IP address.")
+        #expect(issues[.port] == "Enter a port from 1 through 65535.")
+    }
+
+    @Test @MainActor func serverFormRequiresAnAvailableSSHKey() {
+        let availableKeyID = UUID()
+        let missingKeyID = UUID()
+        let base = ServerFormView.ValidationInput(
+            name: "Production",
+            host: "example.com",
+            port: "22",
+            username: "operator",
+            authMethod: .sshKey,
+            password: "",
+            sshKeyID: missingKeyID,
+            availableSSHKeyIDs: [availableKeyID],
+            usesAppDefaultTerminalSize: true,
+            initialTerminalColumns: 0,
+            initialTerminalRows: 0
+        )
+
+        #expect(ServerFormView.validationIssues(for: base)[.sshKey] != nil)
+
+        let available = ServerFormView.ValidationInput(
+            name: base.name,
+            host: base.host,
+            port: base.port,
+            username: base.username,
+            authMethod: base.authMethod,
+            password: base.password,
+            sshKeyID: availableKeyID,
+            availableSSHKeyIDs: base.availableSSHKeyIDs,
+            usesAppDefaultTerminalSize: base.usesAppDefaultTerminalSize,
+            initialTerminalColumns: base.initialTerminalColumns,
+            initialTerminalRows: base.initialTerminalRows
+        )
+        #expect(ServerFormView.validationIssues(for: available).isEmpty)
+    }
+
+    @Test @MainActor func serverFormRejectsLegacyAgentAuthentication() {
+        let input = ServerFormView.ValidationInput(
+            name: "Production",
+            host: "example.com",
+            port: "22",
+            username: "operator",
+            authMethod: .agent,
+            password: "",
+            sshKeyID: nil,
+            availableSSHKeyIDs: [],
+            usesAppDefaultTerminalSize: true,
+            initialTerminalColumns: 0,
+            initialTerminalRows: 0
+        )
+
+        #expect(ServerFormView.validationIssues(for: input) == [
+            .authentication: "Choose Password or SSH Key."
+        ])
+    }
+
+    @Test @MainActor func serverFormNormalizesEndpointValuesButNotCredentials() {
+        #expect(ServerFormView.normalizedEndpointValue("  cafe\u{301}.example.com \n") == "caf\u{E9}.example.com")
+    }
+
+    @Test @MainActor func serverFormReturnKeyFollowsTheVisibleCredentialPath() {
+        #expect(ServerFormView.nextField(after: .name, in: .password) == .host)
+        #expect(ServerFormView.nextField(after: .host, in: .password) == .port)
+        #expect(ServerFormView.nextField(after: .port, in: .password) == .username)
+        #expect(ServerFormView.nextField(after: .username, in: .password) == .password)
+        #expect(ServerFormView.nextField(after: .username, in: .sshKey) == .sshKey)
+        #expect(ServerFormView.nextField(after: .password, in: .password) == nil)
+        #expect(ServerFormView.nextField(after: .sshKey, in: .sshKey) == nil)
+    }
+
     @Test func invalidPerConnectionTerminalGeometryFailsClosed() throws {
         let fixture = migrationDefaults("invalid-terminal-geometry")
         defer { fixture.defaults.removePersistentDomain(forName: fixture.name) }

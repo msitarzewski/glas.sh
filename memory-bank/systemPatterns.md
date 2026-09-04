@@ -195,6 +195,27 @@
 - Every form view that presents text fields MUST use `@FocusState` with `.focused()` modifier and set initial focus in `.onAppear`. Without this, visionOS default keyboard presentation adds 3-5 seconds of latency before typing is accepted.
 - For multi-field forms, use a `Field` enum with `@FocusState private var focusedField: Field?`. For single-field forms, use `@FocusState private var isNameFocused: Bool`.
 
+## Connection Form UX Pattern
+- Within an app, Add, Import, and Edit connection routes are thin entry points over
+  one mode-driven form implementation. Mode supplies initial values, titles, and
+  save intent; it must not create a second validation or credential path.
+- Express validation as a pure field-keyed result. Mark requirements before input,
+  reveal inline errors after a field is touched, disable invalid explicit actions,
+  and keep persistence/Keychain failures in a separate operational alert.
+- Return/Next advances through only the fields visible for the selected
+  authentication method and dismisses field focus at the end. It never saves,
+  tests, or connects implicitly.
+- Normalize non-secret endpoint text by trimming boundary whitespace and applying
+  canonical Unicode composition immediately before persistence. Never trim,
+  normalize, log, or copy password text into metadata.
+- Edit by mutating a copy of the original record so fields outside the form remain
+  intact. Add/import preserve source provenance. Both modes finish through the
+  existing transactional manager and secret-store boundary.
+- glas.sh and glassdb share this behavioral contract while retaining app-local,
+  native SwiftUI composition. Do not create a cross-app SwiftUI package solely to
+  share presentation code; neutral Foundation-only values and validation remain
+  the `GlassConnectionKit` boundary.
+
 ## Terminal Focus Pattern
 - Track aggregate focus ownership for search, sheets, editors, alerts, file pickers, and text composition. The terminal may request focus only when no competing owner is active and its window is key.
 - Use bounded retry for transient window activation; cancel retry and explicitly resign when another control owns focus or the terminal disappears.

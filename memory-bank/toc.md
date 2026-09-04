@@ -1,6 +1,6 @@
 # Memory Bank TOC
 
-Last reconciled against the unified target, release ledgers, and recorded QA evidence: **2026-09-03**.
+Last reconciled against the unified target, release ledgers, and recorded QA evidence: **2026-09-04**.
 
 ## Core
 - [Project Brief](./projectbrief.md)

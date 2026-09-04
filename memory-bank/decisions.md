@@ -490,3 +490,37 @@
   `memory-bank/systemPatterns.md#Remote-Editor-Decision-and-Transport-Boundary`,
   `glas.sh/SFTPBrowserView.swift:795`, `glas.sh/SFTPBrowserView.swift:1762`,
   `glas.sh/SFTPRemoteEditorView.swift:68`
+
+## 2026-09-04: Share the connection-form UX contract while keeping UI app-local
+
+- Status: Approved.
+- Context: glassdb established a clearer connection-form interaction contract,
+  while glas.sh still maintained separate Add and Edit form state, validation,
+  controls, and save preparation. The duplication made behavior drift likely, but
+  a shared SwiftUI package would couple two native application surfaces and cross
+  the Foundation-only `GlassConnectionKit` boundary.
+- Decision:
+  - Use one mode-driven form implementation inside glas.sh for Add, Import, and
+    Edit, retaining the existing route types as compatibility wrappers.
+  - Share the glassdb behavioral pattern: visible requirements, field-keyed
+    touched validation, explicit-only actions, deterministic focus order, and
+    separate operational errors.
+  - Normalize only non-secret endpoint text at the save boundary and preserve
+    password bytes exactly.
+  - Preserve import provenance and edit the original record by copy so invisible
+    app-specific fields survive. Continue using the existing transactional
+    `ServerManager` and GlasSecretStore paths.
+  - Keep each app's SwiftUI implementation local and native. Share neutral value
+    and validation semantics through Foundation-only packages only when they are
+    genuinely cross-product domain rules.
+- Consequences:
+  - glas.sh has one form state machine and one set of form-owned controls instead
+    of parallel Add/Edit implementations.
+  - UX parity can evolve as a reviewed contract without creating a presentation
+    dependency between glas.sh and glassdb.
+  - Test Connection, Save & Connect, metadata synchronization, migration, and
+    credential-policy changes remain separate work.
+- References: `glas.sh/ServerFormViews.swift`,
+  `glas.shTests/glas_shTests.swift`,
+  `memory-bank/systemPatterns.md#Connection-Form-UX-Pattern`,
+  `memory-bank/tasks/2026-08/100826_connection-experience-and-server-form-layout.md`

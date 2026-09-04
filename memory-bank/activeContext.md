@@ -1,6 +1,14 @@
 # Active Context
 
-## Current Focus (reconciled 2026-09-03)
+## Current Focus (reconciled 2026-09-04)
+- The shared server-form UX is implementation-, automated-QA-, and manual-review
+  approved on `agent/connection-form-ux`. Add, Import, and Edit now route through
+  one mode-driven form with visible requirements, field-keyed validation,
+  explicit-save focus behavior, endpoint normalization, and unchanged
+  transactional credential persistence. The Mac suite passes 305/305, iOS and
+  visionOS simulator builds pass, and the user accepted the fresh normally signed
+  Mac form review. PR [#35](https://github.com/msitarzewski/glas.sh/pull/35) is
+  the publication record.
 - Finder-style SFTP operations and terminal opening geometry are implementation-
   and automated-QA-approved on `agent/sftp-native-selection-drag-drop`. The SFTP
   browser now provides native selection, sorting, Get Info, rename, Finder
@@ -46,6 +54,15 @@
 - This completion is not an App Store distribution decision. Physical Vision Pro SSH to the development Mac over Tailscale now works, but the full device matrix, physical initial terminal sizing, native session-sidebar dismissal, distribution certificate trust/notarization, final hosted Mac XCTest after the render-only delta, and external dependency-advisory querying retain explicit evidence boundaries in the release dashboard.
 
 ## What's Next
+- **Preserve the approved shared server-form UX.**
+  - PR [#35](https://github.com/msitarzewski/glas.sh/pull/35) is the canonical
+    publication record.
+  - Keep Add, Import, and Edit as compatibility entry points over one form state
+    machine; do not reintroduce separate validation or persistence paths.
+  - Keep passwords exact and inside the existing transactional secret boundary;
+    normalize only non-secret endpoint text at save time.
+  - Treat the matching glassdb behavior as a cross-product UX contract, not a
+    reason to introduce a SwiftUI dependency between the applications.
 - **Preserve the approved Finder-style SFTP publication.**
   - Keep Finder file promises inside `Platforms/macOS` and keep all remote bytes,
     verification, copy/move commit policy, and cancellation in the existing SFTP
