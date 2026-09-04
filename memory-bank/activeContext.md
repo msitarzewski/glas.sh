@@ -7,7 +7,8 @@
   explicit-save focus behavior, endpoint normalization, and unchanged
   transactional credential persistence. The Mac suite passes 305/305, iOS and
   visionOS simulator builds pass, and the user accepted the fresh normally signed
-  Mac form review.
+  Mac form review. PR [#35](https://github.com/msitarzewski/glas.sh/pull/35) is
+  the publication record.
 - Finder-style SFTP operations and terminal opening geometry are implementation-
   and automated-QA-approved on `agent/sftp-native-selection-drag-drop`. The SFTP
   browser now provides native selection, sorting, Get Info, rename, Finder
@@ -54,6 +55,8 @@
 
 ## What's Next
 - **Preserve the approved shared server-form UX.**
+  - PR [#35](https://github.com/msitarzewski/glas.sh/pull/35) is the canonical
+    publication record.
   - Keep Add, Import, and Edit as compatibility entry points over one form state
     machine; do not reintroduce separate validation or persistence paths.
   - Keep passwords exact and inside the existing transactional secret boundary;

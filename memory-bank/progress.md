@@ -17,6 +17,7 @@
     simulator builds pass; diff and tracked-diff secret checks are clean.
   - User visual review passed on a fresh Apple Development-signed Mac build with
     the shared Keychain and app-group entitlements intact.
+  - Published through PR [#35](https://github.com/msitarzewski/glas.sh/pull/35).
 - Finder-style SFTP operations and terminal opening geometry approved (2026-09-03):
   - Added native table selection/sorting, context operations, inline rename, Get
     Info, Finder drag-out promises, local file-drop upload, and verified remote

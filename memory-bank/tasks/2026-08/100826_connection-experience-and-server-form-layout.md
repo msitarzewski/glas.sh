@@ -261,4 +261,6 @@ contract into glas.sh without changing the cross-app package boundary.
 ### Publication
 
 - Branch: `agent/connection-form-ux`.
-- Pull request: pending publication.
+- Pull request: [#35](https://github.com/msitarzewski/glas.sh/pull/35).
+- Reviewed head before the publication-record follow-up:
+  `7324750fbd867cb44bf0a472518f75c2b85fd262`.
