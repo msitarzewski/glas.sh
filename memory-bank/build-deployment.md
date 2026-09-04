@@ -12,6 +12,11 @@
 - Builds with `CODE_SIGNING_ALLOWED=NO` are valid for noninteractive compilation
   and test isolation only. Keychain, app-group, entitlement, and credential-flow
   acceptance must use a normally signed build with bundle identifier `sh.glas.app`.
+- Code-signing identity and trust checks are Keychain-backed and must run outside
+  the workspace sandbox. A restricted lookup failure is not evidence that an
+  identity is missing or invalid. Never replace a normally signed credential-flow
+  review build with an ad-hoc signature that removes its Keychain or app-group
+  entitlements; create a fresh derived-data build with normal signing instead.
 
 ## Supported Build Matrix
 - Deployment floor: macOS 26.0, iOS/iPadOS 26.0, and visionOS 26.0.

@@ -211,3 +211,54 @@ native Mac connection-experience work completed on
 - Repository governance allowed the owner merge: one approving review is configured,
   but administrator enforcement is disabled. No PR reviews or hosted status checks
   were recorded. Commit signatures are not required; the squash commit is unsigned.
+
+## 2026-09-04 Shared Form UX Checkpoint
+
+This approved post-release checkpoint brings the clearer glassdb form interaction
+contract into glas.sh without changing the cross-app package boundary.
+
+### Outcome
+
+- `AddServerView` and `EditServerView` remain source-compatible entry points but
+  now delegate to one mode-driven `ServerFormView` in the existing source file.
+- Add, Import, and Edit share state, controls, field-keyed validation, touched-field
+  error presentation, required labels, focus order, and save preparation.
+- Return advances or dismisses field focus and never saves. Save remains an
+  explicit action and stays disabled while validation issues exist.
+- Display name, host, and username are trimmed and canonically composed at save;
+  passwords are preserved exactly.
+- Add/import retains provenance. Edit mutates a copy of the original record so
+  form-invisible metadata survives. Both paths retain the transactional
+  `ServerManager`/GlasSecretStore boundary and existing password-upgrade behavior.
+- No new production file, SwiftUI package, sync behavior, Test Connection action,
+  or Save & Connect action was introduced.
+
+### QA and Review
+
+- Native Mac unit suite: 305/305 passed.
+- iOS simulator build: passed.
+- visionOS simulator build: passed.
+- Six focused tests cover valid password input, field-specific failures, terminal
+  bounds, available SSH-key identity, legacy Agent rejection, endpoint Unicode
+  normalization, and authentication-aware Return order.
+- `git diff --check` and tracked-diff Gitleaks scan: passed.
+- A fresh Apple Development-signed Mac Debug build verified on disk with the shared
+  Keychain and app-group entitlements present. The user visually reviewed the Edit
+  Connection form and reported that it works great.
+- An earlier temporary ad-hoc review copy lacked those entitlements and correctly
+  failed Keychain access. It was closed and replaced; it is not acceptance evidence.
+
+### Security Review
+
+- Password text remains only in transient form state and crosses the existing
+  transactional password parameter; it is not normalized, logged, or added to
+  server metadata.
+- Validation checks selected SSH-key identity against the currently available key
+  catalog and rejects the unshipped legacy Agent mode.
+- Persistence and credential errors remain user-visible without changing secret
+  storage, access groups, host trust, transport, or migration policy.
+
+### Publication
+
+- Branch: `agent/connection-form-ux`.
+- Pull request: pending publication.

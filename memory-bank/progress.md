@@ -1,5 +1,22 @@
 # Progress
 
+- Shared Add/Edit server-form UX approved (2026-09-04):
+  - Replaced the duplicated Add and Edit implementations with one mode-driven
+    `ServerFormView`; the existing Add, Import, and Edit entry points remain thin
+    compatibility wrappers with unchanged titles and actions.
+  - Adopted the glassdb form contract: requirements are visible up front,
+    field-keyed errors appear after interaction, invalid saves remain disabled,
+    Return advances focus without saving, and operational failures stay separate
+    from validation.
+  - Normalize display name, host, and username only at the persistence boundary;
+    passwords remain exact. Import provenance, edit-only metadata, password
+    migration, and transactional `ServerManager`/GlasSecretStore paths remain
+    authoritative.
+  - Added six focused validation, SSH-key availability, normalization, legacy-auth,
+    and focus-order tests. The native Mac suite passes 305/305; iOS and visionOS
+    simulator builds pass; diff and tracked-diff secret checks are clean.
+  - User visual review passed on a fresh Apple Development-signed Mac build with
+    the shared Keychain and app-group entitlements intact.
 - Finder-style SFTP operations and terminal opening geometry approved (2026-09-03):
   - Added native table selection/sorting, context operations, inline rename, Get
     Info, Finder drag-out promises, local file-drop upload, and verified remote
