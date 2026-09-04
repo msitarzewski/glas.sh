@@ -2,6 +2,19 @@
 
 ## Tasks Completed
 
+### 2026-08-16: Finder-style SFTP operations and terminal opening geometry
+
+- Added native SFTP selection, sorting, rename, Get Info, context actions,
+  Finder drag-out promises, file-drop upload, and verified remote copy/move.
+- Added bounded windowed downloads and a per-window transfer activity shelf for
+  every upload/download/copy/move path.
+- Added app-default and per-connection terminal opening geometry, native Mac
+  window fitting, Connection Library column persistence/progress, and actionable
+  Local Network guidance.
+- Fresh publication QA passes 299/299 Mac tests, the Citadel suite, and iOS plus
+  visionOS simulator builds.
+- See: [160826_sftp-finder-native-operations.md](./160826_sftp-finder-native-operations.md)
+
 ### 2026-08-11: GlassEditorKit remote SFTP editing (M4)
 
 - Integrated GlassEditorKit as a local-path co-development dependency while

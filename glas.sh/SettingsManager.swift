@@ -151,6 +151,8 @@ class SettingsManager {
     var confirmBeforeClosing: Bool = true
     var saveScrollback: Bool = true
     var maxScrollbackLines: Int = 10000
+    var initialTerminalColumns: Int = TerminalGeometry.default.columns
+    var initialTerminalRows: Int = TerminalGeometry.default.rows
     var bellEnabled: Bool = false
     var visualBell: Bool = true
     var hostKeyVerificationMode: String = HostKeyVerificationMode.ask.rawValue
@@ -241,6 +243,15 @@ class SettingsManager {
                 settingsDefaults.integer(forKey: UserDefaultsKeys.maxScrollbackLines)
             )
         }
+        if settingsDefaults.object(forKey: UserDefaultsKeys.initialTerminalColumns) != nil,
+           settingsDefaults.object(forKey: UserDefaultsKeys.initialTerminalRows) != nil {
+            let geometry = TerminalGeometry(
+                rows: settingsDefaults.integer(forKey: UserDefaultsKeys.initialTerminalRows),
+                columns: settingsDefaults.integer(forKey: UserDefaultsKeys.initialTerminalColumns)
+            )
+            initialTerminalColumns = geometry.columns
+            initialTerminalRows = geometry.rows
+        }
         if settingsDefaults.object(forKey: UserDefaultsKeys.bellEnabled) != nil {
             bellEnabled = settingsDefaults.bool(forKey: UserDefaultsKeys.bellEnabled)
         }
@@ -321,6 +332,12 @@ class SettingsManager {
 
     func saveSettings() {
         maxScrollbackLines = Self.clampedScrollbackLines(maxScrollbackLines)
+        let initialGeometry = TerminalGeometry(
+            rows: initialTerminalRows,
+            columns: initialTerminalColumns
+        )
+        initialTerminalColumns = initialGeometry.columns
+        initialTerminalRows = initialGeometry.rows
         windowOpacity = Self.unitValue(windowOpacity)
         blurBackground = Self.unitValue(blurBackground)
         sessionOverrides = sessionOverrides.reduce(into: [:]) { result, element in
@@ -334,6 +351,8 @@ class SettingsManager {
         settingsDefaults.set(confirmBeforeClosing, forKey: UserDefaultsKeys.confirmBeforeClosing)
         settingsDefaults.set(saveScrollback, forKey: UserDefaultsKeys.saveScrollback)
         settingsDefaults.set(maxScrollbackLines, forKey: UserDefaultsKeys.maxScrollbackLines)
+        settingsDefaults.set(initialTerminalColumns, forKey: UserDefaultsKeys.initialTerminalColumns)
+        settingsDefaults.set(initialTerminalRows, forKey: UserDefaultsKeys.initialTerminalRows)
         settingsDefaults.set(bellEnabled, forKey: UserDefaultsKeys.bellEnabled)
         settingsDefaults.set(visualBell, forKey: UserDefaultsKeys.visualBell)
         settingsDefaults.set(hostKeyVerificationMode, forKey: UserDefaultsKeys.hostKeyVerificationMode)
@@ -384,6 +403,18 @@ class SettingsManager {
 
     static func clampedScrollbackLines(_ value: Int) -> Int {
         min(maximumScrollbackLines, max(0, value))
+    }
+
+    func initialTerminalGeometry(for server: ServerConfiguration) -> TerminalGeometry {
+        if let columns = server.initialTerminalColumns,
+           let rows = server.initialTerminalRows,
+           TerminalGeometry.contains(rows: rows, columns: columns) {
+            return TerminalGeometry(rows: rows, columns: columns)
+        }
+        return TerminalGeometry(
+            rows: initialTerminalRows,
+            columns: initialTerminalColumns
+        )
     }
 
     static func resolvedWindowOpacity(canonical: Any?, legacy: Any?) -> Double {
@@ -1345,6 +1376,12 @@ class SettingsManager {
         confirmBeforeClosing = preferences.confirmBeforeClosing
         saveScrollback = preferences.saveScrollback
         maxScrollbackLines = Self.clampedScrollbackLines(preferences.maximumScrollbackLines)
+        if let columns = preferences.initialTerminalColumns,
+           let rows = preferences.initialTerminalRows {
+            let geometry = TerminalGeometry(rows: rows, columns: columns)
+            initialTerminalColumns = geometry.columns
+            initialTerminalRows = geometry.rows
+        }
         bellEnabled = preferences.bellEnabled
         visualBell = preferences.visualBell
         cursorStyle = preferences.cursorStyle
@@ -1369,6 +1406,8 @@ class SettingsManager {
                 confirmBeforeClosing: confirmBeforeClosing,
                 saveScrollback: saveScrollback,
                 maximumScrollbackLines: maxScrollbackLines,
+                initialTerminalColumns: initialTerminalColumns,
+                initialTerminalRows: initialTerminalRows,
                 bellEnabled: bellEnabled,
                 visualBell: visualBell,
                 cursorStyle: cursorStyle,

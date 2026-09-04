@@ -211,6 +211,10 @@ struct ICloudPortableTerminalPreferences: Codable, Equatable, Sendable {
     var confirmBeforeClosing: Bool
     var saveScrollback: Bool
     var maximumScrollbackLines: Int
+    /// Additive optional fields keep version-one payloads bidirectionally
+    /// decodable while newer devices synchronize their initial PTY fallback.
+    var initialTerminalColumns: Int? = nil
+    var initialTerminalRows: Int? = nil
     var bellEnabled: Bool
     var visualBell: Bool
     var cursorStyle: String
@@ -224,6 +228,17 @@ struct ICloudPortableTerminalPreferences: Codable, Equatable, Sendable {
     func validate() throws {
         guard (0...100_000).contains(maximumScrollbackLines) else {
             throw ICloudSettingsSyncError.invalidPayload("Maximum scrollback must be within 0...100000 lines.")
+        }
+        switch (initialTerminalColumns, initialTerminalRows) {
+        case (nil, nil):
+            break
+        case (.some(let columns), .some(let rows))
+            where TerminalGeometry.contains(rows: rows, columns: columns):
+            break
+        default:
+            throw ICloudSettingsSyncError.invalidPayload(
+                "Initial terminal dimensions must include 20...500 columns and 8...300 rows."
+            )
         }
         guard !cursorStyle.isEmpty, cursorStyle.count <= 64 else {
             throw ICloudSettingsSyncError.invalidPayload("Cursor styles must contain 1...64 characters.")

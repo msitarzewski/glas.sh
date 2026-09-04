@@ -645,14 +645,20 @@ struct MainBootstrapView: View {
             do {
                 let launch = try await sessionManager.createAuthorizedSession(
                     for: currentServer,
-                    settingsManager: settingsManager
+                    settingsManager: settingsManager,
+                    initialTerminalPresentation: { pendingSession in
+                        presentTerminalWorkgroup(for: pendingSession)
+                    }
                 )
                 if launch.session.state == .connected {
-                    presentTerminalWorkgroup(for: launch.session)
+                    if !launch.session.didRequestInitialTerminalPresentation {
+                        presentTerminalWorkgroup(for: launch.session)
+                    }
                 } else if let challenge = launch.session.pendingHostKeyChallenge {
                     pendingDeepLinkTrustSession = launch.session
                     pendingDeepLinkTrustChallenge = challenge
                 } else if case .error(let message) = launch.session.state {
+                    guard !launch.session.didRequestInitialTerminalPresentation else { return }
                     deepLinkFailureMessage = message
                     sessionManager.closeSession(launch.session)
                 }

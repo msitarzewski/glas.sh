@@ -15,6 +15,7 @@ import Citadel
 import GlassEditorCore
 import RealityKitContent
 import SwiftUI
+import UniformTypeIdentifiers
 #if canImport(UIKit)
 import Combine
 import UIKit
@@ -854,6 +855,8 @@ struct glas_shTests {
 
         source.windowOpacity = 0.27
         source.blurBackground = 0.63
+        source.initialTerminalColumns = 172
+        source.initialTerminalRows = 55
         source.glassTint = "#AF52DE"
         source.glassFrost = "regular"
         source.interactiveGlass = false
@@ -887,6 +890,8 @@ struct glas_shTests {
         #expect(destination.currentTheme.swiftTermTheme == expectedTheme.swiftTermTheme)
         #expect(destination.windowOpacity == 0.27)
         #expect(destination.blurBackground == 0.63)
+        #expect(destination.initialTerminalColumns == 172)
+        #expect(destination.initialTerminalRows == 55)
         #expect(destination.glassTint == "#AF52DE")
         #expect(destination.glassFrost == "regular")
         #expect(destination.interactiveGlass == false)
@@ -2584,6 +2589,32 @@ struct glas_shTests {
             try manager.password(for: first)
         }
         #expect(credentialReads == 0)
+    }
+
+    @Test func invalidPerConnectionTerminalGeometryFailsClosed() throws {
+        let fixture = migrationDefaults("invalid-terminal-geometry")
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.name) }
+        var server = migrationServer()
+        server.initialTerminalColumns = 132
+        server.initialTerminalRows = nil
+
+        let manager = ServerManager(
+            defaults: fixture.defaults,
+            passwordStore: ServerPasswordStore(
+                retrieve: { _ in throw SecretStoreError.notFound },
+                save: { _, _ in },
+                delete: { _ in }
+            )
+        )
+
+        #expect(throws: ServerManagerError.invalidServerCatalog) {
+            try manager.addServerOrThrow(server)
+        }
+        #expect(manager.servers.isEmpty)
+        let persisted = try #require(
+            fixture.defaults.data(forKey: UserDefaultsKeys.servers)
+        )
+        #expect(try JSONDecoder().decode([ServerConfiguration].self, from: persisted).isEmpty)
     }
 
     @Test func invalidSSHKeyCatalogBlocksAddRenameDeleteAndSecretAccess() throws {
@@ -4477,6 +4508,26 @@ struct glas_shTests {
 
         #expect(decoded.allowLegacyAlgorithms == nil)
         #expect(decoded.legacyAlgorithmsEnabled == false)
+        #expect(decoded.initialTerminalColumns == nil)
+        #expect(decoded.initialTerminalRows == nil)
+    }
+
+    @Test func perConnectionTerminalGeometryRoundTripsWithServerRecord() throws {
+        let server = ServerConfiguration(
+            name: "Sized",
+            host: "sized.example.com",
+            username: "user",
+            initialTerminalColumns: 146,
+            initialTerminalRows: 44
+        )
+
+        let decoded = try JSONDecoder().decode(
+            ServerConfiguration.self,
+            from: JSONEncoder().encode(server)
+        )
+
+        #expect(decoded.initialTerminalColumns == 146)
+        #expect(decoded.initialTerminalRows == 44)
     }
 
     @Test @MainActor func channelClosedErrorDetection() {
@@ -4594,6 +4645,386 @@ struct glas_shTests {
         #expect(!SFTPBrowserView.isSafeBasename("zero\u{200B}width.txt"))
         #expect(!SFTPBrowserView.isSafeBasename("re\u{301}sume\u{301}.txt"))
         #expect(SFTPBrowserView.isSafeBasename("r\u{00E9}sum\u{00E9}.txt"))
+    }
+
+    @Test func sftpClipboardURLContainsOnlyRemoteReferenceMetadata() throws {
+        let url = try #require(SFTPBrowserView.remoteClipboardURL(
+            username: "michael",
+            host: "example.com",
+            port: 22,
+            path: "/var/www/My File#1.txt"
+        ))
+
+        #expect(url.absoluteString == "sftp://michael@example.com:22/var/www/My%20File%231.txt")
+        #expect(url.password == nil)
+    }
+
+    @Test func sftpRemotePathPolicyRejectsSelfAndDescendantDestinations() {
+        #expect(SFTPBrowserView.remotePath(directory: "/var/www", basename: "app") == "/var/www/app")
+        #expect(SFTPBrowserView.remotePath(directory: "/", basename: "app") == "/app")
+        #expect(SFTPBrowserView.remoteParentPath("/var/www/app") == "/var/www")
+        #expect(SFTPBrowserView.remoteParentPath("/app") == "/")
+        #expect(SFTPBrowserView.isRemotePath("/var/www/app", inside: "/var/www/app"))
+        #expect(SFTPBrowserView.isRemotePath("/var/www/app/cache", inside: "/var/www/app"))
+        #expect(!SFTPBrowserView.isRemotePath("/var/www/application", inside: "/var/www/app"))
+        #expect(!SFTPBrowserView.isRemotePath("/var/backups", inside: "/var/www/app"))
+    }
+
+    @Test func sftpRemoteShellArgumentsUsePOSIXSingleQuoteEscaping() {
+        let quoted = SFTPBrowserView.shellQuote("/var/www/it's safe; touch /tmp/nope")
+        #expect(quoted == "'/var/www/it'\"'\"'s safe; touch /tmp/nope'")
+
+        let command = SFTPBrowserView.remoteCopyCommand(
+            sourcePath: "/var/www/it's safe; touch /tmp/nope",
+            stagingPath: "/backup/.glas-sh-copy-test.partial"
+        )
+        #expect(command.contains("command cp -Rp '/var/www/it'\"'\"'s safe; touch /tmp/nope' '/backup/.glas-sh-copy-test.partial'"))
+        #expect(!command.contains("command cp -Rp /var/www/it's safe"))
+    }
+
+    @Test func sftpRemotePermissionFailuresDescribePhasePathAndOutcome() {
+        let readFailure = SFTPRemoteOperationPhase.readSource.failureMessage(
+            path: "/srv/private/report.txt",
+            serverDescription: "Permission denied"
+        )
+        #expect(readFailure.contains("read permission"))
+        #expect(readFailure.contains("/srv/private/report.txt"))
+        #expect(readFailure.contains("No destination was published"))
+
+        let publishFailure = SFTPRemoteOperationPhase.publishDestination.failureMessage(
+            path: "/srv/archive/report.txt",
+            serverDescription: "Operation not permitted"
+        )
+        #expect(publishFailure.contains("write and search permission"))
+        #expect(publishFailure.contains("No existing destination was overwritten"))
+        #expect(publishFailure.contains("hidden staging item may remain"))
+
+        let cleanupFailure = SFTPRemoteOperationPhase.removeRetiredSource.failureMessage(
+            path: "/srv/private/.glas-sh-move-test.retained",
+            serverDescription: "Permission denied"
+        )
+        #expect(cleanupFailure.contains("verified destination was created"))
+        #expect(cleanupFailure.contains("Both the destination and retained source remain"))
+
+        let retainedVerificationFailure = SFTPRemoteOperationPhase.verifyRetiredSource.failureMessage(
+            path: "/srv/private/.glas-sh-move-test.retained",
+            serverDescription: "The retained item changed before cleanup."
+        )
+        #expect(retainedVerificationFailure.contains("verified destination was created"))
+        #expect(retainedVerificationFailure.contains("was not deleted"))
+        #expect(retainedVerificationFailure.contains("manual recovery"))
+    }
+
+    @Test func sftpRetainedRemoteSourceMustMatchCopiedBaselineBeforeDeletion() {
+        let copied = [SFTPRemoteManifestEntry(
+            relativePath: "",
+            kind: .file,
+            size: 6,
+            permissions: 0o644,
+            accessTime: nil,
+            modificationTime: Date(timeIntervalSince1970: 1_700_000_000),
+            digest: Data("copied".utf8)
+        )]
+        let identicalRetainedSource = copied
+        let replacedRetainedSource = [SFTPRemoteManifestEntry(
+            relativePath: "",
+            kind: .file,
+            size: 11,
+            permissions: 0o644,
+            accessTime: nil,
+            modificationTime: Date(timeIntervalSince1970: 1_700_000_001),
+            digest: Data("replacement".utf8)
+        )]
+
+        #expect(SFTPBrowserView.retainedSourceCanBeRemoved(
+            copiedBaseline: copied,
+            retainedSource: identicalRetainedSource
+        ))
+        #expect(!SFTPBrowserView.retainedSourceCanBeRemoved(
+            copiedBaseline: copied,
+            retainedSource: replacedRetainedSource
+        ))
+    }
+
+    @Test @MainActor func sftpTransferActivityReportsHonestLifecycleAndSummary() throws {
+        let store = SFTPTransferActivityStore(maximumTerminalItemCount: 20)
+        let downloadID = store.enqueue(
+            kind: .download,
+            filename: "archive.iso",
+            totalBytes: 100
+        )
+        _ = store.enqueue(kind: .upload, filename: "notes.txt")
+
+        #expect(store.headline == "2 transfers waiting")
+        #expect(store.pendingCount == 2)
+
+        store.begin(downloadID)
+        store.apply(
+            .transferring(completedBytes: 25, totalBytes: 100),
+            to: downloadID
+        )
+        #expect(store.headline == "Downloading archive.iso")
+        #expect(try #require(store.activity(downloadID)).progress == 0.25)
+        #expect(try #require(store.activity(downloadID)).statusLabel == "25%")
+
+        store.apply(.verifying, to: downloadID)
+        #expect(try #require(store.activity(downloadID)).statusLabel == "Verifying")
+
+        store.complete(downloadID)
+        #expect(try #require(store.activity(downloadID)).state == .completed)
+        #expect(try #require(store.activity(downloadID)).completedBytes == 100)
+        #expect(store.headline == "1 transfer waiting")
+    }
+
+    @Test @MainActor func sftpTransferActivityBoundsHistoryWithoutDroppingWork() {
+        let store = SFTPTransferActivityStore(maximumTerminalItemCount: 2)
+        let activeID = store.enqueue(kind: .finderDownload, filename: "active.bin")
+        store.begin(activeID)
+        let pendingID = store.enqueue(kind: .upload, filename: "pending.bin")
+
+        var terminalIDs: [UUID] = []
+        for index in 1...3 {
+            let id = store.enqueue(kind: .download, filename: "done-\(index).bin")
+            terminalIDs.append(id)
+            store.begin(id)
+            store.complete(id)
+        }
+
+        #expect(store.activity(activeID)?.state == .transferring)
+        #expect(store.activity(pendingID)?.state == .pending)
+        #expect(store.activity(terminalIDs[0]) == nil)
+        #expect(store.displayedActivities.map(\.id) == [
+            activeID,
+            pendingID,
+            terminalIDs[2],
+            terminalIDs[1],
+        ])
+
+        store.clearTerminalActivities()
+        #expect(store.activities.map(\.id) == [activeID, pendingID])
+
+        store.cancelPending([pendingID], detail: "Batch cancelled.")
+        store.fail(activeID, detail: "Connection lost.")
+        #expect(store.activity(pendingID)?.state == .cancelled)
+        #expect(store.activity(activeID)?.state == .failed)
+        #expect(store.headline == "1 transfer failed")
+    }
+
+    #if os(macOS)
+    @Test func sftpTableSortsEveryDataColumnAndKeepsDirectoriesFirst() {
+        func tableEntry(
+            _ name: String,
+            isDirectory: Bool = false,
+            size: UInt64? = nil,
+            modified: TimeInterval? = nil,
+            permissions: UInt32? = nil
+        ) -> SFTPBrowserTableEntry {
+            let accessModificationTime = modified.map {
+                SFTPFileAttributes.AccessModificationTime(
+                    accessTime: Date(timeIntervalSince1970: $0),
+                    modificationTime: Date(timeIntervalSince1970: $0)
+                )
+            }
+            var attributes = SFTPFileAttributes(
+                size: size,
+                accessModificationTime: accessModificationTime
+            )
+            attributes.permissions = permissions
+            return SFTPBrowserTableEntry(
+                entry: .init(
+                    filename: name,
+                    longname: isDirectory ? "drwx------ \(name)" : "-rw------- \(name)",
+                    attributes: attributes
+                ),
+                isDirectory: isDirectory
+            )
+        }
+
+        let nameRows = [
+            tableEntry("file10"),
+            tableEntry("folder-z", isDirectory: true),
+            tableEntry("file2"),
+            tableEntry("folder-a", isDirectory: true),
+        ]
+        #expect(
+            nameRows.sorted(using: [
+                SFTPBrowserTableSortComparator(column: .name)
+            ]).map(\.id)
+                == ["folder-a", "folder-z", "file2", "file10"]
+        )
+        #expect(
+            nameRows.sorted(using: [
+                SFTPBrowserTableSortComparator(column: .name, order: .reverse)
+            ]).map(\.id)
+                == ["folder-z", "folder-a", "file10", "file2"]
+        )
+
+        let sizeRows = [
+            tableEntry("unknown"),
+            tableEntry("large", size: 900),
+            tableEntry("folder", isDirectory: true),
+            tableEntry("small-b", size: 10),
+            tableEntry("small-a", size: 10),
+        ]
+        #expect(
+            sizeRows.sorted(using: [
+                SFTPBrowserTableSortComparator(column: .size)
+            ]).map(\.id)
+                == ["folder", "small-a", "small-b", "large", "unknown"]
+        )
+        #expect(
+            sizeRows.sorted(using: [
+                SFTPBrowserTableSortComparator(column: .size, order: .reverse)
+            ]).map(\.id)
+                == ["folder", "large", "small-a", "small-b", "unknown"]
+        )
+
+        let metadataRows = [
+            tableEntry("unknown"),
+            tableEntry("newer-private", modified: 200, permissions: 0o100600),
+            tableEntry("older-public", modified: 100, permissions: 0o100644),
+        ]
+        #expect(
+            metadataRows.sorted(using: [
+                SFTPBrowserTableSortComparator(column: .modified)
+            ]).map(\.id)
+                == ["older-public", "newer-private", "unknown"]
+        )
+        #expect(
+            metadataRows.sorted(using: [
+                SFTPBrowserTableSortComparator(column: .permissions, order: .reverse)
+            ]).map(\.id)
+                == ["older-public", "newer-private", "unknown"]
+        )
+    }
+
+    @Test func sftpFilePromiseForwardsFinderDestinationWithoutBlocking() async throws {
+        let destination = URL(fileURLWithPath: "/tmp/glas-sh-promised-file.txt")
+        let (receivedDestinations, signalDestination) = AsyncStream<URL>.makeStream()
+        let (lifecycleEvents, signalLifecycleEvent) = AsyncStream<String>.makeStream()
+        let payload = SFTPFilePromisePayload(
+            id: "promise-test",
+            filename: "promised-file.txt",
+            fileType: .data,
+            prepare: {
+                signalLifecycleEvent.yield("pending")
+            }
+        ) { receivedDestination in
+            signalLifecycleEvent.yield("active")
+            signalLifecycleEvent.finish()
+            signalDestination.yield(receivedDestination)
+            signalDestination.finish()
+        }
+
+        try await payload.fulfill(at: destination)
+
+        var receivedIterator = receivedDestinations.makeAsyncIterator()
+        #expect(await receivedIterator.next() == destination)
+        var lifecycleIterator = lifecycleEvents.makeAsyncIterator()
+        #expect(await lifecycleIterator.next() == "pending")
+        #expect(await lifecycleIterator.next() == "active")
+    }
+
+    @Test func sftpFilePromiseRegistryCancelsActiveAndRejectsLateTransfers() async {
+        let registry = SFTPFilePromiseTransferRegistry()
+        let (started, signalStarted) = AsyncStream<Void>.makeStream()
+        let transfer = Task {
+            try await registry.perform {
+                signalStarted.yield()
+                try await Task.sleep(for: .seconds(30))
+            }
+        }
+        var startedIterator = started.makeAsyncIterator()
+        _ = await startedIterator.next()
+
+        await registry.cancelAllAndWait()
+
+        do {
+            try await transfer.value
+            Issue.record("Expected active file-promise transfer to be cancelled")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            Issue.record("Expected CancellationError, received \(error)")
+        }
+        await #expect(throws: CancellationError.self) {
+            try await registry.perform {}
+        }
+    }
+    #endif
+
+    @Test func sftpDownloadReadWindowIsContiguousAndBoundedToTwoMiB() {
+        let chunkSize = SFTPBrowserView.downloadReadChunkSize
+        let window = SFTPBrowserView.downloadReadWindow(
+            from: 4_096,
+            through: 4_096 + UInt64(chunkSize) * 12
+        )
+
+        #expect(window.count == SFTPBrowserView.downloadMaximumConcurrentReads)
+        #expect(window.first?.offset == 4_096)
+        #expect(
+            window.reduce(0) { $0 + Int($1.length) }
+                == 2 * 1024 * 1024
+        )
+        for index in window.indices.dropFirst() {
+            let previous = window[index - 1]
+            #expect(window[index].offset == previous.offset + UInt64(previous.length))
+        }
+
+        let tail = SFTPBrowserView.downloadReadWindow(
+            from: 0,
+            through: UInt64(chunkSize) * 2 + 17
+        )
+        #expect(tail.map(\.length) == [chunkSize, chunkSize, 17])
+    }
+
+    @Test func sftpDownloadReadBatchStopsAtShortReadAndAdaptsNextWindow() throws {
+        let requests = SFTPBrowserView.downloadReadWindow(
+            from: 0,
+            through: UInt64(SFTPBrowserView.downloadReadChunkSize) * 3
+        )
+        let shortReadSize = 32 * 1024
+        let decision = try SFTPBrowserView.downloadReadBatchDecision(
+            requests: requests,
+            readableByteCounts: [
+                Int(requests[0].length),
+                shortReadSize,
+                Int(requests[2].length),
+            ]
+        )
+
+        #expect(decision.acceptedResponseCount == 2)
+        #expect(decision.nextChunkSize == UInt32(shortReadSize))
+        #expect(!decision.reachedEOF)
+
+        let acceptedBytes = UInt64(requests[0].length) + UInt64(shortReadSize)
+        let nextWindow = SFTPBrowserView.downloadReadWindow(
+            from: acceptedBytes,
+            through: acceptedBytes + UInt64(shortReadSize) * 3,
+            chunkSize: try #require(decision.nextChunkSize)
+        )
+        #expect(nextWindow.first?.offset == acceptedBytes)
+        #expect(nextWindow.allSatisfy { $0.length == UInt32(shortReadSize) })
+    }
+
+    @Test func sftpDownloadReadBatchStopsBeforeEOFAndRejectsOversizedData() throws {
+        let requests = SFTPBrowserView.downloadReadWindow(
+            from: 0,
+            through: UInt64(SFTPBrowserView.downloadReadChunkSize) * 3
+        )
+        let eofDecision = try SFTPBrowserView.downloadReadBatchDecision(
+            requests: requests,
+            readableByteCounts: [Int(requests[0].length), 0, Int(requests[2].length)]
+        )
+        #expect(eofDecision.acceptedResponseCount == 1)
+        #expect(eofDecision.reachedEOF)
+
+        #expect(throws: SFTPError.self) {
+            try SFTPBrowserView.downloadReadBatchDecision(
+                requests: requests,
+                readableByteCounts: [Int(requests[0].length) + 1, 0, 0]
+            )
+        }
     }
 
     @Test func sftpRemoteEditorUsesOneEightMiBCeiling() {
@@ -6846,6 +7277,50 @@ struct glas_shTests {
         ) == nil)
     }
 
+    @Test @MainActor func connectionManagerIdentifiesLocalNetworkSSHHosts() {
+        #expect(ConnectionManagerView.isLikelyLocalNetworkHost("localhost"))
+        #expect(ConnectionManagerView.isLikelyLocalNetworkHost("pip.local"))
+        #expect(ConnectionManagerView.isLikelyLocalNetworkHost("10.20.30.40"))
+        #expect(ConnectionManagerView.isLikelyLocalNetworkHost("172.16.0.1"))
+        #expect(ConnectionManagerView.isLikelyLocalNetworkHost("172.31.255.255"))
+        #expect(ConnectionManagerView.isLikelyLocalNetworkHost("192.168.1.20"))
+        #expect(ConnectionManagerView.isLikelyLocalNetworkHost("169.254.1.2"))
+        #expect(ConnectionManagerView.isLikelyLocalNetworkHost("127.0.0.1"))
+        #expect(ConnectionManagerView.isLikelyLocalNetworkHost("[fe80::1]"))
+        #expect(ConnectionManagerView.isLikelyLocalNetworkHost("fd12::20"))
+
+        #expect(!ConnectionManagerView.isLikelyLocalNetworkHost("example.com"))
+        #expect(!ConnectionManagerView.isLikelyLocalNetworkHost("172.32.0.1"))
+        #expect(!ConnectionManagerView.isLikelyLocalNetworkHost("192.167.1.20"))
+        #expect(!ConnectionManagerView.isLikelyLocalNetworkHost("not-an-address"))
+    }
+
+    @Test @MainActor func localConnectionFailureAddsActionablePermissionGuidance() {
+        let localMessage = ConnectionManagerView.connectionFailureMessage(
+            base: "Could not reach pip.local:22.",
+            diagnostics: "Connection timed out.",
+            host: "pip.local"
+        )
+        #expect(localMessage.contains("Connection timed out."))
+        #expect(localMessage.contains("Privacy & Security > Local Network"))
+        #expect(localMessage.contains("allow glas.sh"))
+
+        let remoteMessage = ConnectionManagerView.connectionFailureMessage(
+            base: "Could not reach example.com:22.",
+            diagnostics: nil,
+            host: "example.com"
+        )
+        #expect(!remoteMessage.contains("Local Network access"))
+    }
+
+    #if os(macOS)
+    @Test func connectionLibraryMacColumnDefaultsMatchApprovedLayout() {
+        #expect(ConnectionLibraryMacColumnLayout.navigationIdeal == 340)
+        #expect(ConnectionLibraryMacColumnLayout.resultsIdeal == 510)
+        #expect(!ConnectionLibraryMacColumnLayout.autosaveName.isEmpty)
+    }
+    #endif
+
     @Test @MainActor func initialLaunchPreparesEveryCredentialBeforeSessionRegistration() async {
         let hop = ServerConfiguration(
             name: "Jump",
@@ -7759,6 +8234,92 @@ struct glas_shTests {
         await session.waitUntilTerminalResizesComplete()
 
         #expect(probe.resizes == ["24x80", "40x120"])
+    }
+
+    @Test @MainActor func terminalGeometryDefaultsPersistAndConnectionOverrideWins() throws {
+        let suiteName = "sh.glas.tests.terminal-geometry.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let initial = SettingsManager(
+            loadImmediately: false,
+            settingsDefaults: defaults,
+            sshKeyDefaults: defaults
+        )
+        #expect(initial.initialTerminalColumns == 120)
+        #expect(initial.initialTerminalRows == 40)
+
+        initial.initialTerminalColumns = 164
+        initial.initialTerminalRows = 52
+        initial.saveSettings()
+
+        let reloaded = SettingsManager(
+            settingsDefaults: defaults,
+            sshKeyDefaults: defaults
+        )
+        let inherited = ServerConfiguration(
+            name: "Inherited",
+            host: "inherited.example.com",
+            username: "user"
+        )
+        let overridden = ServerConfiguration(
+            name: "Overridden",
+            host: "overridden.example.com",
+            username: "user",
+            initialTerminalColumns: 98,
+            initialTerminalRows: 31
+        )
+
+        #expect(reloaded.initialTerminalGeometry(for: inherited)
+            == TerminalGeometry(rows: 52, columns: 164))
+        #expect(reloaded.initialTerminalGeometry(for: overridden)
+            == TerminalGeometry(rows: 31, columns: 98))
+    }
+
+    @Test @MainActor func initialTerminalPresentationUsesFirstMeasuredGeometry() async {
+        let session = TerminalSession(
+            server: ServerConfiguration(
+                name: "Measured",
+                host: "measured.example.com",
+                username: "user"
+            ),
+            initialTerminalGeometry: TerminalGeometry(rows: 40, columns: 120)
+        )
+        session.installInitialTerminalPresentationRequest { pendingSession in
+            pendingSession.updateTerminalGeometry(rows: 47, columns: 153)
+        }
+
+        let measured = await session.prepareInitialTerminalPresentation(
+            timeout: .milliseconds(50)
+        )
+
+        #expect(measured)
+        #expect(session.didRequestInitialTerminalPresentation)
+        #expect(session.hasMeasuredTerminalGeometry)
+        #expect(session.currentTerminalGeometry == TerminalGeometry(rows: 47, columns: 153))
+    }
+
+    @Test @MainActor func initialTerminalPresentationTimesOutToConfiguredFallback() async {
+        let fallback = TerminalGeometry(rows: 55, columns: 175)
+        let session = TerminalSession(
+            server: ServerConfiguration(
+                name: "Background",
+                host: "background.example.com",
+                username: "user"
+            ),
+            initialTerminalGeometry: fallback
+        )
+        session.installInitialTerminalPresentationRequest { _ in }
+
+        let measured = await session.prepareInitialTerminalPresentation(
+            timeout: .milliseconds(10)
+        )
+
+        #expect(!measured)
+        #expect(session.didRequestInitialTerminalPresentation)
+        #expect(!session.hasMeasuredTerminalGeometry)
+        #expect(session.currentTerminalGeometry == fallback)
     }
 
     // MARK: - SSH Config Parser Edge Cases

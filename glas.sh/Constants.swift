@@ -13,6 +13,8 @@ nonisolated enum UserDefaultsKeys {
     static let confirmBeforeClosing = "confirmBeforeClosing"
     static let saveScrollback = "saveScrollback"
     static let maxScrollbackLines = "maxScrollbackLines"
+    static let initialTerminalColumns = "initialTerminalColumns"
+    static let initialTerminalRows = "initialTerminalRows"
     static let bellEnabled = "bellEnabled"
     static let visualBell = "visualBell"
     static let hostKeyVerificationMode = "hostKeyVerificationMode"
@@ -94,6 +96,8 @@ nonisolated enum SharedDefaults {
         UserDefaultsKeys.confirmBeforeClosing,
         UserDefaultsKeys.saveScrollback,
         UserDefaultsKeys.maxScrollbackLines,
+        UserDefaultsKeys.initialTerminalColumns,
+        UserDefaultsKeys.initialTerminalRows,
         UserDefaultsKeys.bellEnabled,
         UserDefaultsKeys.visualBell,
         UserDefaultsKeys.hostKeyVerificationMode,

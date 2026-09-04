@@ -105,6 +105,24 @@ struct ServerConnectionProvenance: Codable, Hashable, Sendable {
     }
 }
 
+nonisolated struct TerminalGeometry: Equatable, Hashable, Sendable {
+    static let columnRange = 20...500
+    static let rowRange = 8...300
+    static let `default` = TerminalGeometry(rows: 40, columns: 120)
+
+    let rows: Int
+    let columns: Int
+
+    init(rows: Int, columns: Int) {
+        self.rows = min(Self.rowRange.upperBound, max(Self.rowRange.lowerBound, rows))
+        self.columns = min(Self.columnRange.upperBound, max(Self.columnRange.lowerBound, columns))
+    }
+
+    static func contains(rows: Int, columns: Int) -> Bool {
+        rowRange.contains(rows) && columnRange.contains(columns)
+    }
+}
+
 struct ServerConfiguration: Identifiable, Codable, Hashable {
     let id: UUID
     var name: String
@@ -143,6 +161,10 @@ struct ServerConfiguration: Identifiable, Codable, Hashable {
     var requestPTY: Bool
     var terminalType: String
     var environmentVariables: [String: String]
+    /// Optional saved-profile opening grid. Both values must be present or both
+    /// must be absent; macOS fits the initial window before creating the PTY.
+    var initialTerminalColumns: Int?
+    var initialTerminalRows: Int?
     
     init(
         id: UUID = UUID(),
@@ -158,7 +180,9 @@ struct ServerConfiguration: Identifiable, Codable, Hashable {
         tags: [String] = [],
         provenance: ServerConnectionProvenance? = nil,
         jumpHostID: UUID? = nil,
-        jumpHostIDs: [UUID]? = nil
+        jumpHostIDs: [UUID]? = nil,
+        initialTerminalColumns: Int? = nil,
+        initialTerminalRows: Int? = nil
     ) {
         self.id = id
         self.name = name
@@ -187,6 +211,8 @@ struct ServerConfiguration: Identifiable, Codable, Hashable {
         self.requestPTY = true
         self.terminalType = "xterm-256color"
         self.environmentVariables = [:]
+        self.initialTerminalColumns = initialTerminalColumns
+        self.initialTerminalRows = initialTerminalRows
     }
 
     var legacyAlgorithmsEnabled: Bool {
@@ -393,6 +419,7 @@ class TerminalSession: Identifiable, Hashable {
     typealias TerminalWriteSink = @MainActor (Data) async throws -> Void
     typealias TerminalResizeSink = @MainActor (_ rows: Int, _ columns: Int) async throws -> Void
     typealias LifecycleHook = @MainActor (TerminalSessionLifecycleTransition) -> Task<Void, Never>?
+    typealias InitialTerminalPresentationRequest = @MainActor (TerminalSession) -> Void
 
     private struct PendingTerminalWrite {
         let data: Data
@@ -442,8 +469,13 @@ class TerminalSession: Identifiable, Hashable {
     private var pendingTerminalResize: (rows: Int, columns: Int)?
     private var terminalResizeTask: Task<Void, Never>?
     private var terminalResizeGeneration: UInt64 = 0
-    private var latestTerminalRows: Int = 40
-    private var latestTerminalColumns: Int = 140
+    private var latestTerminalRows: Int = TerminalGeometry.default.rows
+    private var latestTerminalColumns: Int = TerminalGeometry.default.columns
+    private let initialTerminalGeometryEvents: AsyncStream<Void>
+    private let initialTerminalGeometryContinuation: AsyncStream<Void>.Continuation
+    private var initialTerminalPresentationRequest: InitialTerminalPresentationRequest?
+    private(set) var didRequestInitialTerminalPresentation = false
+    private(set) var hasMeasuredTerminalGeometry = false
     private var userInitiatedDisconnect: Bool = false
     private var reconnectTask: Task<Void, Never>?
     var reconnectAttemptCount: Int = 0
@@ -457,13 +489,19 @@ class TerminalSession: Identifiable, Hashable {
 
     init(
         server: ServerConfiguration,
+        initialTerminalGeometry: TerminalGeometry = .default,
         terminalWriteSink: TerminalWriteSink? = nil,
         terminalResizeSink: TerminalResizeSink? = nil
     ) {
+        let geometryEvents = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
         self.id = UUID()
         self.server = server
         self.terminalWriteSink = terminalWriteSink
         self.terminalResizeSink = terminalResizeSink
+        self.initialTerminalGeometryEvents = geometryEvents.stream
+        self.initialTerminalGeometryContinuation = geometryEvents.continuation
+        self.latestTerminalRows = initialTerminalGeometry.rows
+        self.latestTerminalColumns = initialTerminalGeometry.columns
         let connection = SSHConnection(session: self)
         connection.setPreferredTerminalSize(
             rows: latestTerminalRows,
@@ -477,12 +515,68 @@ class TerminalSession: Identifiable, Hashable {
         terminalWriteTask?.cancel()
         terminalResizeTask?.cancel()
         reconnectTask?.cancel()
+        initialTerminalGeometryContinuation.finish()
     }
 
     func getSSHConnection() -> SSHConnection? { sshConnection }
 
     func installLifecycleHook(_ hook: @escaping LifecycleHook) {
         lifecycleHook = hook
+    }
+
+    func installInitialTerminalPresentationRequest(
+        _ request: @escaping InitialTerminalPresentationRequest
+    ) {
+        guard !didRequestInitialTerminalPresentation else { return }
+        initialTerminalPresentationRequest = request
+    }
+
+    var currentTerminalGeometry: TerminalGeometry {
+        TerminalGeometry(rows: latestTerminalRows, columns: latestTerminalColumns)
+    }
+
+    func updateConfiguredInitialTerminalGeometry(_ geometry: TerminalGeometry) {
+        guard !hasMeasuredTerminalGeometry else { return }
+        latestTerminalRows = geometry.rows
+        latestTerminalColumns = geometry.columns
+        sshConnection?.setPreferredTerminalSize(rows: geometry.rows, columns: geometry.columns)
+    }
+
+    /// Requests the terminal surface only after transport authentication has
+    /// succeeded, then gives its first measured resize a bounded opportunity to
+    /// define the initial remote PTY. Background/headless sessions retain their
+    /// configured fallback and never block indefinitely.
+    @discardableResult
+    func prepareInitialTerminalPresentation(
+        timeout: Duration = .seconds(1)
+    ) async -> Bool {
+        if hasMeasuredTerminalGeometry { return true }
+        guard let request = initialTerminalPresentationRequest else { return false }
+
+        initialTerminalPresentationRequest = nil
+        didRequestInitialTerminalPresentation = true
+        request(self)
+        if hasMeasuredTerminalGeometry { return true }
+
+        let events = initialTerminalGeometryEvents
+        return await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                var iterator = events.makeAsyncIterator()
+                return await iterator.next() != nil
+            }
+            group.addTask {
+                do {
+                    try await Task.sleep(for: timeout)
+                } catch {
+                    return false
+                }
+                return false
+            }
+
+            let measured = await group.next() ?? false
+            group.cancelAll()
+            return measured
+        }
     }
 
     /// Arms one launch-time command before the initial connection attempt.
@@ -832,10 +926,16 @@ class TerminalSession: Identifiable, Hashable {
     }
     
     func updateTerminalGeometry(rows: Int, columns: Int) {
-        let clampedRows = max(8, rows)
-        let clampedColumns = max(20, columns)
+        let measuredGeometry = TerminalGeometry(rows: rows, columns: columns)
+        let clampedRows = measuredGeometry.rows
+        let clampedColumns = measuredGeometry.columns
         latestTerminalRows = clampedRows
         latestTerminalColumns = clampedColumns
+        if !hasMeasuredTerminalGeometry {
+            hasMeasuredTerminalGeometry = true
+            initialTerminalGeometryContinuation.yield()
+            initialTerminalGeometryContinuation.finish()
+        }
         recorder?.recordResize(width: clampedColumns, height: clampedRows)
 
         sshConnection?.setPreferredTerminalSize(rows: clampedRows, columns: clampedColumns)
@@ -1762,8 +1862,8 @@ class SSHConnection {
     private var ttyReadyFailure: Error?
     private var keepAliveTask: Task<Void, Never>?
     private var missedKeepAlives: Int = 0
-    private var terminalRows: Int = 40
-    private var terminalColumns: Int = 140
+    private var terminalRows: Int = TerminalGeometry.default.rows
+    private var terminalColumns: Int = TerminalGeometry.default.columns
     private let hostKeyChallengeBox = HostKeyChallengeBox()
 
     weak var session: TerminalSession?
@@ -1780,8 +1880,9 @@ class SSHConnection {
     }
 
     func setPreferredTerminalSize(rows: Int, columns: Int) {
-        terminalRows = max(8, rows)
-        terminalColumns = max(20, columns)
+        let geometry = TerminalGeometry(rows: rows, columns: columns)
+        terminalRows = geometry.rows
+        terminalColumns = geometry.columns
     }
 
     nonisolated func takePendingHostKeyChallenge() -> HostKeyTrustChallenge? {
@@ -2071,6 +2172,8 @@ class SSHConnection {
             throw SSHError.connectionFailed
         }
 
+        _ = await session.prepareInitialTerminalPresentation()
+
         ttyReadyResolved = false
         ttyReadyFailure = nil
         ttyReadyContinuation = nil
@@ -2215,9 +2318,17 @@ class SSHConnection {
         return try await client.openSFTP(logger: sftpLogger)
     }
 
-    func executeRemoteCommand(_ command: String) async throws -> String {
+    func executeRemoteCommand(
+        _ command: String,
+        maxResponseBytes: Int = .max,
+        executionTimeout: TimeAmount = .seconds(3_600)
+    ) async throws -> String {
         guard let client else { throw SSHError.notConnected }
-        let buffer = try await client.executeCommand(command)
+        let buffer = try await client.executeCommand(
+            command,
+            maxResponseSize: maxResponseBytes,
+            executionTimeout: executionTimeout
+        )
         return String(buffer: buffer)
     }
 
@@ -2364,8 +2475,9 @@ class SSHConnection {
     
     /// Resize terminal window
     func resizeTerminal(rows: Int, columns: Int) async throws {
-        terminalRows = max(8, rows)
-        terminalColumns = max(20, columns)
+        let geometry = TerminalGeometry(rows: rows, columns: columns)
+        terminalRows = geometry.rows
+        terminalColumns = geometry.columns
 
         guard let writer = ttyWriter else { return }
         try await writer.changeSize(

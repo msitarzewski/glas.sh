@@ -1,5 +1,20 @@
 # Progress
 
+- Finder-style SFTP operations and terminal opening geometry approved (2026-09-03):
+  - Added native table selection/sorting, context operations, inline rename, Get
+    Info, Finder drag-out promises, local file-drop upload, and verified remote
+    copy/move to the existing SFTP browser.
+  - Added bounded eight-request/2 MiB read windows and cancellation-safe bounded
+    command execution while preserving SHA-256 verification and no-clobber
+    publication behavior.
+  - Added a per-window transfer shelf with honest state across download, upload,
+    Finder promise, remote copy, and remote move.
+  - Added app-default and per-connection terminal geometry, bounded visible-host
+    measurement before PTY start, macOS window fitting, Connection Library column
+    persistence/progress, and local-network recovery guidance.
+  - Fresh Xcode 27 QA passes 299/299 Mac tests, Citadel with five environment-
+    gated skips, and iOS plus visionOS simulator builds; no foreground UI or fresh
+    signed-release pass is claimed.
 - GlassEditorKit remote SFTP editing M4 approved (2026-08-11):
   - Added explicit remote-file editing without changing SFTP row multi-select.
   - Reused glas.sh's bounded, SHA-256-verified transfer layer for all bytes and

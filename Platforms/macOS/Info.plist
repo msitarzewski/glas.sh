@@ -6,6 +6,8 @@
 	<string>$(AppIdentifierPrefix)sh.glas.shared</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Authenticate to use a hardware-protected SSH key.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>glas.sh uses your local network to connect to SSH servers you choose.</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

@@ -146,7 +146,8 @@ class SessionManager {
     func createAuthorizedSession(
         for server: ServerConfiguration,
         settingsManager: SettingsManager,
-        startupCommand: String? = nil
+        startupCommand: String? = nil,
+        initialTerminalPresentation: TerminalSession.InitialTerminalPresentationRequest? = nil
     ) async throws -> AuthorizedSessionLaunch {
         guard let currentServer = serverManager.server(for: server.id) else {
             throw SessionOpenError.savedServerNotFound
@@ -156,14 +157,16 @@ class SessionManager {
             origin: .savedProfile(currentServer.id),
             settingsManager: settingsManager,
             providedPassword: nil,
-            startupCommand: startupCommand
+            startupCommand: startupCommand,
+            initialTerminalPresentation: initialTerminalPresentation
         )
     }
 
     func createTransientAuthorizedSession(
         for server: ServerConfiguration,
         settingsManager: SettingsManager,
-        password providedPassword: String? = nil
+        password providedPassword: String? = nil,
+        initialTerminalPresentation: TerminalSession.InitialTerminalPresentationRequest? = nil
     ) async throws -> AuthorizedSessionLaunch {
         guard serverManager.server(for: server.id) == nil else {
             throw SessionOpenError.transientServerIDCollision
@@ -173,7 +176,8 @@ class SessionManager {
             origin: .transient(server),
             settingsManager: settingsManager,
             providedPassword: providedPassword,
-            startupCommand: nil
+            startupCommand: nil,
+            initialTerminalPresentation: initialTerminalPresentation
         )
     }
 
@@ -182,7 +186,8 @@ class SessionManager {
         origin: SessionOrigin,
         settingsManager: SettingsManager,
         providedPassword: String?,
-        startupCommand: String?
+        startupCommand: String?,
+        initialTerminalPresentation: TerminalSession.InitialTerminalPresentationRequest?
     ) async throws -> AuthorizedSessionLaunch {
         if startupCommand != nil,
            TerminalStartupCommandTicket(command: startupCommand) == nil {
@@ -204,9 +209,12 @@ class SessionManager {
                 return providedPassword
             }(),
             settingsManager: settingsManager,
-            startupCommand: startupCommand
+            startupCommand: startupCommand,
+            initialTerminalPresentation: initialTerminalPresentation
         )
-        if case .error = session.state, session.pendingHostKeyChallenge == nil {
+        if case .error = session.state,
+           session.pendingHostKeyChallenge == nil,
+           !session.didRequestInitialTerminalPresentation {
             unregister(session)
         }
         return AuthorizedSessionLaunch(session: session)
@@ -215,7 +223,8 @@ class SessionManager {
     func createAuthorizedSessionByServerID(
         _ serverID: UUID,
         settingsManager: SettingsManager,
-        startupCommand: String? = nil
+        startupCommand: String? = nil,
+        initialTerminalPresentation: TerminalSession.InitialTerminalPresentationRequest? = nil
     ) async throws -> AuthorizedSessionLaunch {
         guard let server = serverManager.server(for: serverID) else {
             throw SessionOpenError.savedServerNotFound
@@ -223,26 +232,30 @@ class SessionManager {
         return try await createAuthorizedSession(
             for: server,
             settingsManager: settingsManager,
-            startupCommand: startupCommand
+            startupCommand: startupCommand,
+            initialTerminalPresentation: initialTerminalPresentation
         )
     }
 
     func duplicateAuthorizedSession(
         from session: TerminalSession,
-        settingsManager: SettingsManager
+        settingsManager: SettingsManager,
+        initialTerminalPresentation: TerminalSession.InitialTerminalPresentationRequest? = nil
     ) async throws -> AuthorizedSessionLaunch {
         switch try origin(for: session) {
         case .savedProfile(let serverID):
             return try await createAuthorizedSessionByServerID(
                 serverID,
-                settingsManager: settingsManager
+                settingsManager: settingsManager,
+                initialTerminalPresentation: initialTerminalPresentation
             )
         case .transient:
             let context = try reconnectContext(for: session)
             return try await createTransientAuthorizedSession(
                 for: context.server,
                 settingsManager: settingsManager,
-                password: context.password
+                password: context.password,
+                initialTerminalPresentation: initialTerminalPresentation
             )
         }
     }
@@ -261,6 +274,9 @@ class SessionManager {
             prepared = try prepareConnection(for: context.server, providedPassword: context.password)
         }
         session.server = context.server
+        session.updateConfiguredInitialTerminalGeometry(
+            settingsManager.initialTerminalGeometry(for: context.server)
+        )
         session.jumpHostChain = prepared.jumpHostChain
         session.connectionPreparation = prepared.authentication
         installReconnectPreparation(on: session, settingsManager: settingsManager)
@@ -345,9 +361,16 @@ class SessionManager {
         origin: SessionOrigin,
         transientPassword: String?,
         settingsManager: SettingsManager,
-        startupCommand: String?
+        startupCommand: String?,
+        initialTerminalPresentation: TerminalSession.InitialTerminalPresentationRequest?
     ) async -> TerminalSession {
-        let session = TerminalSession(server: server)
+        let session = TerminalSession(
+            server: server,
+            initialTerminalGeometry: settingsManager.initialTerminalGeometry(for: server)
+        )
+        if let initialTerminalPresentation {
+            session.installInitialTerminalPresentationRequest(initialTerminalPresentation)
+        }
         if let startupCommand {
             _ = session.installStartupCommand(startupCommand)
         }

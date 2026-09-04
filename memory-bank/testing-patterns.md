@@ -1,6 +1,11 @@
 # Testing Patterns
 
 ## Test Suite
+- **Exact-current Finder-style SFTP checkpoint (2026-09-03):** Xcode 27.0
+  (`27A5252f`) ran 299/299 native Mac tests with zero failures, skips, or runtime
+  warnings. Citadel executed 49 tests with 44 passes and five environment-gated
+  skips. iOS and visionOS Simulator Debug builds pass. Foreground UI automation
+  and a fresh trusted signed build are not claimed.
 - **Exact-current native Mac connection-experience checkpoint (2026-08-11):**
   macOS 27 ran 276/276 tests with zero failures or skips after the stale-pane crash
   repair. iOS 27 and visionOS 27 simulator builds pass. A signed thin-arm64 Mac
@@ -54,6 +59,12 @@
 - Physical-device truth (2026-08-01): a signed Vision Pro build successfully established SSH to the development Mac over Tailscale. This is partial device evidence, not the completed interaction, accessibility, performance, security, and distribution matrix.
 
 ## Regression Focus
+- Finder SFTP behavior: multi-selection ownership, sortable columns, inline rename,
+  Get Info refresh, drag-out completion/cancellation, file-drop upload, verified
+  copy/move, short-read recovery, and honest transfer-shelf terminal states.
+- Initial terminal geometry: per-connection override beats app default, visible
+  renderer measurement beats fallback before PTY start, and headless/background
+  sessions time out to the configured fallback without blocking.
 - Input/focus behavior when switching windows.
 - Ornament interactions and viewport clipping/padding behavior.
 - Native adaptive presentation: compact sidebars overlay rather than clip; full-height sidebar material reaches behind traffic lights on Mac; terminal toolbar groups preserve order and spacing as the window compresses.

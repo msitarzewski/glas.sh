@@ -8,6 +8,20 @@ public final class SFTPFile {
     ///
     /// This should probably be a `struct` wrapping a buffer for stronger type safety.
     public typealias SFTPFileHandle = ByteBuffer
+
+    public static let maximumPipelinedReadCount = 8
+    public static let maximumPipelinedReadBytes = 2 * 1024 * 1024
+
+    /// A bounded random-access read to issue as part of one pipelined SFTP batch.
+    public struct ReadRequest: Sendable {
+        public let offset: UInt64
+        public let length: UInt32
+
+        public init(offset: UInt64, length: UInt32) {
+            self.offset = offset
+            self.length = length
+        }
+    }
     
     /// Indicates whether the file's handle was still valid at the time the getter was called.
     public private(set) var isActive: Bool
@@ -147,6 +161,53 @@ public final class SFTPFile {
         default:
             self.logger.warning("SFTP server returned bad response to read file request, this is a protocol error")
             throw SFTPError.invalidResponse
+        }
+    }
+
+    /// Reads multiple ranges with all requests in flight together.
+    /// Returned buffers preserve request order regardless of response arrival order.
+    public func read(_ requests: [ReadRequest]) async throws -> [ByteBuffer] {
+        guard self.isActive else { throw SFTPError.fileHandleInvalid }
+        guard requests.count <= Self.maximumPipelinedReadCount else {
+            throw SFTPError.invalidResponse
+        }
+        let requestedByteCount = requests.reduce(UInt64(0)) {
+            $0 + UInt64($1.length)
+        }
+        guard requestedByteCount <= UInt64(Self.maximumPipelinedReadBytes),
+              requests.allSatisfy({ $0.length > 0 }) else {
+            throw SFTPError.invalidResponse
+        }
+
+        let responses = try await self.client.sendRequests(requests.map { request in
+            .read(.init(
+                requestId: self.client.allocateRequestId(),
+                handle: self.handle,
+                offset: request.offset,
+                length: request.length
+            ))
+        })
+        guard responses.count == requests.count else {
+            throw SFTPError.missingResponse
+        }
+
+        return try zip(requests, responses).map { request, response in
+            switch response {
+            case .data(let data):
+                guard data.data.readableBytes <= Int(request.length) else {
+                    self.logger.warning("SFTP server returned more file data than requested")
+                    throw SFTPError.invalidResponse
+                }
+                self.logger.debug(
+                    "SFTP read \(data.data.readableBytes) bytes from file \(self.handle.sftpHandleDebugDescription)"
+                )
+                return data.data
+            case .status(let status) where status.errorCode == .eof:
+                return .init()
+            default:
+                self.logger.warning("SFTP server returned bad response to read file request, this is a protocol error")
+                throw SFTPError.invalidResponse
+            }
         }
     }
     

@@ -347,7 +347,15 @@ struct VisionTerminalWorkgroupView: View {
             do {
                 let launch = try await sessionManager.createAuthorizedSessionByServerID(
                     server.id,
-                    settingsManager: settingsManager
+                    settingsManager: settingsManager,
+                    initialTerminalPresentation: { pendingSession in
+                        guard sessionManager.appendSession(
+                            pendingSession,
+                            toWorkgroup: workgroupID
+                        ) else { return }
+                        selectedSessionID = pendingSession.id
+                        showingSavedHostPicker = false
+                    }
                 )
                 let session = launch.session
                 guard session.state == .connected || session.pendingHostKeyChallenge != nil else {
@@ -357,6 +365,9 @@ struct VisionTerminalWorkgroupView: View {
                         connectionFailureMessage = "\(server.name) did not establish a terminal session."
                     }
                     sessionManager.closeSession(session)
+                    return
+                }
+                if session.didRequestInitialTerminalPresentation {
                     return
                 }
                 guard sessionManager.appendSession(session, toWorkgroup: workgroupID) else {

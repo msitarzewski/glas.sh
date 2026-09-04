@@ -1,6 +1,16 @@
 # Active Context
 
-## Current Focus (reconciled 2026-08-11)
+## Current Focus (reconciled 2026-09-03)
+- Finder-style SFTP operations and terminal opening geometry are implementation-
+  and automated-QA-approved on `agent/sftp-native-selection-drag-drop`. The SFTP
+  browser now provides native selection, sorting, Get Info, rename, Finder
+  drag-out, file-drop upload, verified remote copy/move, bounded windowed reads,
+  and a per-window transfer activity shelf. App and per-connection terminal-size
+  fallbacks now yield to the first measured visible terminal before PTY creation;
+  Connection Library state and local-network recovery feedback are also explicit.
+  Fresh Xcode 27 verification passes 299/299 Mac tests, Citadel with five
+  environment-gated skips, and iOS plus visionOS simulator builds. Foreground UI,
+  fresh signed-release, and physical drag/drop evidence remain release gates.
 - GlassEditorKit remote SFTP editing M4 is implementation-, QA-, and manual-
   acceptance-approved on `agent/glass-editor-sftp-m4`. The SFTP browser opens
   bounded remote files in `GlassEditorView`, saves through glas.sh's existing
@@ -31,9 +41,15 @@
 - The public repository structure was implementation/QA approved on 2026-07-25: Mac sources/resources moved from the misleading `glas.sh-mac` name to `Platforms/macOS`, Mac tests moved beneath `glas.shTests/macOS`, and every moved file retained its original Git blob content.
 - Product identity is unified as `sh.glas.app`; SDK-specific plist, entitlements, icons, and widget filtering preserve shared GlasSecretStore, app-group, Keychain, iCloud, terminal, and platform behavior.
 - The approved One Base release was merged to `main` through PR [#30](https://github.com/msitarzewski/glas.sh/pull/30); merge commit `d9237f97` and GitHub are the canonical publication record.
-- This completion is not an App Store distribution decision. Physical Vision Pro SSH to the development Mac over Tailscale now works, but the full device matrix, initial terminal sizing, native session-sidebar dismissal, distribution certificate trust/notarization, final hosted Mac XCTest after the render-only delta, and external dependency-advisory querying retain explicit evidence boundaries in the release dashboard.
+- This completion is not an App Store distribution decision. Physical Vision Pro SSH to the development Mac over Tailscale now works, but the full device matrix, physical initial terminal sizing, native session-sidebar dismissal, distribution certificate trust/notarization, final hosted Mac XCTest after the render-only delta, and external dependency-advisory querying retain explicit evidence boundaries in the release dashboard.
 
 ## What's Next
+- **Preserve the approved Finder-style SFTP publication.**
+  - Keep Finder file promises inside `Platforms/macOS` and keep all remote bytes,
+    verification, copy/move commit policy, and cancellation in the existing SFTP
+    and Citadel boundaries.
+  - Repeat drag-out, file-drop upload, remote move, and terminal opening-size
+    smokes with a trusted signed build in the physical release matrix.
 - **Publish and preserve GlassEditorKit remote-editing M4.**
   - Review and merge PR [#33](https://github.com/msitarzewski/glas.sh/pull/33).
   - Keep GlassEditorKit at the decision/UI boundary and glas.sh at the verified
@@ -87,6 +103,10 @@
   - Output-only recording default, protected/bounded storage, fail-closed deletion, redacted diagnostics, SFTP no-clobber transfer, and deterministic AI confirmation.
   - SharePlay and unused AI summaries removed, HTML Preview Debug-only, unsupported SSH Agent/inert settings absent, and forwarding backed by the shared manager.
 - **Current automated evidence.**
+  - The 2026-09-03 Finder-style SFTP publication checkpoint passes 299/299 native
+    Mac tests with zero failures, skips, or runtime warnings. Citadel executes 49
+    tests with 44 passes and five environment-gated skips; exact-current iOS and
+    visionOS simulator builds pass.
   - The 2026-07-30 adaptive-workspace publication checkpoint passes 274/274 native Mac unit tests with zero failures, skips, or runtime warnings. Exact-current visionOS 27, iPadOS 27, and iOS 27 simulator builds also pass.
   - The final native-chrome diff check and production incomplete-marker scan are clean. User visual review approved the Connections and terminal layouts. The unbounded Mac UI harness was stopped after its host runner stalled between app launches; no UI-suite pass is claimed for that run.
   - Public platform-boundary cleanup passes 251/251 Mac tests, iPhone 17 Pro and Vision Pro 27 simulator builds, and simulator install/launch smokes on both products.

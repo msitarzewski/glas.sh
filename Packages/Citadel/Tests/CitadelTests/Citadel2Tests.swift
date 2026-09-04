@@ -11,6 +11,47 @@ final class Citadel2Tests: XCTestCase {
         case unexpectedOutbound(String)
     }
 
+    func testExecHandlerCapsCombinedStandardOutputAndError() throws {
+        let channel = EmbeddedChannel()
+        let promise = channel.eventLoop.makePromise(of: ByteBuffer.self)
+        let completion = ExecCommandCompletion(promise: promise)
+        try channel.pipeline.addHandler(
+            TTYHandler(maxResponseSize: 8, completion: completion)
+        ).wait()
+
+        try channel.writeInbound(SSHChannelData(
+            type: .channel,
+            data: .byteBuffer(ByteBuffer(string: "1234"))
+        ))
+        try channel.writeInbound(SSHChannelData(
+            type: .stdErr,
+            data: .byteBuffer(ByteBuffer(string: "56789"))
+        ))
+
+        XCTAssertThrowsError(try promise.futureResult.wait()) { error in
+            guard let citadelError = error as? CitadelError,
+                  case .commandOutputTooLarge = citadelError else {
+                return XCTFail("Unexpected response-limit error: \(error)")
+            }
+        }
+    }
+
+    func testExecHandlerDoesNotReplaceCancellationDuringChannelRemoval() throws {
+        let channel = EmbeddedChannel()
+        let promise = channel.eventLoop.makePromise(of: ByteBuffer.self)
+        let completion = ExecCommandCompletion(promise: promise)
+        try channel.pipeline.addHandler(
+            TTYHandler(maxResponseSize: 8, completion: completion)
+        ).wait()
+
+        completion.fail(CancellationError())
+        try channel.close().wait()
+
+        XCTAssertThrowsError(try promise.futureResult.wait()) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+    }
+
     func testAuthenticationMethodConsumesEachOfferExactlyOnce() throws {
         let eventLoop = EmbeddedEventLoop()
         let authentication = SSHAuthenticationMethod.passwordBased(
@@ -335,6 +376,94 @@ final class Citadel2Tests: XCTestCase {
         }
         XCTAssertEqual(Array(fstat.handle.readableBytesView), [0xDE, 0xAD, 0xBE, 0xEF])
         XCTAssertNoThrow(try channel.finish())
+    }
+
+    func testPipelinedFileReadsAreAllInFlightAndReturnedInRequestOrder() async throws {
+        let (channel, client) = try await makeAsyncTestingSFTPClient()
+        let handle = ByteBuffer(bytes: [0xC0, 0xFF, 0xEE])
+        let file = SFTPFile(client: client, path: "/large-file", handle: handle)
+        let ranges = [
+            SFTPFile.ReadRequest(offset: 0, length: 8),
+            SFTPFile.ReadRequest(offset: 8, length: 8),
+            SFTPFile.ReadRequest(offset: 16, length: 8),
+        ]
+        let read = Task { try await file.read(ranges) }
+        defer { read.cancel() }
+
+        var outboundReads: [SFTPMessage.ReadFile] = []
+        for range in ranges {
+            let message = try await nextSFTPOutboundMessage(from: channel)
+            guard case .read(let request) = message else {
+                throw EmbeddedSFTPTestError.unexpectedOutbound(message.debugDescription)
+            }
+            XCTAssertEqual(request.offset, range.offset)
+            XCTAssertEqual(request.length, range.length)
+            XCTAssertEqual(
+                Array(request.handle.readableBytesView),
+                Array(handle.readableBytesView)
+            )
+            outboundReads.append(request)
+        }
+
+        let secondResponse = try await channel.writeInbound(SFTPMessage.data(.init(
+            requestId: outboundReads[1].requestId,
+            data: ByteBuffer(string: "second")
+        )))
+        XCTAssertTrue(secondResponse.isEmpty)
+        let eofResponse = try await channel.writeInbound(SFTPMessage.status(.init(
+            requestId: outboundReads[2].requestId,
+            errorCode: .eof,
+            message: "end of file",
+            languageTag: "en"
+        )))
+        XCTAssertTrue(eofResponse.isEmpty)
+        let firstResponse = try await channel.writeInbound(SFTPMessage.data(.init(
+            requestId: outboundReads[0].requestId,
+            data: ByteBuffer(string: "first")
+        )))
+        XCTAssertTrue(firstResponse.isEmpty)
+
+        let buffers = try await read.value
+        XCTAssertEqual(buffers.map { String(buffer: $0) }, ["first", "second", ""])
+        XCTAssertTrue(client.responses.responses.isEmpty)
+        let unexpectedOutbound = try await channel.readOutbound(as: SFTPMessage.self)
+        XCTAssertNil(unexpectedOutbound)
+        let finishState = try await channel.finish()
+        XCTAssertTrue(finishState.isClean)
+    }
+
+    func testPipelinedFileReadsRejectUnboundedRequestGroupsBeforeSending() async throws {
+        let (channel, client) = try await makeAsyncTestingSFTPClient()
+        let file = SFTPFile(
+            client: client,
+            path: "/large-file",
+            handle: ByteBuffer(bytes: [0x01])
+        )
+        let tooManyRequests = (0...SFTPFile.maximumPipelinedReadCount).map {
+            SFTPFile.ReadRequest(offset: UInt64($0), length: 1)
+        }
+        let oversizedRequests = (0..<SFTPFile.maximumPipelinedReadCount).map {
+            SFTPFile.ReadRequest(
+                offset: UInt64($0 * (256 * 1024 + 1)),
+                length: 256 * 1024 + 1
+            )
+        }
+
+        for requests in [tooManyRequests, oversizedRequests] {
+            do {
+                _ = try await file.read(requests)
+                XCTFail("An unbounded pipelined read must be rejected")
+            } catch SFTPError.invalidResponse {
+                // Expected.
+            } catch {
+                XCTFail("Unexpected bounded-read error: \(error)")
+            }
+        }
+
+        let unexpectedOutbound = try await channel.readOutbound(as: SFTPMessage.self)
+        XCTAssertNil(unexpectedOutbound)
+        let finishState = try await channel.finish()
+        XCTAssertTrue(finishState.isClean)
     }
 
     func testLStatBuildsPathRequestAndInboundStatusErrorIsPropagated() throws {

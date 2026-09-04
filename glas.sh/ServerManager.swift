@@ -873,7 +873,17 @@ class ServerManager {
 
     private static func validateServerCatalog(_ candidateServers: [ServerConfiguration]) throws {
         var serverIDs = Set<UUID>()
-        guard candidateServers.allSatisfy({ serverIDs.insert($0.id).inserted }) else {
+        guard candidateServers.allSatisfy({ server in
+            guard serverIDs.insert(server.id).inserted else { return false }
+            switch (server.initialTerminalColumns, server.initialTerminalRows) {
+            case (nil, nil):
+                return true
+            case (.some(let columns), .some(let rows)):
+                return TerminalGeometry.contains(rows: rows, columns: columns)
+            default:
+                return false
+            }
+        }) else {
             throw ServerManagerError.invalidServerCatalog
         }
     }
