@@ -15,6 +15,7 @@
   - Fresh Xcode 27 QA passes 299/299 Mac tests, Citadel with five environment-
     gated skips, and iOS plus visionOS simulator builds; no foreground UI or fresh
     signed-release pass is claimed.
+  - Published through PR [#34](https://github.com/msitarzewski/glas.sh/pull/34).
 - GlassEditorKit remote SFTP editing M4 approved (2026-08-11):
   - Added explicit remote-file editing without changing SFTP row multi-select.
   - Reused glas.sh's bounded, SHA-256-verified transfer layer for all bytes and

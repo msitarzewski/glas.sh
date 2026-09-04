@@ -158,6 +158,6 @@ is claimed by this publication checkpoint.
 ## Artifacts
 
 - Branch: `agent/sftp-native-selection-drag-drop`
-- Pull request: pending publication
+- Pull request: [#34](https://github.com/msitarzewski/glas.sh/pull/34)
 - Fresh Mac result bundle:
   `/private/tmp/glas-sftp-final-mac/Logs/Test/Test-glas.sh-2026.09.03_22-38-33--0500.xcresult`

@@ -13,6 +13,7 @@
   Local Network guidance.
 - Fresh publication QA passes 299/299 Mac tests, the Citadel suite, and iOS plus
   visionOS simulator builds.
+- Published through PR [#34](https://github.com/msitarzewski/glas.sh/pull/34).
 - See: [160826_sftp-finder-native-operations.md](./160826_sftp-finder-native-operations.md)
 
 ### 2026-08-11: GlassEditorKit remote SFTP editing (M4)
