@@ -342,7 +342,14 @@ final class MacWorkspaceController {
             let launch = try await sessionManager.createAuthorizedSessionByServerID(
                 serverID,
                 settingsManager: settingsManager,
-                startupCommand: startupCommand
+                startupCommand: startupCommand,
+                initialTerminalPresentation: { [weak self] pendingSession in
+                    guard let self,
+                          !isClosed,
+                          generation == lifecycleGeneration,
+                          state.root?.pane(id: pane.id)?.intent == pane.intent else { return }
+                    sessionsByPaneID[pane.id] = pendingSession
+                }
             )
             guard !isClosed,
                   generation == lifecycleGeneration,

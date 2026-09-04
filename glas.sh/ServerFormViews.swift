@@ -66,6 +66,41 @@ private func serverFormLabeledContent<Content: View>(
     #endif
 }
 
+private struct TerminalInitialSizeEditor: View {
+    @Binding var usesAppDefault: Bool
+    @Binding var columns: Int
+    @Binding var rows: Int
+    let appDefault: TerminalGeometry
+
+    var body: some View {
+        Toggle("Use App Default Size", isOn: $usesAppDefault)
+
+        if usesAppDefault {
+            LabeledContent(
+                "Initial Size",
+                value: "\(appDefault.columns) × \(appDefault.rows)"
+            )
+            .foregroundStyle(.secondary)
+        } else {
+            Stepper(
+                value: $columns,
+                in: TerminalGeometry.columnRange,
+                step: 5
+            ) {
+                LabeledContent("Columns", value: "\(columns)")
+            }
+            Stepper(value: $rows, in: TerminalGeometry.rowRange) {
+                LabeledContent("Rows", value: "\(rows)")
+            }
+        }
+
+        Text("This is the fallback for a new PTY. The visible terminal's measured size takes precedence before the shell starts.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 // MARK: - Add Server View
 
 struct AddServerView: View {
@@ -89,6 +124,9 @@ struct AddServerView: View {
     @State private var isFavorite: Bool = false
     @State private var jumpHostIDs: [UUID] = []
     @State private var showingJumpHostPicker: Bool = false
+    @State private var usesAppDefaultTerminalSize: Bool = true
+    @State private var initialTerminalColumns: Int = TerminalGeometry.default.columns
+    @State private var initialTerminalRows: Int = TerminalGeometry.default.rows
 
     @State private var showingAddSSHKey = false
     @State private var keychainSaveError: String?
@@ -111,6 +149,15 @@ struct AddServerView: View {
         _tags = State(initialValue: draft?.tags ?? [])
         _isFavorite = State(initialValue: draft?.isFavorite ?? false)
         _jumpHostIDs = State(initialValue: draft?.resolvedJumpHostIDs ?? [])
+        let draftHasTerminalSize = draft?.initialTerminalColumns != nil
+            && draft?.initialTerminalRows != nil
+        _usesAppDefaultTerminalSize = State(initialValue: !draftHasTerminalSize)
+        _initialTerminalColumns = State(
+            initialValue: draft?.initialTerminalColumns ?? TerminalGeometry.default.columns
+        )
+        _initialTerminalRows = State(
+            initialValue: draft?.initialTerminalRows ?? TerminalGeometry.default.rows
+        )
     }
 
     private var isFormValid: Bool {
@@ -118,6 +165,10 @@ struct AddServerView: View {
               let parsedPort = Int(port), (1...65_535).contains(parsedPort) else {
             return false
         }
+        guard usesAppDefaultTerminalSize || TerminalGeometry.contains(
+            rows: initialTerminalRows,
+            columns: initialTerminalColumns
+        ) else { return false }
         switch authMethod {
         case .password:
             return !password.isEmpty
@@ -139,6 +190,11 @@ struct AddServerView: View {
             }
             .onChange(of: settingsManager.sshKeys.map(\.id)) { _, _ in
                 normalizeSelectedSSHKey()
+            }
+            .onChange(of: usesAppDefaultTerminalSize) { _, usesDefault in
+                guard !usesDefault else { return }
+                initialTerminalColumns = settingsManager.initialTerminalColumns
+                initialTerminalRows = settingsManager.initialTerminalRows
             }
     }
 
@@ -275,6 +331,18 @@ struct AddServerView: View {
             #else
             routingEditor
             #endif
+        }
+
+        Section("Terminal") {
+            TerminalInitialSizeEditor(
+                usesAppDefault: $usesAppDefaultTerminalSize,
+                columns: $initialTerminalColumns,
+                rows: $initialTerminalRows,
+                appDefault: TerminalGeometry(
+                    rows: settingsManager.initialTerminalRows,
+                    columns: settingsManager.initialTerminalColumns
+                )
+            )
         }
 
         Section("Appearance") {
@@ -450,7 +518,9 @@ struct AddServerView: View {
             tags: tags,
             provenance: provenance,
             jumpHostID: jumpHostIDs.first,
-            jumpHostIDs: jumpHostIDs.isEmpty ? nil : jumpHostIDs
+            jumpHostIDs: jumpHostIDs.isEmpty ? nil : jumpHostIDs,
+            initialTerminalColumns: usesAppDefaultTerminalSize ? nil : initialTerminalColumns,
+            initialTerminalRows: usesAppDefaultTerminalSize ? nil : initialTerminalRows
         )
 
         do {
@@ -508,6 +578,9 @@ struct EditServerView: View {
     @State private var isFavorite: Bool
     @State private var jumpHostIDs: [UUID]
     @State private var showingJumpHostPicker: Bool = false
+    @State private var usesAppDefaultTerminalSize: Bool
+    @State private var initialTerminalColumns: Int
+    @State private var initialTerminalRows: Int
     @State private var newTag: String = ""
     @State private var showingAddSSHKey = false
     @State private var keychainSaveError: String?
@@ -532,6 +605,15 @@ struct EditServerView: View {
         _tags = State(initialValue: server.tags)
         _isFavorite = State(initialValue: server.isFavorite)
         _jumpHostIDs = State(initialValue: server.resolvedJumpHostIDs)
+        let hasTerminalSize = server.initialTerminalColumns != nil
+            && server.initialTerminalRows != nil
+        _usesAppDefaultTerminalSize = State(initialValue: !hasTerminalSize)
+        _initialTerminalColumns = State(
+            initialValue: server.initialTerminalColumns ?? TerminalGeometry.default.columns
+        )
+        _initialTerminalRows = State(
+            initialValue: server.initialTerminalRows ?? TerminalGeometry.default.rows
+        )
         _requiresPasswordUpgrade = State(initialValue: false)
     }
 
@@ -540,6 +622,10 @@ struct EditServerView: View {
               let parsedPort = Int(port), (1...65_535).contains(parsedPort) else {
             return false
         }
+        guard usesAppDefaultTerminalSize || TerminalGeometry.contains(
+            rows: initialTerminalRows,
+            columns: initialTerminalColumns
+        ) else { return false }
         switch authMethod {
         case .password:
             return !password.isEmpty
@@ -572,6 +658,11 @@ struct EditServerView: View {
             }
             .onChange(of: settingsManager.sshKeys.map(\.id)) { _, _ in
                 normalizeSelectedSSHKey()
+            }
+            .onChange(of: usesAppDefaultTerminalSize) { _, usesDefault in
+                guard !usesDefault else { return }
+                initialTerminalColumns = settingsManager.initialTerminalColumns
+                initialTerminalRows = settingsManager.initialTerminalRows
             }
     }
 
@@ -788,6 +879,18 @@ struct EditServerView: View {
             #endif
         }
 
+        Section("Terminal") {
+            TerminalInitialSizeEditor(
+                usesAppDefault: $usesAppDefaultTerminalSize,
+                columns: $initialTerminalColumns,
+                rows: $initialTerminalRows,
+                appDefault: TerminalGeometry(
+                    rows: settingsManager.initialTerminalRows,
+                    columns: settingsManager.initialTerminalColumns
+                )
+            )
+        }
+
         Section("Appearance") {
             #if os(macOS)
             serverFormLabeledContent("Color tag") {
@@ -904,6 +1007,8 @@ struct EditServerView: View {
         updatedServer.isFavorite = isFavorite
         updatedServer.jumpHostID = jumpHostIDs.first
         updatedServer.jumpHostIDs = jumpHostIDs.isEmpty ? nil : jumpHostIDs
+        updatedServer.initialTerminalColumns = usesAppDefaultTerminalSize ? nil : initialTerminalColumns
+        updatedServer.initialTerminalRows = usesAppDefaultTerminalSize ? nil : initialTerminalRows
         do {
             try serverManager.updateServerOrThrow(
                 updatedServer,

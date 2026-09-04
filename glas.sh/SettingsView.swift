@@ -588,6 +588,33 @@ struct TerminalSettingsView: View {
                     Text("24")
                 }
             }
+
+            Section("Initial Terminal Size") {
+                Stepper(
+                    value: $settings.initialTerminalColumns,
+                    in: TerminalGeometry.columnRange,
+                    step: 5
+                ) {
+                    LabeledContent("Columns", value: "\(settings.initialTerminalColumns)")
+                }
+                .onChange(of: settings.initialTerminalColumns) { _, _ in
+                    settings.saveSettings()
+                }
+
+                Stepper(
+                    value: $settings.initialTerminalRows,
+                    in: TerminalGeometry.rowRange
+                ) {
+                    LabeledContent("Rows", value: "\(settings.initialTerminalRows)")
+                }
+                .onChange(of: settings.initialTerminalRows) { _, _ in
+                    settings.saveSettings()
+                }
+
+                Text("Used as the app-wide PTY fallback. When a terminal is visible, its measured window size takes precedence before the remote shell starts.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             
             Section("Cursor") {
                 Picker("Cursor Style", selection: $settings.cursorStyle) {

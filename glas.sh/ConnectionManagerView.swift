@@ -12,6 +12,16 @@ import os
 #if os(macOS)
 import AppKit
 import Observation
+
+enum ConnectionLibraryMacColumnLayout {
+    static let navigationMinimum: CGFloat = 240
+    static let navigationIdeal: CGFloat = 340
+    static let navigationMaximum: CGFloat = 480
+    static let resultsMinimum: CGFloat = 320
+    static let resultsIdeal: CGFloat = 510
+    static let resultsMaximum: CGFloat = 760
+    static let autosaveName = "sh.glas.connection-library.columns"
+}
 #endif
 
 private enum ConnectionWorkgroupSelection: Hashable {
@@ -60,6 +70,7 @@ struct ConnectionManagerView: View {
     @State private var pendingTrustSession: TerminalSession?
     @State private var pendingTrustChallenge: HostKeyTrustChallenge?
     @State private var connectionFailureMessage: String?
+    @State private var connectingServerIDs: Set<UUID> = []
     @State private var pendingLegacyAlgorithmServer: ServerConfiguration?
     @State private var passwordPromptServer: ServerConfiguration?
     @State private var quickConnectPassword: String = ""
@@ -265,6 +276,16 @@ struct ConnectionManagerView: View {
             libraryNavigation(connectionLibrary: connectionLibrary)
         } content: {
             libraryResults(connectionLibrary: connectionLibrary)
+                .navigationSplitViewColumnWidth(
+                    min: ConnectionLibraryMacColumnLayout.resultsMinimum,
+                    ideal: ConnectionLibraryMacColumnLayout.resultsIdeal,
+                    max: ConnectionLibraryMacColumnLayout.resultsMaximum
+                )
+                .background {
+                    MacConnectionLibrarySplitViewAutosave(
+                        name: ConnectionLibraryMacColumnLayout.autosaveName
+                    )
+                }
         } detail: {
             libraryDetail(connectionLibrary: connectionLibrary)
         }
@@ -499,7 +520,15 @@ struct ConnectionManagerView: View {
         .accessibilityIdentifier("connection-library-navigation")
         .listStyle(.sidebar)
         .navigationTitle("Connections")
+        #if os(macOS)
+        .navigationSplitViewColumnWidth(
+            min: ConnectionLibraryMacColumnLayout.navigationMinimum,
+            ideal: ConnectionLibraryMacColumnLayout.navigationIdeal,
+            max: ConnectionLibraryMacColumnLayout.navigationMaximum
+        )
+        #else
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
+        #endif
         #if os(iOS)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if iOSRouter.resumableWorkgroupID(in: sessionManager) != nil {
@@ -641,6 +670,7 @@ struct ConnectionManagerView: View {
                     ServerListRow(
                         server: server,
                         session: sessionForServer(server),
+                        isConnecting: connectingServerIDs.contains(server.id),
                         onView: { viewingServer = server },
                         onEdit: { editingServer = server },
                         onDelete: { serverPendingDeletion = server },
@@ -1433,18 +1463,25 @@ struct ConnectionManagerView: View {
                             let launch = try await sessionManager.createTransientAuthorizedSession(
                                 for: config,
                                 settingsManager: settingsManager,
-                                password: password
+                                password: password,
+                                initialTerminalPresentation: { pendingSession in
+                                    presentTerminalWindow(for: pendingSession)
+                                }
                             )
                             if launch.session.state == .connected {
-                                presentTerminalWindow(for: launch.session)
+                                if !launch.session.didRequestInitialTerminalPresentation {
+                                    presentTerminalWindow(for: launch.session)
+                                }
                             } else if let challenge = launch.session.pendingHostKeyChallenge {
                                 stageHostKeyChallenge(
                                     challenge,
                                     for: launch.session
                                 )
                             } else if case .error(let message) = launch.session.state {
-                                connectionFailureMessage = message
-                                sessionManager.closeSession(launch.session)
+                                if !launch.session.didRequestInitialTerminalPresentation {
+                                    connectionFailureMessage = message
+                                    sessionManager.closeSession(launch.session)
+                                }
                             }
                         } catch {
                             connectionFailureMessage = error.localizedDescription
@@ -1608,35 +1645,34 @@ struct ConnectionManagerView: View {
             return
         }
 
-        #if os(macOS)
-        do {
-            _ = try sessionManager.prepareConnection(for: server)
-        } catch {
-            if let promptServer = Self.targetPasswordPromptServer(
-                for: error,
-                requestedServerID: server.id
-            ) {
-                passwordPromptServer = promptServer
-            } else {
-                connectionFailureMessage = error.localizedDescription
-            }
-            return
-        }
-
-        openWindow(
-            id: "workspace",
-            value: MacWorkspaceLaunchRequest(
-                initialPaneIntent: .ssh(serverID: server.id)
-            )
-        )
-        #else
+        guard !connectingServerIDs.contains(server.id) else { return }
+        connectingServerIDs.insert(server.id)
 
         Task { @MainActor in
+            defer { connectingServerIDs.remove(server.id) }
+
             let launch: AuthorizedSessionLaunch
             do {
-                launch = try await sessionManager.createAuthorizedSession(for: server, settingsManager: settingsManager)
+                launch = try await sessionManager.createAuthorizedSession(
+                    for: server,
+                    settingsManager: settingsManager,
+                    initialTerminalPresentation: { pendingSession in
+                        presentTerminalWindow(for: pendingSession)
+                    }
+                )
             } catch {
-                connectionFailureMessage = error.localizedDescription
+                if let promptServer = Self.targetPasswordPromptServer(
+                    for: error,
+                    requestedServerID: server.id
+                ) {
+                    passwordPromptServer = promptServer
+                } else {
+                    connectionFailureMessage = Self.connectionFailureMessage(
+                        base: error.localizedDescription,
+                        diagnostics: nil,
+                        host: server.host
+                    )
+                }
                 return
             }
 
@@ -1649,20 +1685,24 @@ struct ConnectionManagerView: View {
             }
 
             if session.state == .connected {
-                presentTerminalWindow(for: session)
+                if !session.didRequestInitialTerminalPresentation {
+                    presentTerminalWindow(for: session)
+                }
                 return
             }
 
             if case .error(let message) = session.state {
-                if let diagnostics = session.lastConnectionDiagnostics, !diagnostics.isEmpty {
-                    connectionFailureMessage = "\(message)\n\n\(diagnostics)"
-                } else {
-                    connectionFailureMessage = message
+                if session.didRequestInitialTerminalPresentation {
+                    return
                 }
+                connectionFailureMessage = Self.connectionFailureMessage(
+                    base: message,
+                    diagnostics: session.lastConnectionDiagnostics,
+                    host: server.host
+                )
                 sessionManager.closeSession(session)
             }
         }
-        #endif
     }
 
     private var trustPromptBinding: Binding<Bool> {
@@ -1763,6 +1803,61 @@ struct ConnectionManagerView: View {
         return server
     }
 
+    static func connectionFailureMessage(
+        base: String,
+        diagnostics: String?,
+        host: String
+    ) -> String {
+        var sections = [base]
+        if let diagnostics,
+           !diagnostics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            sections.append(diagnostics)
+        }
+        if isLikelyLocalNetworkHost(host) {
+            sections.append(
+                "Local Network access may be required for this host. In System Settings, open Privacy & Security > Local Network, allow glas.sh, then try again."
+            )
+        }
+        return sections.joined(separator: "\n\n")
+    }
+
+    static func isLikelyLocalNetworkHost(_ rawHost: String) -> Bool {
+        var host = rawHost.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if host.hasPrefix("["), host.hasSuffix("]") {
+            host.removeFirst()
+            host.removeLast()
+        }
+
+        if host == "localhost" || host.hasSuffix(".local") {
+            return true
+        }
+
+        if host.contains(":") {
+            let address = host.split(separator: "%", maxSplits: 1).first.map(String.init) ?? host
+            return address == "::1"
+                || address.hasPrefix("fc")
+                || address.hasPrefix("fd")
+                || address.hasPrefix("fe8")
+                || address.hasPrefix("fe9")
+                || address.hasPrefix("fea")
+                || address.hasPrefix("feb")
+        }
+
+        let octets = host.split(separator: ".", omittingEmptySubsequences: false)
+        let values = octets.compactMap { Int($0) }
+        guard octets.count == 4,
+              values.count == 4,
+              values.allSatisfy({ (0...255).contains($0) }) else {
+            return false
+        }
+
+        return values[0] == 10
+            || values[0] == 127
+            || (values[0] == 169 && values[1] == 254)
+            || (values[0] == 172 && (16...31).contains(values[1]))
+            || (values[0] == 192 && values[1] == 168)
+    }
+
     private func submitPassword(
         _ password: String,
         for server: ServerConfiguration
@@ -1781,10 +1876,15 @@ struct ConnectionManagerView: View {
             let launch = try await sessionManager.createTransientAuthorizedSession(
                 for: server,
                 settingsManager: settingsManager,
-                password: password
+                password: password,
+                initialTerminalPresentation: { pendingSession in
+                    presentTerminalWindow(for: pendingSession)
+                }
             )
             if launch.session.state == .connected {
-                presentTerminalWindow(for: launch.session)
+                if !launch.session.didRequestInitialTerminalPresentation {
+                    presentTerminalWindow(for: launch.session)
+                }
                 return nil
             }
             if let challenge = launch.session.pendingHostKeyChallenge {
@@ -1792,8 +1892,14 @@ struct ConnectionManagerView: View {
                 return nil
             }
             if case .error(let message) = launch.session.state {
+                if launch.session.didRequestInitialTerminalPresentation {
+                    return nil
+                }
                 sessionManager.closeSession(launch.session)
                 return message
+            }
+            if launch.session.didRequestInitialTerminalPresentation {
+                return nil
             }
             sessionManager.closeSession(launch.session)
             return "The server did not establish a terminal session."
@@ -1819,7 +1925,9 @@ struct ConnectionManagerView: View {
                 return
             }
             if session.state == .connected {
-                presentTerminalWindow(for: session)
+                if !session.didRequestInitialTerminalPresentation {
+                    presentTerminalWindow(for: session)
+                }
                 clearPendingTrustPrompt()
             } else {
                 if case .error(let message) = session.state {
@@ -2324,6 +2432,7 @@ private struct WorkgroupEditorView: View {
 private struct ServerListRow: View {
     let server: ServerConfiguration
     let session: TerminalSession?
+    let isConnecting: Bool
     let onView: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
@@ -2412,10 +2521,16 @@ private struct ServerListRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            Image(systemName: server.authMethod.icon)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .accessibilityLabel(server.authMethod.displayName)
+            if isConnecting {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Connecting")
+            } else {
+                Image(systemName: server.authMethod.icon)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(server.authMethod.displayName)
+            }
 
             lastConnectedLabel
                 .lineLimit(1)
@@ -2443,6 +2558,11 @@ private struct ServerListRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
+            if isConnecting {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Connecting")
+            }
         }
     }
 
@@ -2480,6 +2600,59 @@ private struct ServerListRow: View {
 
 }
 
+#if os(macOS)
+private struct MacConnectionLibrarySplitViewAutosave: NSViewRepresentable {
+    let name: String
+
+    func makeNSView(context: Context) -> AttachmentView {
+        let view = AttachmentView(frame: .zero)
+        view.autosaveName = name
+        view.applyAutosaveName()
+        return view
+    }
+
+    func updateNSView(_ nsView: AttachmentView, context: Context) {
+        nsView.autosaveName = name
+        nsView.applyAutosaveName()
+    }
+
+    @MainActor
+    final class AttachmentView: NSView {
+        var autosaveName = ""
+
+        override func viewDidMoveToSuperview() {
+            super.viewDidMoveToSuperview()
+            applyAutosaveName()
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            applyAutosaveName()
+        }
+
+        func applyAutosaveName() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                var candidate = self.superview
+                while let view = candidate {
+                    if let splitView = view as? NSSplitView {
+                        if splitView.autosaveName != self.autosaveName {
+                            splitView.autosaveName = self.autosaveName
+                        }
+                        return
+                    }
+                    candidate = view.superview
+                }
+            }
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            nil
+        }
+    }
+}
+#endif
+
 private struct ServerInfoView: View {
     let server: ServerConfiguration
     let session: TerminalSession?
@@ -2514,6 +2687,12 @@ private struct ServerInfoView: View {
 
                 Section("Advanced") {
                     infoRow("TERM", server.terminalType)
+                    let initialGeometry = settingsManager.initialTerminalGeometry(for: server)
+                    infoRow(
+                        "Initial Size",
+                        "\(initialGeometry.columns) × \(initialGeometry.rows)"
+                            + (server.initialTerminalColumns == nil ? " (App Default)" : " (Connection)")
+                    )
                     infoRow("Keep Alive", "\(server.keepAliveInterval)s")
                     infoRow("Legacy Algorithms", server.legacyAlgorithmsEnabled ? "Allowed" : "Disabled")
                 }

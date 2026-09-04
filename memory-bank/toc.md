@@ -1,6 +1,6 @@
 # Memory Bank TOC
 
-Last reconciled against the unified target, release ledgers, and recorded QA evidence: **2026-08-11**.
+Last reconciled against the unified target, release ledgers, and recorded QA evidence: **2026-09-03**.
 
 ## Core
 - [Project Brief](./projectbrief.md)
@@ -58,6 +58,7 @@ Last reconciled against the unified target, release ledgers, and recorded QA evi
   - [One Base Release Completion](./tasks/2026-07/250726_one-base-release.md)
   - [Public Repository Platform Cleanup](./tasks/2026-07/250726_public-repo-platform-cleanup.md)
 - [2026-08](./tasks/2026-08/README.md)
+  - [Finder-Style SFTP Operations and Terminal Opening Geometry](./tasks/2026-08/160826_sftp-finder-native-operations.md)
   - [GlassEditorKit Remote SFTP Editing (M4)](./tasks/2026-08/110826_glass-editor-sftp-m4.md)
   - [Connection Experience and Native Server-Form Layout](./tasks/2026-08/100826_connection-experience-and-server-form-layout.md)
   - [Glass-Family Connection Contract](./tasks/2026-08/090826_glass-connection-contract.md)

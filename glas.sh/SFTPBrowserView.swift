@@ -15,6 +15,12 @@ import Darwin
 import GlassEditorCore
 import GlassEditorUI
 
+#if os(macOS)
+import AppKit
+#elseif os(iOS) || os(visionOS)
+import UIKit
+#endif
+
 nonisolated private enum SFTPTransferError: LocalizedError {
     case unsafeName
     case destinationEscapesFolder
@@ -69,9 +75,10 @@ nonisolated private enum SFTPLocalOpenError: Error {
     case notFound
 }
 
-nonisolated private struct SFTPUploadWorkerFailure: Error, Sendable {
+nonisolated private struct SFTPUploadWorkerFailure: LocalizedError, Sendable {
     enum Kind: Sendable {
         case general
+        case cancelled
         case remoteTargetChanged
         case commitOutcomeUnknown
     }
@@ -83,11 +90,18 @@ nonisolated private struct SFTPUploadWorkerFailure: Error, Sendable {
         self.message = message
         self.kind = kind
     }
+
+    var errorDescription: String? { message }
 }
 
 nonisolated private enum SFTPUploadCommitPolicy: Sendable {
     case createNoClobber
     case replaceExisting(expectedStat: RemoteStat, expectedDigest: ContentDigest)
+}
+
+nonisolated private enum SFTPLocalUploadSource: Sendable {
+    case fileImporter
+    case fileDrop
 }
 
 nonisolated private struct SFTPRemoteCommitGuardFailure: Error, Sendable {}
@@ -96,6 +110,37 @@ nonisolated private struct SFTPUploadResult: Sendable {
     let cleanupWarning: Bool
     let committedStat: RemoteStat?
     let committedDigest: ContentDigest
+}
+
+nonisolated private struct SFTPDownloadWorkerFailure: LocalizedError, Sendable {
+    let underlyingDescription: String
+    let partialWasRetained: Bool
+    let wasCancelled: Bool
+
+    private var retentionDescription: String {
+        partialWasRetained
+            ? " A protected partial was retained and will be validated before any future resume."
+            : " No partial file was kept."
+    }
+
+    var errorDescription: String? {
+        wasCancelled
+            ? "Download cancelled.\(retentionDescription)"
+            : "\(underlyingDescription)\(retentionDescription)"
+    }
+
+    func userFacingDescription(filename: String) -> String {
+        if wasCancelled {
+            return "Download cancelled.\(retentionDescription)"
+        }
+        return "Download of \(filename) failed: \(underlyingDescription)\(retentionDescription)"
+    }
+}
+
+nonisolated struct SFTPDownloadReadBatchDecision: Equatable, Sendable {
+    let acceptedResponseCount: Int
+    let nextChunkSize: UInt32?
+    let reachedEOF: Bool
 }
 
 nonisolated private enum SFTPLocalProtectionClass: Int32 {
@@ -170,6 +215,198 @@ nonisolated enum SFTPLocalResumeDecision: Equatable, Sendable {
     case rejectUnsafe
 }
 
+#if os(macOS)
+nonisolated struct SFTPBrowserTableEntry: Identifiable, Sendable {
+    let entry: SFTPPathComponent
+    let isDirectory: Bool
+
+    var id: String { entry.filename }
+}
+
+nonisolated struct SFTPBrowserTableSortComparator: SortComparator, Sendable {
+    enum Column: Hashable, Sendable {
+        case name
+        case size
+        case modified
+        case permissions
+    }
+
+    let column: Column
+    var order: SortOrder
+
+    init(column: Column, order: SortOrder = .forward) {
+        self.column = column
+        self.order = order
+    }
+
+    func compare(
+        _ lhs: SFTPBrowserTableEntry,
+        _ rhs: SFTPBrowserTableEntry
+    ) -> ComparisonResult {
+        if lhs.isDirectory != rhs.isDirectory {
+            return lhs.isDirectory ? .orderedAscending : .orderedDescending
+        }
+
+        let columnResult = switch column {
+        case .name:
+            ordered(lhs.entry.filename.localizedStandardCompare(rhs.entry.filename))
+        case .size:
+            compareOptional(lhs.entry.attributes.size, rhs.entry.attributes.size)
+        case .modified:
+            compareOptional(
+                lhs.entry.attributes.accessModificationTime?.modificationTime,
+                rhs.entry.attributes.accessModificationTime?.modificationTime
+            )
+        case .permissions:
+            compareOptional(
+                lhs.entry.attributes.permissions,
+                rhs.entry.attributes.permissions
+            )
+        }
+
+        if columnResult != .orderedSame { return columnResult }
+        return lhs.entry.filename.localizedStandardCompare(rhs.entry.filename)
+    }
+
+    private func compareOptional<Value: Comparable>(
+        _ lhs: Value?,
+        _ rhs: Value?
+    ) -> ComparisonResult {
+        switch (lhs, rhs) {
+        case (.none, .none):
+            return .orderedSame
+        case (.none, .some):
+            return .orderedDescending
+        case (.some, .none):
+            return .orderedAscending
+        case (.some(let lhs), .some(let rhs)):
+            if lhs < rhs { return ordered(.orderedAscending) }
+            if lhs > rhs { return ordered(.orderedDescending) }
+            return .orderedSame
+        }
+    }
+
+    private func ordered(_ result: ComparisonResult) -> ComparisonResult {
+        order == .forward ? result : result.reversed
+    }
+}
+
+nonisolated private extension ComparisonResult {
+    var reversed: ComparisonResult {
+        switch self {
+        case .orderedAscending: .orderedDescending
+        case .orderedSame: .orderedSame
+        case .orderedDescending: .orderedAscending
+        }
+    }
+}
+#endif
+
+nonisolated private enum SFTPRemoteOperationKind: String, Sendable {
+    case copy = "Copy"
+    case move = "Move"
+}
+
+nonisolated enum SFTPRemoteOperationPhase: Sendable {
+    case inspectDestination
+    case readSource
+    case createStaging
+    case verifySource
+    case verifyStaging
+    case publishDestination
+    case prepareStagingMetadata
+    case preserveMetadata
+    case retireSource
+    case verifyRetiredSource
+    case removeRetiredSource
+    case cleanupStaging
+
+    func failureMessage(path: String, serverDescription: String) -> String {
+        let serverResponse = "Server response: \(serverDescription)"
+        switch self {
+        case .inspectDestination:
+            return "Could not inspect the remote destination \"\(path)\". Check search permission on that folder and its parents. \(serverResponse) No changes were made."
+        case .readSource:
+            return "Could not read the remote source \"\(path)\". Check read permission on files and search permission on source folders. \(serverResponse) No destination was published."
+        case .createStaging:
+            return "Could not create a protected staging item in \"\(path)\". Check write and search permission on the destination folder. \(serverResponse) No existing destination was overwritten."
+        case .verifySource:
+            return "Could not re-read the remote source \"\(path)\" for verification. Check read and search permission, then retry. \(serverResponse) The copy was not published."
+        case .verifyStaging:
+            return "Could not verify the protected staging copy at \"\(path)\". Check read and search permission on the destination. \(serverResponse) No final destination was published."
+        case .publishDestination:
+            return "The verified copy could not be published at \"\(path)\". Check write and search permission on the destination folder. \(serverResponse) No existing destination was overwritten; a hidden staging item may remain."
+        case .prepareStagingMetadata:
+            return "The bytes were copied into protected staging at \"\(path)\", but the original permissions or timestamps could not be applied. Check permission to change remote metadata. \(serverResponse) No final destination was published; a hidden staging item may remain."
+        case .preserveMetadata:
+            return "The copied bytes were published at \"\(path)\", but the original permissions or timestamps could not be applied. Check permission to change remote metadata. \(serverResponse) The destination exists and may use server-default metadata."
+        case .retireSource:
+            return "The verified destination was created, but the source \"\(path)\" could not be renamed for safe cleanup. Check write and search permission on its parent folder, including sticky-bit and ACL rules. \(serverResponse) The original source remains."
+        case .verifyRetiredSource:
+            return "The verified destination was created, but the retained source at \"\(path)\" could not be proven identical to the copied source. \(serverResponse) The retained source was not deleted and may require manual recovery."
+        case .removeRetiredSource:
+            return "The verified destination was created, but the retained source \"\(path)\" could not be removed. Check delete permission throughout the retained tree. \(serverResponse) Both the destination and retained source remain."
+        case .cleanupStaging:
+            return "The copy was published at \"\(path)\", but its hidden staging item could not be removed. Check delete permission on the destination folder. \(serverResponse) The verified destination remains available."
+        }
+    }
+}
+
+private struct SFTPRemoteOperationRequest: Identifiable {
+    let id = UUID()
+    let kind: SFTPRemoteOperationKind
+    let sourceDirectory: String
+    let entries: [SFTPPathComponent]
+}
+
+nonisolated private enum SFTPRemoteOperationError: LocalizedError {
+    case destinationCollision(String)
+    case destinationInsideSource
+    case unsupportedItem(String)
+    case tooManyEntries(Int)
+    case aggregateSizeExceeded(UInt64)
+    case sourceChanged(String)
+    case verificationFailed(String)
+    case remoteCommandUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .destinationCollision(let name):
+            return "The destination already contains \"\(name)\". Nothing was overwritten."
+        case .destinationInsideSource:
+            return "A folder cannot be copied or moved into itself or one of its descendants."
+        case .unsupportedItem(let name):
+            return "\"\(name)\" is a symbolic link or special file and cannot be copied safely yet."
+        case .tooManyEntries(let maximum):
+            return "The remote operation exceeded its \(maximum)-item safety limit."
+        case .aggregateSizeExceeded(let maximum):
+            let limit = ByteCountFormatter.string(fromByteCount: Int64(clamping: maximum), countStyle: .file)
+            return "The remote operation exceeded its \(limit) transfer limit."
+        case .sourceChanged(let name):
+            return "\"\(name)\" changed while it was being copied. The copy was not published."
+        case .verificationFailed(let name):
+            return "The copied bytes for \"\(name)\" did not match the source. The copy was not published."
+        case .remoteCommandUnavailable:
+            return "The server does not permit the required remote copy command."
+        }
+    }
+}
+
+nonisolated struct SFTPRemoteManifestEntry: Equatable, Sendable {
+    enum Kind: Equatable, Sendable {
+        case directory
+        case file
+    }
+
+    let relativePath: String
+    let kind: Kind
+    let size: UInt64
+    let permissions: UInt32?
+    let accessTime: Date?
+    let modificationTime: Date?
+    let digest: Data?
+}
+
 struct SFTPBrowserView: View {
     let sessionID: UUID
     @Environment(SessionManager.self) private var sessionManager
@@ -189,18 +426,46 @@ struct SFTPBrowserView: View {
     @State private var showingFileImporter = false
     @State private var showingFolderPicker = false
     @State private var pendingDownloads: [SFTPPathComponent] = []
-    @State private var downloadProgress: Double = 0
-    @State private var downloadTotal: String = ""
+    @State private var transferActivity = SFTPTransferActivityStore()
+    @State private var transferActivityIsExpanded = false
     @State private var showingDeleteConfirmation = false
     @State private var entryToDelete: SFTPPathComponent?
+    @State private var showingRenamePrompt = false
+    @State private var entryToRename: SFTPPathComponent?
+    @State private var renameDraft = ""
+    @State private var inlineRenameFilename: String?
     @State private var operationInProgress: String?
     @State private var transferTask: Task<Void, Never>?
+    @FocusState private var focusedRenameFilename: String?
 
     // Selection
     @State private var selectedFilenames: Set<String> = []
     @State private var showingFileInfo: SFTPPathComponent?
+    @State private var refreshedFileInfoAttributes: SFTPFileAttributes?
+    @State private var fileInfoRefreshError: String?
+    @State private var fileInfoGeneralExpanded = true
+    @State private var fileInfoNetworkExpanded = true
+    @State private var fileInfoNameExpanded = false
+    @State private var fileInfoEditorExpanded = false
+    @State private var fileInfoPermissionsExpanded = true
+    @State private var fileInfoRawExpanded = false
     @State private var remoteEditorDocument: SFTPRemoteEditorDocument?
     @State private var showingBatchDeleteConfirmation = false
+    @State private var isReceivingFileDrop = false
+    #if os(macOS)
+    @State private var filePromiseTransfers = SFTPFilePromiseTransferRegistry()
+    @State private var macOSTableSortOrder = [
+        SFTPBrowserTableSortComparator(column: .name)
+    ]
+    #endif
+
+    // Remote copy / move destination browsing
+    @State private var remoteOperationRequest: SFTPRemoteOperationRequest?
+    @State private var remoteDestinationPath = "/"
+    @State private var remoteDestinationEntries: [SFTPPathComponent] = []
+    @State private var remoteDestinationIsLoading = false
+    @State private var remoteDestinationError: String?
+    @State private var remoteOperationFailureMessage: String?
 
     // Filtering
     @State private var showHiddenFiles = false
@@ -213,12 +478,26 @@ struct SFTPBrowserView: View {
         sessionManager.session(for: sessionID)
     }
 
+    private var remoteOperationFailureBinding: Binding<Bool> {
+        Binding(
+            get: { remoteOperationFailureMessage != nil },
+            set: { isPresented in
+                if !isPresented {
+                    remoteOperationFailureMessage = nil
+                }
+            }
+        )
+    }
+
     var body: some View {
         NavigationStack {
             content
                 .navigationTitle(currentPath)
                 .searchable(text: $filterText, prompt: "Filter files...")
                 .terminalTextInputDefaults()
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    sftpBottomShelf
+                }
                 .onSubmit(of: .search) {
                     if !filterText.isEmpty {
                         Task { await remoteFind(filterText) }
@@ -283,10 +562,39 @@ struct SFTPBrowserView: View {
         } message: {
             Text("Are you sure you want to delete \(selectedFilenames.count) selected items? This cannot be undone.")
         }
+        .alert("Rename", isPresented: $showingRenamePrompt) {
+            TextField("New name", text: $renameDraft)
+            Button("Rename") {
+                commitPromptedRename()
+            }
+            .disabled(!Self.isSafeBasename(renameDraft))
+            Button("Cancel", role: .cancel) {
+                cancelRename()
+            }
+        } message: {
+            if let entryToRename {
+                Text("Enter a new name for \"\(entryToRename.filename)\".")
+            }
+        }
+        .alert("Remote Operation", isPresented: remoteOperationFailureBinding) {
+            Button("OK") {
+                remoteOperationFailureMessage = nil
+            }
+        } message: {
+            if let remoteOperationFailureMessage {
+                Text(remoteOperationFailureMessage)
+            }
+        }
         .sheet(isPresented: fileInfoBinding) {
             if let entry = showingFileInfo {
                 fileInfoSheet(for: entry)
+                    .task(id: entry.filename) {
+                        await refreshFileInfo(for: entry)
+                    }
             }
+        }
+        .sheet(item: $remoteOperationRequest) { request in
+            remoteDestinationSheet(for: request)
         }
         .sheet(item: $remoteEditorDocument) { document in
             SFTPRemoteEditorView(
@@ -312,6 +620,12 @@ struct SFTPBrowserView: View {
                     remoteEditorDocument = nil
                 }
             )
+        }
+        .onChange(of: selectedFilenames) { _, selection in
+            if let inlineRenameFilename,
+               selection != Set([inlineRenameFilename]) {
+                cancelRename()
+            }
         }
     }
 
@@ -345,73 +659,569 @@ struct SFTPBrowserView: View {
         }
     }
 
+    @ViewBuilder
+    private var sftpBottomShelf: some View {
+        if !selectedFilenames.isEmpty
+            || operationInProgress != nil
+            || transferActivity.hasActivities {
+            VStack(spacing: 0) {
+                if !selectedFilenames.isEmpty {
+                    selectionBar
+                        .padding(8)
+                }
+
+                if let operationInProgress,
+                   !(transferTask != nil && transferActivity.hasActivities),
+                   !transferActivity.hasInFlightActivities {
+                    Divider()
+                    transientOperationStatus(operationInProgress)
+                }
+
+                if transferActivity.hasActivities {
+                    Divider()
+                    transferActivityShelf
+                }
+            }
+            .background(.bar)
+        }
+    }
+
+    private func transientOperationStatus(_ description: String) -> some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text(description)
+                .font(.caption)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            if transferTask != nil {
+                Button("Cancel", role: .cancel) {
+                    transferTask?.cancel()
+                }
+                .font(.caption)
+                .buttonStyle(.borderless)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+    }
+
+    private var transferActivityShelf: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        transferActivityIsExpanded.toggle()
+                    }
+                } label: {
+                    transferActivitySummary
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityLabel(transferActivity.headline)
+                .accessibilityValue(
+                    transferActivityIsExpanded ? "Expanded" : "Collapsed"
+                )
+                .accessibilityHint(
+                    transferActivityIsExpanded
+                        ? "Collapses transfer activity"
+                        : "Shows pending and recent transfers"
+                )
+
+                if transferTask != nil, transferActivity.hasInFlightActivities {
+                    Button {
+                        transferTask?.cancel()
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Cancel current transfer batch")
+                    #if os(visionOS)
+                    .frame(minWidth: 60, minHeight: 60)
+                    #endif
+                }
+            }
+            .padding(.horizontal, 14)
+            #if os(visionOS)
+            .frame(minHeight: 60)
+            #else
+            .frame(minHeight: 40)
+            #endif
+
+            if transferActivityIsExpanded {
+                Divider()
+
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(transferActivity.displayedActivities) { activity in
+                            transferActivityRow(activity)
+                            if activity.id != transferActivity.displayedActivities.last?.id {
+                                Divider()
+                                    .padding(.leading, 46)
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: 280)
+
+                if transferActivity.hasTerminalActivities {
+                    Divider()
+                    HStack {
+                        Spacer()
+                        Button("Clear History") {
+                            transferActivity.clearTerminalActivities()
+                            if !transferActivity.hasActivities {
+                                transferActivityIsExpanded = false
+                            }
+                        }
+                        .font(.caption)
+                        .buttonStyle(.borderless)
+                        #if os(visionOS)
+                        .frame(minHeight: 60)
+                        #endif
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                }
+            }
+        }
+    }
+
+    private var transferActivitySummary: some View {
+        HStack(spacing: 8) {
+            if let active = transferActivity.activeActivity {
+                Image(systemName: active.kind.systemImage)
+                    .foregroundStyle(.secondary)
+                Text(transferActivity.headline)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 8)
+                if let progress = active.progress {
+                    ProgressView(value: progress)
+                        .frame(width: 100)
+                    Text(active.statusLabel)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(active.statusLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if transferActivity.pendingCount > 0 {
+                    Text("\(transferActivity.pendingCount) waiting")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Image(systemName: transferSummarySystemImage)
+                    .foregroundStyle(transferSummaryColor)
+                Text(transferActivity.headline)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+            }
+
+            Image(systemName: transferActivityIsExpanded ? "chevron.down" : "chevron.up")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        .contentShape(Rectangle())
+    }
+
+    private func transferActivityRow(_ activity: SFTPTransferActivity) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: transferStatusSystemImage(activity.state))
+                .foregroundStyle(transferStatusColor(activity.state))
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(activity.filename)
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    Text(activity.statusLabel)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+
+                Text(activity.kind.title)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                if let progress = activity.progress {
+                    ProgressView(value: progress)
+                        .accessibilityValue(activity.statusLabel)
+                }
+
+                if let detail = activity.detail {
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundStyle(
+                            activity.state == .failed ? Color.red : Color.secondary
+                        )
+                        .lineLimit(2)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var transferSummarySystemImage: String {
+        if transferActivity.activities.contains(where: { $0.state == .failed }) {
+            return "exclamationmark.circle.fill"
+        }
+        if transferActivity.pendingCount > 0 { return "clock" }
+        if transferActivity.activities.contains(where: { $0.state == .cancelled }),
+           !transferActivity.activities.contains(where: { $0.state == .completed }) {
+            return "xmark.circle"
+        }
+        return "checkmark.circle.fill"
+    }
+
+    private var transferSummaryColor: Color {
+        transferActivity.activities.contains(where: { $0.state == .failed })
+            ? .red
+            : .secondary
+    }
+
+    private func transferStatusSystemImage(_ state: SFTPTransferActivityState) -> String {
+        switch state {
+        case .pending: "clock"
+        case .transferring: "arrow.left.arrow.right.circle"
+        case .verifying: "checkmark.shield"
+        case .completed: "checkmark.circle.fill"
+        case .failed: "exclamationmark.circle.fill"
+        case .cancelled: "xmark.circle"
+        }
+    }
+
+    private func transferStatusColor(_ state: SFTPTransferActivityState) -> Color {
+        switch state {
+        case .completed: .green
+        case .failed: .red
+        case .cancelled: .secondary
+        case .pending, .transferring, .verifying: .accentColor
+        }
+    }
+
     private var fileList: some View {
-        List {
+        Group {
+            #if os(macOS)
+            macOSFileTable
+            #else
+            List {
+                fileListRows
+            }
+            #endif
+        }
+        .listStyle(.plain)
+        .refreshable {
+            await loadDirectory()
+        }
+        #if os(macOS)
+        .dropDestination(
+            for: URL.self,
+            isEnabled: canAcceptFileDrop
+        ) { urls, _ in
+            beginFileDropUpload(urls)
+        }
+        .onDropSessionUpdated { session in
+            guard session.localSession == nil else {
+                isReceivingFileDrop = false
+                return
+            }
+            switch session.phase {
+            case .entering, .active:
+                isReceivingFileDrop = true
+            case .exiting, .ended, .dataTransferCompleted:
+                isReceivingFileDrop = false
+            @unknown default:
+                isReceivingFileDrop = false
+            }
+        }
+        .overlay {
+            if isReceivingFileDrop {
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
+                    .padding(6)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
+        #endif
+    }
+
+    #if os(macOS)
+    private var macOSFileTable: some View {
+        VStack(spacing: 0) {
             if showingSearchResults {
-                searchResultsSection
+                List {
+                    searchResultsSection
+                }
+                .listStyle(.plain)
+                .frame(height: 180)
+
+                Divider()
             }
 
             if navigationStack.count > 1 {
                 Button {
                     navigateUp()
                 } label: {
-                    HStack(spacing: 12) {
+                    HStack(spacing: 10) {
                         Image(systemName: "arrow.turn.up.left")
-                            .font(.title3)
                             .foregroundStyle(.secondary)
-                            .frame(width: 28)
+                            .frame(width: 20)
                         Text("Parent Directory")
                             .foregroundStyle(.secondary)
+                        Spacer()
                     }
+                    .contentShape(Rectangle())
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
                 }
+                .buttonStyle(.plain)
+
+                Divider()
             }
 
-            ForEach(sortedEntries, id: \.filename) { entry in
-                fileRow(for: entry)
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button(role: .destructive) {
-                            entryToDelete = entry
-                            showingDeleteConfirmation = true
-                        } label: {
-                            Label("Delete", systemImage: "trash")
-                        }
+            Table(
+                macOSTableEntries,
+                selection: $selectedFilenames,
+                sortOrder: $macOSTableSortOrder
+            ) {
+                TableColumn(
+                    "Name",
+                    sortUsing: SFTPBrowserTableSortComparator(column: .name)
+                ) { tableEntry in
+                    macOSTableNameCell(for: tableEntry.entry)
+                }
+                .width(min: 220, ideal: 360)
+
+                TableColumn(
+                    "Size",
+                    sortUsing: SFTPBrowserTableSortComparator(column: .size)
+                ) { tableEntry in
+                    macOSTableSizeCell(for: tableEntry.entry)
+                }
+                .width(min: 70, ideal: 90, max: 120)
+
+                TableColumn(
+                    "Modified",
+                    sortUsing: SFTPBrowserTableSortComparator(column: .modified)
+                ) { tableEntry in
+                    macOSTableModifiedCell(for: tableEntry.entry)
+                }
+                .width(min: 120, ideal: 150, max: 190)
+
+                TableColumn(
+                    "Permissions",
+                    sortUsing: SFTPBrowserTableSortComparator(column: .permissions)
+                ) { tableEntry in
+                    macOSTablePermissionsCell(for: tableEntry.entry)
+                }
+                .width(min: 92, ideal: 108, max: 130)
+
+                TableColumn("Actions") { tableEntry in
+                    macOSTableActionsCell(for: tableEntry.entry)
+                }
+                .width(min: 128, ideal: 140, max: 156)
+            }
+            .contextMenu(forSelectionType: String.self) { filenames in
+                selectionContextMenu(for: contextEntries(for: filenames), includesClipboardCopy: false)
+            }
+            .copyable(clipboardURLs(for: selectedFilenames))
+        }
+    }
+
+    private var macOSTableEntries: [SFTPBrowserTableEntry] {
+        let tableEntries = sortedEntries.map {
+            SFTPBrowserTableEntry(entry: $0, isDirectory: isDirectory($0))
+        }
+        guard !macOSTableSortOrder.isEmpty else { return tableEntries }
+        return tableEntries.sorted(using: macOSTableSortOrder)
+    }
+
+    private func macOSTableNameCell(for entry: SFTPPathComponent) -> some View {
+        let isDir = isDirectory(entry)
+
+        return HStack(spacing: 8) {
+            Image(systemName: iconName(for: entry))
+                .foregroundStyle(isDir ? .blue : .secondary)
+                .frame(width: 20)
+
+            if inlineRenameFilename == entry.filename {
+                TextField("Name", text: $renameDraft)
+                    .textFieldStyle(.plain)
+                    .focused($focusedRenameFilename, equals: entry.filename)
+                    .onSubmit {
+                        commitInlineRename(entry)
                     }
+                    .onExitCommand {
+                        cancelRename()
+                    }
+            } else {
+                Text(entry.filename)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+        .background {
+            ZStack {
+                SFTPTableClickTarget(
+                    delayedSingleClick: { wasSelectedBeforeClick in
+                        handleDelayedTableClick(
+                            entry,
+                            wasSelectedBeforeClick: wasSelectedBeforeClick
+                        )
+                    },
+                    doubleClick: {
+                        guard isDir else { return }
+                        cancelRename()
+                        Task { await handleEntryTap(entry) }
+                    }
+                )
+
+                if !isDir {
+                    SFTPFilePromiseDragSource(
+                        payloads: filePromisePayloads(for: entry)
+                    )
+                }
             }
         }
-        .listStyle(.plain)
-        .overlay(alignment: .bottom) {
-            VStack(spacing: 8) {
-                if !selectedFilenames.isEmpty {
-                    selectionBar
+    }
+
+    @ViewBuilder
+    private func macOSTableSizeCell(for entry: SFTPPathComponent) -> some View {
+        if isDirectory(entry) {
+            Text("—")
+                .foregroundStyle(.tertiary)
+        } else if let size = entry.attributes.size {
+            Text(formattedFileSize(size))
+                .monospacedDigit()
+        } else {
+            Text("—")
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    @ViewBuilder
+    private func macOSTableModifiedCell(for entry: SFTPPathComponent) -> some View {
+        if let time = entry.attributes.accessModificationTime {
+            Text(formattedDate(time.modificationTime))
+        } else {
+            Text("—")
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    @ViewBuilder
+    private func macOSTablePermissionsCell(for entry: SFTPPathComponent) -> some View {
+        if let permissions = entry.attributes.permissions {
+            Text(formattedPermissions(permissions))
+                .font(.body.monospaced())
+        } else {
+            Text("—")
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private func macOSTableActionsCell(for entry: SFTPPathComponent) -> some View {
+        HStack(spacing: 10) {
+            if !isDirectory(entry) {
+                Button {
+                    beginRemoteEdit(entry)
+                } label: {
+                    Image(systemName: "pencil")
                 }
-                if let op = operationInProgress {
-                    VStack(spacing: 6) {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text(op)
-                                .font(.caption)
-                            Button("Cancel", role: .cancel) {
-                                transferTask?.cancel()
-                            }
-                            .font(.caption)
-                            .buttonStyle(.borderless)
-                        }
-                        if downloadProgress > 0 {
-                            ProgressView(value: downloadProgress)
-                                .frame(maxWidth: 240)
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .help("Edit \(entry.filename)")
+
+                Button {
+                    startDownload(entry)
+                } label: {
+                    Image(systemName: "arrow.down.circle")
+                }
+                .help("Download \(entry.filename)")
+            }
+
+            Button {
+                presentFileInfo(entry)
+            } label: {
+                Image(systemName: "info.circle")
+            }
+            .help("Info for \(entry.filename)")
+        }
+        .buttonStyle(.borderless)
+    }
+    #endif
+
+    @ViewBuilder
+    private var fileListRows: some View {
+        if showingSearchResults {
+            searchResultsSection
+        }
+
+        if navigationStack.count > 1 {
+            Button {
+                navigateUp()
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "arrow.turn.up.left")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28)
+                    Text("Parent Directory")
+                        .foregroundStyle(.secondary)
                 }
             }
-            .padding(.bottom, 12)
         }
-        .refreshable {
-            await loadDirectory()
+
+        ForEach(sortedEntries, id: \.filename) { entry in
+            fileListRow(for: entry)
+                .contextMenu {
+                    selectionContextMenu(
+                        for: contextEntries(for: entry),
+                        includesClipboardCopy: true
+                    )
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button(role: .destructive) {
+                        entryToDelete = entry
+                        showingDeleteConfirmation = true
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
         }
+    }
+
+    @ViewBuilder
+    private func fileListRow(for entry: SFTPPathComponent) -> some View {
+        #if os(macOS)
+        if isDirectory(entry) {
+            fileRow(for: entry)
+        } else {
+            fileRow(for: entry)
+                .tag(entry.filename)
+                .background {
+                    SFTPFilePromiseDragSource(
+                        payloads: filePromisePayloads(for: entry)
+                    )
+                }
+        }
+        #else
+        fileRow(for: entry)
+        #endif
     }
 
     private var selectionBar: some View {
@@ -429,6 +1239,7 @@ struct SFTPBrowserView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
+            .disabled(!selectionContainsFile)
 
             Button(role: .destructive) {
                 showingBatchDeleteConfirmation = true
@@ -449,8 +1260,98 @@ struct SFTPBrowserView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+        #if os(visionOS)
         .background(.ultraThinMaterial, in: Capsule())
+        #else
+        .glassEffect(.regular, in: .capsule)
+        #endif
     }
+
+    #if os(macOS)
+    private func filePromisePayloads(for entry: SFTPPathComponent) -> [SFTPFilePromisePayload] {
+        guard let client = sftpClient,
+              transferTask == nil,
+              operationInProgress == nil else {
+            return []
+        }
+
+        let draggedEntries: [SFTPPathComponent]
+        if selectedFilenames.contains(entry.filename) {
+            draggedEntries = sortedEntries.filter {
+                !isDirectory($0) && selectedFilenames.contains($0.filename)
+            }
+        } else {
+            draggedEntries = [entry]
+        }
+
+        let serverID = session?.server.id ?? sessionID
+        let filePromiseTransfers = filePromiseTransfers
+        let transferActivity = transferActivity
+        return draggedEntries.map { draggedEntry in
+            let filename = draggedEntry.filename
+            let remotePath = remotePath(for: filename)
+            let activityID = UUID()
+            let fileType = UTType(filenameExtension: (filename as NSString).pathExtension)
+                ?? .data
+
+            return SFTPFilePromisePayload(
+                id: remotePath,
+                filename: filename,
+                fileType: fileType,
+                prepare: {
+                    await transferActivity.enqueue(
+                        id: activityID,
+                        kind: .finderDownload,
+                        filename: filename,
+                        totalBytes: draggedEntry.attributes.size
+                    )
+                }
+            ) { destinationURL in
+                await transferActivity.begin(activityID)
+                do {
+                    try await filePromiseTransfers.perform {
+                        try await Self.writePromisedRemoteFile(
+                            client: client,
+                            serverID: serverID,
+                            remotePath: remotePath,
+                            sourceName: filename,
+                            destinationURL: destinationURL
+                        ) { progress in
+                            transferActivity.apply(progress, to: activityID)
+                        }
+                    }
+                    await transferActivity.complete(activityID)
+                } catch let failure as SFTPDownloadWorkerFailure {
+                    if failure.wasCancelled {
+                        await transferActivity.cancel(
+                            activityID,
+                            detail: failure.localizedDescription
+                        )
+                    } else {
+                        await transferActivity.fail(
+                            activityID,
+                            detail: failure.localizedDescription
+                        )
+                    }
+                    throw failure
+                } catch {
+                    if error is CancellationError {
+                        await transferActivity.cancel(
+                            activityID,
+                            detail: "Finder download cancelled."
+                        )
+                    } else {
+                        await transferActivity.fail(
+                            activityID,
+                            detail: error.localizedDescription
+                        )
+                    }
+                    throw error
+                }
+            }
+        }
+    }
+    #endif
 
     private var sortedEntries: [SFTPPathComponent] {
         entries
@@ -469,19 +1370,36 @@ struct SFTPBrowserView: View {
             }
     }
 
+    private var selectionContainsFile: Bool {
+        sortedEntries.contains {
+            !isDirectory($0) && selectedFilenames.contains($0.filename)
+        }
+    }
+
+    private var selectableEntries: [SFTPPathComponent] {
+        #if os(macOS)
+        sortedEntries
+        #else
+        sortedEntries.filter { !isDirectory($0) }
+        #endif
+    }
+
     // MARK: - File Row
 
+    @ViewBuilder
     private func fileRow(for entry: SFTPPathComponent) -> some View {
         let isDir = isDirectory(entry)
         let isSelected = selectedFilenames.contains(entry.filename)
 
-        return HStack(spacing: 12) {
+        let row = HStack(spacing: 12) {
+            #if !os(macOS)
             if !isDir {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
                     .foregroundStyle(isSelected ? Color.blue : Color.gray.opacity(0.4))
                     .frame(width: 24)
             }
+            #endif
 
             Image(systemName: iconName(for: entry))
                 .font(.title3)
@@ -553,12 +1471,19 @@ struct SFTPBrowserView: View {
             }
         }
         .contentShape(Rectangle())
-        .onTapGesture {
-            if isDir {
+
+        if isDir {
+            row.onTapGesture {
                 Task { await handleEntryTap(entry) }
-            } else {
+            }
+        } else {
+            #if os(macOS)
+            row
+            #else
+            row.onTapGesture {
                 toggleSelection(entry.filename)
             }
+            #endif
         }
     }
 
@@ -569,6 +1494,10 @@ struct SFTPBrowserView: View {
         transferTask = nil
         activeTransfer?.cancel()
         await activeTransfer?.value
+
+        #if os(macOS)
+        await filePromiseTransfers.cancelAllAndWait()
+        #endif
 
         let activeClient = sftpClient
         guard let activeClient else { return true }
@@ -590,6 +1519,443 @@ struct SFTPBrowserView: View {
         }
     }
 
+    private func contextEntries(for filenames: Set<String>) -> [SFTPPathComponent] {
+        let effectiveNames = filenames.isEmpty ? selectedFilenames : filenames
+        return sortedEntries.filter { effectiveNames.contains($0.filename) }
+    }
+
+    private func contextEntries(for entry: SFTPPathComponent) -> [SFTPPathComponent] {
+        guard selectedFilenames.contains(entry.filename) else { return [entry] }
+        let selectedEntries = sortedEntries.filter { selectedFilenames.contains($0.filename) }
+        return selectedEntries.isEmpty ? [entry] : selectedEntries
+    }
+
+    @ViewBuilder
+    private func selectionContextMenu(
+        for targetEntries: [SFTPPathComponent],
+        includesClipboardCopy: Bool
+    ) -> some View {
+        if !targetEntries.isEmpty {
+            if targetEntries.count == 1, let entry = targetEntries.first {
+                if isDirectory(entry) {
+                    Button("Open") {
+                        Task { await handleEntryTap(entry) }
+                    }
+                } else {
+                    Button("Edit") {
+                        beginRemoteEdit(entry)
+                    }
+                }
+            }
+
+            if includesClipboardCopy {
+                Button("Copy") {
+                    copyRemoteReferences(targetEntries)
+                }
+                .keyboardShortcut("c", modifiers: .command)
+            }
+
+            Menu("Remote") {
+                Button("Copy…") {
+                    beginRemoteOperation(.copy, entries: targetEntries)
+                }
+                Button("Move…") {
+                    beginRemoteOperation(.move, entries: targetEntries)
+                }
+            }
+            .disabled(operationInProgress != nil || transferTask != nil)
+
+            Divider()
+
+            if targetEntries.count == 1, let entry = targetEntries.first {
+                Button("Rename") {
+                    beginRename(entry)
+                }
+                Button("Get Info") {
+                    presentFileInfo(entry)
+                }
+            }
+
+            if targetEntries.contains(where: { !isDirectory($0) }) {
+                Button("Download") {
+                    beginDownload(targetEntries)
+                }
+            }
+
+            Divider()
+
+            Button("Delete", role: .destructive) {
+                prepareDeletion(of: targetEntries)
+            }
+        }
+    }
+
+    private func beginDownload(_ targetEntries: [SFTPPathComponent]) {
+        let files = targetEntries.filter { !isDirectory($0) }
+        guard !files.isEmpty else { return }
+        pendingDownloads = files
+        showingFolderPicker = true
+    }
+
+    private func prepareDeletion(of targetEntries: [SFTPPathComponent]) {
+        guard !targetEntries.isEmpty else { return }
+        if targetEntries.count == 1, let entry = targetEntries.first {
+            entryToDelete = entry
+            showingDeleteConfirmation = true
+        } else {
+            selectedFilenames = Set(targetEntries.map(\.filename))
+            showingBatchDeleteConfirmation = true
+        }
+    }
+
+    private func presentFileInfo(_ entry: SFTPPathComponent) {
+        refreshedFileInfoAttributes = nil
+        fileInfoRefreshError = nil
+        fileInfoGeneralExpanded = true
+        fileInfoNetworkExpanded = true
+        fileInfoNameExpanded = false
+        fileInfoEditorExpanded = false
+        fileInfoPermissionsExpanded = true
+        fileInfoRawExpanded = false
+        showingFileInfo = entry
+    }
+
+    private func beginRename(_ entry: SFTPPathComponent) {
+        guard operationInProgress == nil, transferTask == nil else { return }
+        #if os(macOS)
+        beginInlineRename(entry)
+        #else
+        entryToRename = entry
+        renameDraft = entry.filename
+        showingRenamePrompt = true
+        #endif
+    }
+
+    #if os(macOS)
+    private func handleDelayedTableClick(
+        _ entry: SFTPPathComponent,
+        wasSelectedBeforeClick: Bool
+    ) {
+        guard wasSelectedBeforeClick,
+              selectedFilenames == Set([entry.filename]),
+              inlineRenameFilename == nil,
+              operationInProgress == nil,
+              transferTask == nil else { return }
+        beginInlineRename(entry)
+    }
+
+    private func beginInlineRename(_ entry: SFTPPathComponent) {
+        selectedFilenames = [entry.filename]
+        entryToRename = entry
+        renameDraft = entry.filename
+        inlineRenameFilename = entry.filename
+        Task { @MainActor in
+            focusedRenameFilename = entry.filename
+        }
+    }
+
+    private func commitInlineRename(_ entry: SFTPPathComponent) {
+        guard inlineRenameFilename == entry.filename else { return }
+        let requestedName = renameDraft
+        inlineRenameFilename = nil
+        focusedRenameFilename = nil
+        Task { await renameEntry(entry, to: requestedName) }
+    }
+    #endif
+
+    private func commitPromptedRename() {
+        guard let entryToRename else { return }
+        let requestedName = renameDraft
+        showingRenamePrompt = false
+        Task { await renameEntry(entryToRename, to: requestedName) }
+    }
+
+    private func cancelRename() {
+        showingRenamePrompt = false
+        entryToRename = nil
+        renameDraft = ""
+        inlineRenameFilename = nil
+        focusedRenameFilename = nil
+    }
+
+    private func renameEntry(_ entry: SFTPPathComponent, to newName: String) async {
+        guard let client = sftpClient else { return }
+        guard Self.isSafeBasename(entry.filename), Self.isSafeBasename(newName) else {
+            error = SFTPTransferError.unsafeName.localizedDescription
+            cancelRename()
+            return
+        }
+        guard newName != entry.filename else {
+            cancelRename()
+            return
+        }
+        let normalizedNewName = Self.normalizedCollisionName(newName)
+        guard !entries.contains(where: {
+            $0.filename != entry.filename
+                && Self.normalizedCollisionName($0.filename) == normalizedNewName
+        }) else {
+            error = SFTPRemoteOperationError.destinationCollision(newName).localizedDescription
+            cancelRename()
+            return
+        }
+
+        operationInProgress = "Renaming \(entry.filename)…"
+        defer {
+            operationInProgress = nil
+            cancelRename()
+        }
+        do {
+            try await client.rename(
+                at: remotePath(for: entry.filename),
+                to: remotePath(for: newName)
+            )
+            if selectedFilenames.remove(entry.filename) != nil {
+                selectedFilenames.insert(newName)
+            }
+            await loadDirectory()
+        } catch {
+            self.error = "Rename failed: \(error.localizedDescription)"
+        }
+    }
+
+    nonisolated static func remoteClipboardURL(
+        username: String,
+        host: String,
+        port: Int,
+        path: String
+    ) -> URL? {
+        guard path.hasPrefix("/") else { return nil }
+        var components = URLComponents()
+        components.scheme = "sftp"
+        components.user = username
+        components.host = host
+        components.port = port
+        components.path = path
+        return components.url
+    }
+
+    private func clipboardURLs(for filenames: Set<String>) -> [URL] {
+        clipboardURLs(for: contextEntries(for: filenames))
+    }
+
+    private func clipboardURLs(for targetEntries: [SFTPPathComponent]) -> [URL] {
+        guard let server = session?.server else { return [] }
+        return targetEntries.compactMap { entry in
+            Self.remoteClipboardURL(
+                username: server.username,
+                host: server.host,
+                port: server.port,
+                path: remotePath(for: entry.filename)
+            )
+        }
+    }
+
+    private func copyRemoteReferences(_ targetEntries: [SFTPPathComponent]) {
+        let urls = clipboardURLs(for: targetEntries)
+        guard !urls.isEmpty else { return }
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects(urls as [NSURL])
+        #elseif os(iOS) || os(visionOS)
+        UIPasteboard.general.urls = urls
+        #endif
+    }
+
+    private func beginRemoteOperation(
+        _ kind: SFTPRemoteOperationKind,
+        entries targetEntries: [SFTPPathComponent]
+    ) {
+        guard !targetEntries.isEmpty,
+              operationInProgress == nil,
+              transferTask == nil else { return }
+        remoteDestinationPath = currentPath
+        remoteDestinationEntries = []
+        remoteDestinationError = nil
+        remoteOperationRequest = SFTPRemoteOperationRequest(
+            kind: kind,
+            sourceDirectory: currentPath,
+            entries: targetEntries
+        )
+    }
+
+    private func remoteDestinationSheet(for request: SFTPRemoteOperationRequest) -> some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text(remoteDestinationPath)
+                        .font(.callout.monospaced())
+                        .textSelection(.enabled)
+
+                    if remoteDestinationPath != "/" {
+                        Button {
+                            navigateRemoteDestination(to: Self.remoteParentPath(remoteDestinationPath))
+                        } label: {
+                            Label("Parent Directory", systemImage: "arrow.turn.up.left")
+                        }
+                    }
+                }
+
+                Section("Folders") {
+                    if remoteDestinationIsLoading {
+                        HStack(spacing: 10) {
+                            ProgressView().controlSize(.small)
+                            Text("Loading…")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        ForEach(remoteDestinationFolders, id: \.filename) { entry in
+                            Button {
+                                navigateRemoteDestination(
+                                    to: Self.remotePath(
+                                        directory: remoteDestinationPath,
+                                        basename: entry.filename
+                                    )
+                                )
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "folder.fill")
+                                        .foregroundStyle(.blue)
+                                    Text(entry.filename)
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption)
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                if let remoteDestinationError {
+                    Section {
+                        Label(remoteDestinationError, systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                Section {
+                    Label(
+                        "The remote server checks permissions when the operation starts. glas.sh stages and verifies copied bytes before publishing them.",
+                        systemImage: "lock.shield"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("\(request.kind.rawValue) to Remote Folder")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        remoteOperationRequest = nil
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("\(request.kind.rawValue) Here") {
+                        startRemoteOperation(request, destinationDirectory: remoteDestinationPath)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(remoteDestinationIsLoading)
+                }
+            }
+        }
+        #if os(macOS)
+        .frame(width: 520, height: 560)
+        #else
+        .presentationDetents([.medium, .large])
+        #endif
+        .task(id: request.id) {
+            await loadRemoteDestination()
+        }
+    }
+
+    private var remoteDestinationFolders: [SFTPPathComponent] {
+        remoteDestinationEntries
+            .filter { $0.filename != "." && $0.filename != ".." }
+            .filter { isDirectory($0) }
+            .sorted {
+                $0.filename.localizedCaseInsensitiveCompare($1.filename) == .orderedAscending
+            }
+    }
+
+    private func navigateRemoteDestination(to path: String) {
+        remoteDestinationPath = path
+        remoteDestinationEntries = []
+        remoteDestinationError = nil
+        Task { await loadRemoteDestination() }
+    }
+
+    private func loadRemoteDestination() async {
+        guard let client = sftpClient else { return }
+        remoteDestinationIsLoading = true
+        defer { remoteDestinationIsLoading = false }
+        do {
+            let listing = try await client.listDirectory(atPath: remoteDestinationPath)
+            remoteDestinationEntries = listing.flatMap(\.components)
+            remoteDestinationError = nil
+        } catch {
+            remoteDestinationError = "This folder could not be opened: \(error.localizedDescription)"
+        }
+    }
+
+    private func startRemoteOperation(
+        _ request: SFTPRemoteOperationRequest,
+        destinationDirectory: String
+    ) {
+        remoteOperationRequest = nil
+        let activityKind: SFTPTransferKind = request.kind == .copy
+            ? .remoteCopy
+            : .remoteMove
+        let activityIDs = request.entries.map {
+            transferActivity.enqueue(kind: activityKind, filename: $0.filename)
+        }
+        transferTask = Task {
+            await performRemoteOperation(
+                request,
+                destinationDirectory: destinationDirectory,
+                activityIDs: activityIDs
+            )
+        }
+    }
+
+    nonisolated static func remotePath(directory: String, basename: String) -> String {
+        directory == "/" ? "/" + basename : directory + "/" + basename
+    }
+
+    nonisolated static func remoteParentPath(_ path: String) -> String {
+        guard path != "/" else { return "/" }
+        let parent = (path as NSString).deletingLastPathComponent
+        return parent.isEmpty ? "/" : parent
+    }
+
+    nonisolated static func isRemotePath(_ candidate: String, inside source: String) -> Bool {
+        let normalizedSource = source == "/"
+            ? "/"
+            : "/" + source.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let normalizedCandidate = candidate == "/"
+            ? "/"
+            : "/" + candidate.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard normalizedCandidate != normalizedSource else { return true }
+        if normalizedSource == "/" { return true }
+        return normalizedCandidate.hasPrefix(normalizedSource + "/")
+    }
+
+    private var canAcceptFileDrop: Bool {
+        sftpClient != nil && transferTask == nil && operationInProgress == nil
+    }
+
+    private func beginFileDropUpload(_ urls: [URL]) {
+        isReceivingFileDrop = false
+        guard canAcceptFileDrop else {
+            error = "Wait for the current SFTP operation to finish before dropping files."
+            return
+        }
+        guard !urls.isEmpty else { return }
+        transferTask = Task { await uploadLocalFiles(urls, source: .fileDrop) }
+    }
+
     // MARK: - Toolbar
 
     @ToolbarContentBuilder
@@ -606,14 +1972,15 @@ struct SFTPBrowserView: View {
 
         ToolbarItem(placement: .primaryAction) {
             Menu {
-                let selectableFiles = sortedEntries.filter { !isDirectory($0) }
-
-                if !selectableFiles.isEmpty {
+                if !selectableEntries.isEmpty {
                     Button {
-                        selectedFilenames = Set(selectableFiles.map(\.filename))
+                        selectedFilenames = Set(selectableEntries.map(\.filename))
                     } label: {
                         Label("Select All", systemImage: "checkmark.circle")
                     }
+                    #if os(macOS)
+                    .keyboardShortcut("a", modifiers: .command)
+                    #endif
 
                     if !selectedFilenames.isEmpty {
                         Button {
@@ -621,6 +1988,9 @@ struct SFTPBrowserView: View {
                         } label: {
                             Label("Deselect All", systemImage: "circle")
                         }
+                        #if os(macOS)
+                        .keyboardShortcut("a", modifiers: [.command, .shift])
+                        #endif
                     }
 
                     Divider()
@@ -644,6 +2014,7 @@ struct SFTPBrowserView: View {
                 Toggle(isOn: $showHiddenFiles) {
                     Label("Show Hidden Files", systemImage: "eye")
                 }
+                .keyboardShortcut(".", modifiers: [.command, .shift])
 
                 Divider()
 
@@ -1138,15 +2509,37 @@ struct SFTPBrowserView: View {
 
         let downloads = pendingDownloads
         pendingDownloads = []
+        let activityIDs = downloads.map {
+            transferActivity.enqueue(
+                kind: .download,
+                filename: $0.filename,
+                totalBytes: $0.attributes.size
+            )
+        }
 
         for (index, entry) in downloads.enumerated() {
+            if Task.isCancelled {
+                transferActivity.cancelPending(
+                    activityIDs.dropFirst(index),
+                    detail: "The transfer batch was cancelled."
+                )
+                break
+            }
             await downloadFileToFolder(
                 entry,
                 destinationDirectory: openedDestinationDirectory.directory,
                 destinationDirectoryIdentity: openedDestinationDirectory.identity,
+                activityID: activityIDs[index],
                 current: index + 1,
                 total: downloads.count
             )
+            if Task.isCancelled {
+                transferActivity.cancelPending(
+                    activityIDs.dropFirst(index + 1),
+                    detail: "The transfer batch was cancelled."
+                )
+                break
+            }
         }
 
         selectedFilenames.removeAll()
@@ -1156,36 +2549,93 @@ struct SFTPBrowserView: View {
         _ entry: SFTPPathComponent,
         destinationDirectory: FileHandle,
         destinationDirectoryIdentity: SFTPLocalDirectoryIdentity,
+        activityID: UUID,
         current: Int,
         total: Int
     ) async {
-        guard let client = sftpClient else { return }
-        guard Self.isSafeBasename(entry.filename) else {
-            error = SFTPTransferError.unsafeName.localizedDescription
+        guard let client = sftpClient else {
+            transferActivity.fail(activityID, detail: "The SFTP connection is unavailable.")
             return
         }
-
+        guard Self.isSafeBasename(entry.filename) else {
+            error = SFTPTransferError.unsafeName.localizedDescription
+            transferActivity.fail(activityID, detail: SFTPTransferError.unsafeName.localizedDescription)
+            return
+        }
         let filePath = remotePath(for: entry.filename)
-
         let listedFileSize = entry.attributes.size
         let fileSize = listedFileSize ?? 0
         let fileSizeText = fileSize > 0 ? " (\(formattedFileSize(fileSize)))" : ""
         let prefix = total > 1 ? "[\(current)/\(total)] " : ""
+        transferActivity.begin(activityID)
         operationInProgress = "\(prefix)Downloading \(entry.filename)\(fileSizeText)..."
-        downloadProgress = 0
-        downloadTotal = formattedFileSize(fileSize)
 
+        do {
+            try await Self.performVerifiedDownload(
+                client: client,
+                serverID: session?.server.id ?? sessionID,
+                remotePath: filePath,
+                sourceName: entry.filename,
+                destinationDirectory: destinationDirectory,
+                destinationDirectoryIdentity: destinationDirectoryIdentity,
+                exactDestinationName: nil
+            ) { progress in
+                transferActivity.apply(progress, to: activityID)
+                if case .transferring(let completedBytes, let expectedBytes) = progress,
+                   expectedBytes > 0 {
+                    let value = min(1, Double(completedBytes) / Double(expectedBytes))
+                    operationInProgress = "\(prefix)Downloading \(entry.filename) — \(Int(value * 100))%"
+                } else if progress == .verifying {
+                    operationInProgress = "\(prefix)Verifying \(entry.filename)…"
+                }
+            }
+            transferActivity.complete(activityID)
+        } catch let failure as SFTPDownloadWorkerFailure {
+            self.error = failure.userFacingDescription(filename: entry.filename)
+            if failure.wasCancelled {
+                transferActivity.cancel(activityID, detail: failure.localizedDescription)
+            } else {
+                transferActivity.fail(activityID, detail: failure.localizedDescription)
+            }
+        } catch {
+            self.error = "Download of \(entry.filename) failed: \(error.localizedDescription)"
+            if error is CancellationError {
+                transferActivity.cancel(activityID, detail: "Download cancelled.")
+            } else {
+                transferActivity.fail(activityID, detail: error.localizedDescription)
+            }
+        }
+
+        operationInProgress = nil
+    }
+
+    private static func performVerifiedDownload(
+        client: SFTPClient,
+        serverID: UUID,
+        remotePath: String,
+        sourceName: String,
+        destinationDirectory: FileHandle,
+        destinationDirectoryIdentity: SFTPLocalDirectoryIdentity,
+        exactDestinationName: String?,
+        progress: @escaping @MainActor (SFTPTransferProgressUpdate) -> Void
+    ) async throws {
         var retainedPartialName: String?
         var retainedPartialIdentity: SFTPLocalFileIdentity?
         var openedRemoteFile: SFTPFile?
+
         do {
+            guard Self.isSafeBasename(sourceName),
+                  exactDestinationName.map(Self.isSafeBasename) ?? true else {
+                throw SFTPTransferError.unsafeName
+            }
             guard try Self.localDirectoryIdentity(for: destinationDirectory)
                     == destinationDirectoryIdentity else {
                 throw SFTPTransferError.cannotCreateTemporaryFile
             }
+
             // FSTAT binds the source identity to the same opaque handle used for every
             // byte. A path-level STAT could instead describe a replacement inode.
-            let remoteFile = try await client.openFile(filePath: filePath, flags: .read)
+            let remoteFile = try await client.openFile(filePath: remotePath, flags: .read)
             openedRemoteFile = remoteFile
             let sourceAttributes = try await remoteFile.readAttributes()
             guard sourceAttributes.isRegularFile else {
@@ -1194,14 +2644,15 @@ struct SFTPBrowserView: View {
             guard let expectedFileSize = sourceAttributes.size else {
                 throw SFTPTransferError.missingRemoteSize
             }
+            progress(.transferring(completedBytes: 0, totalBytes: expectedFileSize))
             let sourceModificationTime = sourceAttributes.accessModificationTime?.modificationTime
-            let destinationName = try collisionSafeDestinationName(
-                for: entry.filename,
+            let destinationName = try exactDestinationName ?? Self.collisionSafeDestinationName(
+                for: sourceName,
                 in: destinationDirectory
             )
             let resumeIdentity = Self.downloadResumeIdentity(
-                serverID: session?.server.id ?? sessionID,
-                remotePath: filePath,
+                serverID: serverID,
+                remotePath: remotePath,
                 size: expectedFileSize,
                 modificationTime: sourceModificationTime
             )
@@ -1287,50 +2738,102 @@ struct SFTPBrowserView: View {
                 availableCapacity: try Self.availableCapacity(in: destinationDirectory)
             )
 
-            let chunkSize: UInt32 = 262144
             var offset: UInt64 = 0
             var remoteHasher = SHA256()
+            var effectiveChunkSize = Self.downloadReadChunkSize
             do {
                 // Re-establish trust in every retained byte using the same open remote
                 // handle that will supply the remainder. Only then seek to the append point.
+                if resumeOffset > 0 {
+                    progress(.verifying)
+                }
                 while offset < resumeOffset {
                     try Task.checkCancellation()
-                    let requested = UInt32(min(UInt64(chunkSize), resumeOffset - offset))
-                    let chunk = try await remoteFile.read(from: offset, length: requested)
-                    let data = Data(buffer: chunk)
-                    guard let localData = try localFile.read(upToCount: data.count),
-                          Self.resumeChunksMatch(source: data, retained: localData) else {
+                    let requests = Self.downloadReadWindow(
+                        from: offset,
+                        through: resumeOffset,
+                        chunkSize: effectiveChunkSize
+                    )
+                    let chunks = try await remoteFile.read(requests)
+                    let decision = try Self.downloadReadBatchDecision(
+                        requests: requests,
+                        readableByteCounts: chunks.map(\.readableBytes)
+                    )
+                    guard !decision.reachedEOF else {
                         keepPartial = false
                         throw SFTPTransferError.invalidResumePartial
                     }
-                    remoteHasher.update(data: data)
-                    offset += UInt64(data.count)
-                }
-                try localFile.seek(toOffset: resumeOffset)
 
-                while true {
-                    try Task.checkCancellation()
-                    let chunk = try await remoteFile.read(from: offset, length: chunkSize)
-                    let bytes = chunk.readableBytes
-                    if bytes == 0 { break }
-
-                    let incomingBytes = UInt64(bytes)
-                    try BoundedStorage.validateWrite(
-                        currentBytes: offset,
-                        incomingBytes: incomingBytes,
-                        maximumBytes: BoundedStorage.maximumDownloadBytes,
-                        availableCapacity: try Self.availableCapacity(in: destinationDirectory)
-                    )
-                    let data = Data(buffer: chunk)
-                    remoteHasher.update(data: data)
-                    try localFile.write(contentsOf: data)
-                    offset += incomingBytes
-
-                    if fileSize > 0 {
-                        downloadProgress = min(1, Double(offset) / Double(fileSize))
-                        operationInProgress = "\(prefix)Downloading \(entry.filename) — \(Int(downloadProgress * 100))%"
+                    for index in 0..<decision.acceptedResponseCount {
+                        try Task.checkCancellation()
+                        let request = requests[index]
+                        guard request.offset == offset else {
+                            keepPartial = false
+                            throw SFTPTransferError.invalidResumePartial
+                        }
+                        let data = Data(buffer: chunks[index])
+                        guard let localData = try localFile.read(upToCount: data.count),
+                              Self.resumeChunksMatch(source: data, retained: localData) else {
+                            keepPartial = false
+                            throw SFTPTransferError.invalidResumePartial
+                        }
+                        remoteHasher.update(data: data)
+                        offset += UInt64(data.count)
+                    }
+                    if let nextChunkSize = decision.nextChunkSize {
+                        effectiveChunkSize = nextChunkSize
                     }
                 }
+                try localFile.seek(toOffset: resumeOffset)
+                progress(.transferring(
+                    completedBytes: resumeOffset,
+                    totalBytes: expectedFileSize
+                ))
+
+                downloadLoop: while offset < expectedFileSize {
+                    try Task.checkCancellation()
+                    let requests = Self.downloadReadWindow(
+                        from: offset,
+                        through: expectedFileSize,
+                        chunkSize: effectiveChunkSize
+                    )
+                    let chunks = try await remoteFile.read(requests)
+                    let decision = try Self.downloadReadBatchDecision(
+                        requests: requests,
+                        readableByteCounts: chunks.map(\.readableBytes)
+                    )
+
+                    for index in 0..<decision.acceptedResponseCount {
+                        try Task.checkCancellation()
+                        let request = requests[index]
+                        guard request.offset == offset else {
+                            throw SFTPError.invalidResponse
+                        }
+                        let chunk = chunks[index]
+                        let incomingBytes = UInt64(chunk.readableBytes)
+                        try BoundedStorage.validateWrite(
+                            currentBytes: offset,
+                            incomingBytes: incomingBytes,
+                            maximumBytes: BoundedStorage.maximumDownloadBytes,
+                            availableCapacity: try Self.availableCapacity(in: destinationDirectory)
+                        )
+                        let data = Data(buffer: chunk)
+                        remoteHasher.update(data: data)
+                        try localFile.write(contentsOf: data)
+                        offset += incomingBytes
+                        progress(.transferring(
+                            completedBytes: offset,
+                            totalBytes: expectedFileSize
+                        ))
+                    }
+                    if let nextChunkSize = decision.nextChunkSize {
+                        effectiveChunkSize = nextChunkSize
+                    }
+                    if decision.reachedEOF {
+                        break downloadLoop
+                    }
+                }
+                progress(.verifying)
                 let completedAttributes = try await remoteFile.readAttributes()
                 guard completedAttributes.isRegularFile,
                       completedAttributes.size == sourceAttributes.size,
@@ -1376,7 +2879,6 @@ struct SFTPBrowserView: View {
                 matching: completedLocalIdentity
             )
             completed = true
-
         } catch {
             if let openedRemoteFile {
                 try? await openedRemoteFile.close()
@@ -1390,77 +2892,207 @@ struct SFTPBrowserView: View {
             } else {
                 false
             }
-            let retention = partialWasRetained
-                ? " A protected partial was retained and will be validated before any future resume."
-                : " No partial file was kept."
-            self.error = error is CancellationError
-                ? "Download cancelled.\(retention)"
-                : "Download of \(entry.filename) failed: \(error.localizedDescription)\(retention)"
+            throw SFTPDownloadWorkerFailure(
+                underlyingDescription: error.localizedDescription,
+                partialWasRetained: partialWasRetained,
+                wasCancelled: error is CancellationError
+            )
+        }
+    }
+
+    #if os(macOS)
+    private static func writePromisedRemoteFile(
+        client: SFTPClient,
+        serverID: UUID,
+        remotePath: String,
+        sourceName: String,
+        destinationURL: URL,
+        progress: @escaping @MainActor (SFTPTransferProgressUpdate) -> Void
+    ) async throws {
+        guard destinationURL.isFileURL,
+              Self.isSafeBasename(destinationURL.lastPathComponent) else {
+            throw SFTPTransferError.destinationEscapesFolder
+        }
+
+        let openedDestinationDirectory = try Self.openLocalDirectoryNoFollow(
+            at: destinationURL.deletingLastPathComponent()
+        )
+        defer { try? openedDestinationDirectory.directory.close() }
+
+        try await Self.performVerifiedDownload(
+            client: client,
+            serverID: serverID,
+            remotePath: remotePath,
+            sourceName: sourceName,
+            destinationDirectory: openedDestinationDirectory.directory,
+            destinationDirectoryIdentity: openedDestinationDirectory.identity,
+            exactDestinationName: destinationURL.lastPathComponent,
+            progress: progress
+        )
+    }
+    #endif
+
+    private func handleFileImport(_ result: Result<[URL], Error>) async {
+        switch result {
+        case .success(let urls):
+            await uploadLocalFiles(urls, source: .fileImporter)
+
+        case .failure(let err):
+            transferTask = nil
+            self.error = "File selection failed: \(err.localizedDescription)"
+        }
+    }
+
+    private func uploadLocalFiles(
+        _ urls: [URL],
+        source: SFTPLocalUploadSource
+    ) async {
+        defer { transferTask = nil }
+        guard let client = sftpClient else {
+            error = "The SFTP connection is no longer available."
+            return
+        }
+        let activityIDs = urls.map {
+            transferActivity.enqueue(kind: .upload, filename: $0.lastPathComponent)
+        }
+
+        // Reserve names for the whole selection. The visible directory listing is only a
+        // snapshot, so without a batch reservation two local URLs with the same basename
+        // could select the same remote target before the directory is refreshed.
+        var reservedRemoteNames = Set(entries.map { Self.normalizedCollisionName($0.filename) })
+
+        for (index, url) in urls.enumerated() {
+            let activityID = activityIDs[index]
+            if Task.isCancelled {
+                transferActivity.cancelPending(
+                    activityIDs.dropFirst(index),
+                    detail: "The transfer batch was cancelled."
+                )
+                return
+            }
+            let accessedSecurityScope = url.startAccessingSecurityScopedResource()
+            if !accessedSecurityScope {
+                switch source {
+                case .fileImporter:
+                    // Preserve the existing picker behavior: inaccessible selections are skipped.
+                    transferActivity.fail(
+                        activityID,
+                        detail: "Access to this selected file was unavailable."
+                    )
+                    continue
+                case .fileDrop:
+                    guard FileManager.default.isReadableFile(atPath: url.path) else {
+                        error = "Upload failed: glas.sh could not access \(url.lastPathComponent)."
+                        transferActivity.fail(
+                            activityID,
+                            detail: "glas.sh could not access this file."
+                        )
+                        transferActivity.cancelPending(
+                            activityIDs.dropFirst(index + 1),
+                            detail: "The transfer batch stopped after a failure."
+                        )
+                        operationInProgress = nil
+                        return
+                    }
+                }
+            }
+            do {
+                defer {
+                    if accessedSecurityScope {
+                        url.stopAccessingSecurityScopedResource()
+                    }
+                }
+                if case .fileDrop = source {
+                    let resourceValues = try url.resourceValues(forKeys: [.isRegularFileKey])
+                    guard resourceValues.isRegularFile == true else {
+                        error = "Only regular files can be uploaded. Folder drops are not supported yet."
+                        transferActivity.fail(
+                            activityID,
+                            detail: "Only regular files can be uploaded."
+                        )
+                        transferActivity.cancelPending(
+                            activityIDs.dropFirst(index + 1),
+                            detail: "The transfer batch stopped after a failure."
+                        )
+                        operationInProgress = nil
+                        return
+                    }
+                }
+                let sourceName = url.lastPathComponent
+                guard Self.isSafeBasename(sourceName) else {
+                    throw SFTPTransferError.unsafeName
+                }
+                let filename = collisionSafeRemoteName(
+                    for: sourceName,
+                    reservingIn: &reservedRemoteNames
+                )
+                transferActivity.updateFilename(filename, for: activityID)
+                transferActivity.begin(activityID)
+                let targetPath = remotePath(for: filename)
+                operationInProgress = filename == sourceName
+                    ? "Uploading \(filename)..."
+                    : "Uploading as \(filename)..."
+                let cleanupWarning = try await Self.performUpload(
+                    client: client,
+                    sourceURL: url,
+                    serverID: session?.server.id ?? sessionID,
+                    remoteDirectory: currentPath,
+                    sourceName: sourceName,
+                    finalName: filename,
+                    targetPath: targetPath,
+                    maximumUploadBytes: BoundedStorage.maximumUploadBytes
+                ) { progress in
+                    transferActivity.apply(progress, to: activityID)
+                    if progress == .verifying {
+                        operationInProgress = "Verifying \(filename)…"
+                    }
+                }
+                transferActivity.complete(
+                    activityID,
+                    detail: cleanupWarning
+                        ? "Completed; a tracked cleanup item remains on the server."
+                        : nil
+                )
+                if cleanupWarning {
+                    self.error = "Upload completed, but a tracked hidden cleanup file remains on the server."
+                }
+            } catch let failure as SFTPUploadWorkerFailure {
+                self.error = failure.message
+                if failure.kind == .cancelled {
+                    transferActivity.cancel(activityID, detail: failure.message)
+                } else {
+                    transferActivity.fail(activityID, detail: failure.message)
+                }
+                transferActivity.cancelPending(
+                    activityIDs.dropFirst(index + 1),
+                    detail: failure.kind == .cancelled
+                        ? "The transfer batch was cancelled."
+                        : "The transfer batch stopped after a failure."
+                )
+                operationInProgress = nil
+                return
+            } catch {
+                self.error = error is CancellationError
+                    ? "Upload cancelled. No partial file was kept."
+                    : "Upload failed: \(error.localizedDescription)"
+                if error is CancellationError {
+                    transferActivity.cancel(activityID, detail: "Upload cancelled.")
+                } else {
+                    transferActivity.fail(activityID, detail: error.localizedDescription)
+                }
+                transferActivity.cancelPending(
+                    activityIDs.dropFirst(index + 1),
+                    detail: error is CancellationError
+                        ? "The transfer batch was cancelled."
+                        : "The transfer batch stopped after a failure."
+                )
+                operationInProgress = nil
+                return
+            }
         }
 
         operationInProgress = nil
-        downloadProgress = 0
-    }
-
-    private func handleFileImport(_ result: Result<[URL], Error>) async {
-        defer { transferTask = nil }
-        guard let client = sftpClient else { return }
-
-        switch result {
-        case .success(let urls):
-            // Reserve names for the whole selection. The visible directory listing is only a
-            // snapshot, so without a batch reservation two local URLs with the same basename
-            // could select the same remote target before the directory is refreshed.
-            var reservedRemoteNames = Set(entries.map { Self.normalizedCollisionName($0.filename) })
-
-            for url in urls {
-                guard url.startAccessingSecurityScopedResource() else { continue }
-                do {
-                    defer { url.stopAccessingSecurityScopedResource() }
-                    let sourceName = url.lastPathComponent
-                    guard Self.isSafeBasename(sourceName) else {
-                        throw SFTPTransferError.unsafeName
-                    }
-                    let filename = collisionSafeRemoteName(
-                        for: sourceName,
-                        reservingIn: &reservedRemoteNames
-                    )
-                    let targetPath = remotePath(for: filename)
-                    operationInProgress = filename == sourceName
-                        ? "Uploading \(filename)..."
-                        : "Uploading as \(filename)..."
-                    let cleanupWarning = try await Self.performUpload(
-                        client: client,
-                        sourceURL: url,
-                        serverID: session?.server.id ?? sessionID,
-                        remoteDirectory: currentPath,
-                        sourceName: sourceName,
-                        finalName: filename,
-                        targetPath: targetPath,
-                        maximumUploadBytes: BoundedStorage.maximumUploadBytes
-                    )
-                    if cleanupWarning {
-                        self.error = "Upload completed, but a tracked hidden cleanup file remains on the server."
-                    }
-                } catch let failure as SFTPUploadWorkerFailure {
-                    self.error = failure.message
-                    operationInProgress = nil
-                    return
-                } catch {
-                    self.error = error is CancellationError
-                        ? "Upload cancelled. No partial file was kept."
-                        : "Upload failed: \(error.localizedDescription)"
-                    operationInProgress = nil
-                    return
-                }
-            }
-
-            operationInProgress = nil
-            await loadDirectory()
-
-        case .failure(let err):
-            self.error = "File selection failed: \(err.localizedDescription)"
-        }
+        await loadDirectory()
     }
 
     private func createFolder(named name: String) async {
@@ -1507,6 +3139,883 @@ struct SFTPBrowserView: View {
             await loadDirectory()
         } catch {
             self.error = "Failed to delete \(entry.filename): \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Remote Copy and Move
+
+    private func performRemoteOperation(
+        _ request: SFTPRemoteOperationRequest,
+        destinationDirectory: String,
+        activityIDs: [UUID]
+    ) async {
+        defer {
+            transferTask = nil
+            operationInProgress = nil
+        }
+        guard let client = sftpClient,
+              let sshConnection = session?.getSSHConnection() else {
+            error = "The SSH connection is no longer available."
+            for activityID in activityIDs {
+                transferActivity.fail(
+                    activityID,
+                    detail: "The SSH connection is no longer available."
+                )
+            }
+            return
+        }
+
+        var currentActivityID: UUID?
+        do {
+            try Task.checkCancellation()
+            let destinationListing: [SFTPPathComponent]
+            do {
+                destinationListing = try await client.listDirectory(atPath: destinationDirectory)
+                    .flatMap(\.components)
+            } catch {
+                throw SFTPUploadWorkerFailure(message: SFTPRemoteOperationPhase
+                    .inspectDestination
+                    .failureMessage(
+                        path: destinationDirectory,
+                        serverDescription: error.localizedDescription
+                    ))
+            }
+            var reservedDestinationNames = Set(destinationListing.map {
+                Self.normalizedCollisionName($0.filename)
+            })
+
+            for entry in request.entries {
+                guard Self.isSafeBasename(entry.filename) else {
+                    throw SFTPTransferError.unsafeName
+                }
+                let normalizedName = Self.normalizedCollisionName(entry.filename)
+                guard !reservedDestinationNames.contains(normalizedName) else {
+                    throw SFTPRemoteOperationError.destinationCollision(entry.filename)
+                }
+                reservedDestinationNames.insert(normalizedName)
+                if isDirectory(entry) {
+                    let sourcePath = Self.remotePath(
+                        directory: request.sourceDirectory,
+                        basename: entry.filename
+                    )
+                    guard !Self.isRemotePath(destinationDirectory, inside: sourcePath) else {
+                        throw SFTPRemoteOperationError.destinationInsideSource
+                    }
+                }
+            }
+
+            for (index, entry) in request.entries.enumerated() {
+                try Task.checkCancellation()
+                let activityID = activityIDs[index]
+                currentActivityID = activityID
+                transferActivity.begin(activityID)
+                let prefix = request.entries.count > 1
+                    ? "[\(index + 1)/\(request.entries.count)] "
+                    : ""
+                let sourcePath = Self.remotePath(
+                    directory: request.sourceDirectory,
+                    basename: entry.filename
+                )
+                let destinationPath = Self.remotePath(
+                    directory: destinationDirectory,
+                    basename: entry.filename
+                )
+
+                switch request.kind {
+                case .copy:
+                    operationInProgress = "\(prefix)Copying \(entry.filename)…"
+                    _ = try await performVerifiedRemoteCopy(
+                        client: client,
+                        sshConnection: sshConnection,
+                        sourcePath: sourcePath,
+                        sourceName: entry.filename,
+                        destinationDirectory: destinationDirectory,
+                        destinationPath: destinationPath
+                    )
+
+                case .move:
+                    operationInProgress = "\(prefix)Moving \(entry.filename)…"
+                    do {
+                        // SFTP RENAME is the typed, server-side, atomic fast path when
+                        // source and destination live on the same filesystem.
+                        try await client.rename(at: sourcePath, to: destinationPath)
+                    } catch {
+                        // Cross-filesystem servers may reject RENAME. Preserve Move
+                        // semantics by completing and verifying a copy before deleting
+                        // any source bytes.
+                        operationInProgress = "\(prefix)Moving \(entry.filename) across filesystems…"
+                        let copiedBaseline = try await performVerifiedRemoteCopy(
+                            client: client,
+                            sshConnection: sshConnection,
+                            sourcePath: sourcePath,
+                            sourceName: entry.filename,
+                            destinationDirectory: destinationDirectory,
+                            destinationPath: destinationPath
+                        )
+                        let sourceBeforeRetirement: [SFTPRemoteManifestEntry]
+                        do {
+                            sourceBeforeRetirement = try await Self.remoteManifest(
+                                client: client,
+                                rootPath: sourcePath,
+                                maximumEntries: 100_000,
+                                maximumBytes: BoundedStorage.maximumDownloadBytes
+                            )
+                        } catch {
+                            throw Self.remotePhaseFailure(
+                                .verifySource,
+                                path: sourcePath,
+                                underlying: error
+                            )
+                        }
+                        guard Self.copyManifestMatches(
+                            source: copiedBaseline,
+                            destination: sourceBeforeRetirement
+                        ) else {
+                            throw SFTPRemoteOperationError.sourceChanged(entry.filename)
+                        }
+                        let retainedSourcePath = Self.remotePath(
+                            directory: request.sourceDirectory,
+                            basename: ".glas-sh-move-\(UUID().uuidString).retained"
+                        )
+                        do {
+                            // Retire the verified source to an unpredictable sibling name
+                            // first. Cleanup can no longer delete a replacement created at
+                            // the original path after the copy verification completed.
+                            try await client.rename(at: sourcePath, to: retainedSourcePath)
+                        } catch {
+                            throw SFTPUploadWorkerFailure(message: SFTPRemoteOperationPhase
+                                .retireSource
+                                .failureMessage(
+                                    path: sourcePath,
+                                    serverDescription: error.localizedDescription
+                                ))
+                        }
+                        let retainedSource: [SFTPRemoteManifestEntry]
+                        do {
+                            retainedSource = try await Self.remoteManifest(
+                                client: client,
+                                rootPath: retainedSourcePath,
+                                maximumEntries: 100_000,
+                                maximumBytes: BoundedStorage.maximumDownloadBytes
+                            )
+                        } catch {
+                            throw SFTPUploadWorkerFailure(message: SFTPRemoteOperationPhase
+                                .verifyRetiredSource
+                                .failureMessage(
+                                    path: retainedSourcePath,
+                                    serverDescription: error.localizedDescription
+                                ))
+                        }
+                        guard Self.retainedSourceCanBeRemoved(
+                            copiedBaseline: copiedBaseline,
+                            retainedSource: retainedSource
+                        ) else {
+                            throw SFTPUploadWorkerFailure(message: SFTPRemoteOperationPhase
+                                .verifyRetiredSource
+                                .failureMessage(
+                                    path: retainedSourcePath,
+                                    serverDescription: "The retained item changed before cleanup."
+                                ))
+                        }
+                        do {
+                            try await Self.removeRemoteTree(client: client, path: retainedSourcePath)
+                        } catch {
+                            throw SFTPUploadWorkerFailure(message: SFTPRemoteOperationPhase
+                                .removeRetiredSource
+                                .failureMessage(
+                                    path: retainedSourcePath,
+                                    serverDescription: error.localizedDescription
+                                ))
+                        }
+                    }
+                }
+                transferActivity.complete(activityID)
+                currentActivityID = nil
+                selectedFilenames.remove(entry.filename)
+            }
+
+            await loadDirectory()
+        } catch {
+            let failureMessage: String
+            let wasCancelled = error is CancellationError
+                || (error as? SFTPUploadWorkerFailure)?.kind == .cancelled
+            if wasCancelled {
+                failureMessage = "Remote \(request.kind.rawValue.lowercased()) cancelled. No existing destination was overwritten."
+            } else if let failure = error as? SFTPUploadWorkerFailure {
+                failureMessage = failure.message
+            } else {
+                failureMessage = "Remote \(request.kind.rawValue.lowercased()) failed: \(error.localizedDescription) No existing destination was overwritten; an interrupted operation may leave a hidden staging item or a newly created partial folder."
+            }
+            remoteOperationFailureMessage = failureMessage
+
+            if let currentActivityID {
+                if wasCancelled {
+                    transferActivity.cancel(currentActivityID, detail: failureMessage)
+                } else {
+                    transferActivity.fail(currentActivityID, detail: failureMessage)
+                }
+            } else if !wasCancelled {
+                for activityID in activityIDs
+                    where transferActivity.activity(activityID)?.state == .pending {
+                    transferActivity.fail(activityID, detail: failureMessage)
+                }
+            }
+            transferActivity.cancelPending(
+                activityIDs,
+                detail: wasCancelled
+                    ? "The transfer batch was cancelled."
+                    : "The transfer batch stopped after a failure."
+            )
+            await loadDirectory()
+        }
+    }
+
+    private func performVerifiedRemoteCopy(
+        client: SFTPClient,
+        sshConnection: SSHConnection,
+        sourcePath: String,
+        sourceName: String,
+        destinationDirectory: String,
+        destinationPath: String
+    ) async throws -> [SFTPRemoteManifestEntry] {
+        let maximumBytes = BoundedStorage.maximumDownloadBytes
+        let maximumEntries = 100_000
+        let stagingName = ".glas-sh-copy-\(UUID().uuidString).partial"
+        let stagingPath = Self.remotePath(
+            directory: destinationDirectory,
+            basename: stagingName
+        )
+        var stagingExists = false
+        var destinationWasPublished = false
+
+        do {
+            let baseline: [SFTPRemoteManifestEntry]
+            do {
+                baseline = try await Self.remoteManifest(
+                    client: client,
+                    rootPath: sourcePath,
+                    maximumEntries: maximumEntries,
+                    maximumBytes: maximumBytes
+                )
+            } catch {
+                throw Self.remotePhaseFailure(
+                    .readSource,
+                    path: sourcePath,
+                    underlying: error
+                )
+            }
+            guard let root = baseline.first else {
+                throw SFTPRemoteOperationError.sourceChanged(sourceName)
+            }
+
+            do {
+                let command = Self.remoteCopyCommand(
+                    sourcePath: sourcePath,
+                    stagingPath: stagingPath
+                )
+                _ = try await sshConnection.executeRemoteCommand(
+                    command,
+                    maxResponseBytes: 64 * 1024
+                )
+                stagingExists = true
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                if try await Self.remoteEntryExists(client: client, path: stagingPath) {
+                    stagingExists = true
+                    try await Self.removeRemoteTree(client: client, path: stagingPath)
+                    stagingExists = false
+                }
+                do {
+                    try await Self.relayRemoteCopy(
+                        client: client,
+                        serverID: session?.server.id ?? sessionID,
+                        sourceRoot: sourcePath,
+                        stagingRoot: stagingPath,
+                        manifest: baseline,
+                        maximumBytes: maximumBytes
+                    )
+                    stagingExists = true
+                } catch {
+                    stagingExists = (try? await Self.remoteEntryExists(
+                        client: client,
+                        path: stagingPath
+                    )) == true
+                    throw error
+                }
+            }
+
+            let sourceAfterCopy: [SFTPRemoteManifestEntry]
+            do {
+                sourceAfterCopy = try await Self.remoteManifest(
+                    client: client,
+                    rootPath: sourcePath,
+                    maximumEntries: maximumEntries,
+                    maximumBytes: maximumBytes
+                )
+            } catch {
+                throw Self.remotePhaseFailure(
+                    .verifySource,
+                    path: sourcePath,
+                    underlying: error
+                )
+            }
+            guard Self.copyManifestMatches(
+                source: baseline,
+                destination: sourceAfterCopy
+            ) else {
+                throw SFTPRemoteOperationError.sourceChanged(sourceName)
+            }
+            let staged: [SFTPRemoteManifestEntry]
+            do {
+                staged = try await Self.remoteManifest(
+                    client: client,
+                    rootPath: stagingPath,
+                    maximumEntries: maximumEntries,
+                    maximumBytes: maximumBytes
+                )
+            } catch {
+                throw Self.remotePhaseFailure(
+                    .verifyStaging,
+                    path: stagingPath,
+                    underlying: error
+                )
+            }
+            guard Self.copyManifestMatches(source: baseline, destination: staged) else {
+                throw SFTPRemoteOperationError.verificationFailed(sourceName)
+            }
+
+            switch root.kind {
+            case .file:
+                do {
+                    if client.supportsExtension("hardlink@openssh.com", version: "1") {
+                        try await client.hardLink(at: stagingPath, to: destinationPath)
+                    } else {
+                        _ = try await sshConnection.executeRemoteCommand(
+                            Self.remoteNoClobberLinkCommand(
+                                sourcePath: stagingPath,
+                                destinationPath: destinationPath
+                            ),
+                            maxResponseBytes: 64 * 1024
+                        )
+                    }
+                } catch {
+                    throw Self.remotePhaseFailure(
+                        .publishDestination,
+                        path: destinationPath,
+                        underlying: error
+                    )
+                }
+                destinationWasPublished = true
+                do {
+                    try await client.remove(at: stagingPath)
+                } catch {
+                    throw SFTPUploadWorkerFailure(message: SFTPRemoteOperationPhase
+                        .cleanupStaging
+                        .failureMessage(
+                            path: destinationPath,
+                            serverDescription: error.localizedDescription
+                        ))
+                }
+                stagingExists = false
+
+            case .directory:
+                do {
+                    // Staging is a verified sibling of the destination. One SFTP
+                    // rename publishes the complete tree atomically and fails if a
+                    // concurrent writer creates the destination first.
+                    try await client.rename(at: stagingPath, to: destinationPath)
+                } catch {
+                    throw Self.remotePhaseFailure(
+                        .publishDestination,
+                        path: destinationPath,
+                        underlying: error
+                    )
+                }
+                destinationWasPublished = true
+                stagingExists = false
+            }
+            return baseline
+        } catch {
+            if stagingExists {
+                try? await Self.removeRemoteTree(client: client, path: stagingPath)
+            }
+            if destinationWasPublished {
+                // Published files and directories are complete, verified snapshots.
+                // Never remove a published destination while reporting later cleanup.
+            }
+            throw error
+        }
+    }
+
+    nonisolated static func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
+
+    nonisolated static func remoteCopyCommand(
+        sourcePath: String,
+        stagingPath: String
+    ) -> String {
+        let source = shellQuote(sourcePath)
+        let staging = shellQuote(stagingPath)
+        return "set -eu; command -v cp >/dev/null 2>&1 || exit 127; if [ -e \(staging) ] || [ -L \(staging) ]; then exit 73; fi; command cp -Rp \(source) \(staging)"
+    }
+
+    nonisolated static func remoteNoClobberLinkCommand(
+        sourcePath: String,
+        destinationPath: String
+    ) -> String {
+        let source = shellQuote(sourcePath)
+        let destination = shellQuote(destinationPath)
+        return "set -eu; if [ -e \(destination) ] || [ -L \(destination) ]; then exit 73; fi; command ln \(source) \(destination)"
+    }
+
+    nonisolated private static func remotePhaseFailure(
+        _ phase: SFTPRemoteOperationPhase,
+        path: String,
+        underlying error: Error
+    ) -> Error {
+        if error is CancellationError
+            || error is SFTPRemoteOperationError
+            || error is SFTPTransferError
+            || error is SFTPUploadWorkerFailure {
+            return error
+        }
+        return SFTPUploadWorkerFailure(message: phase.failureMessage(
+            path: path,
+            serverDescription: error.localizedDescription
+        ))
+    }
+
+    @concurrent
+    private static func remoteManifest(
+        client: SFTPClient,
+        rootPath: String,
+        maximumEntries: Int,
+        maximumBytes: UInt64
+    ) async throws -> [SFTPRemoteManifestEntry] {
+        var pending: [(path: String, relativePath: String)] = [(rootPath, "")]
+        var result: [SFTPRemoteManifestEntry] = []
+        var aggregateBytes: UInt64 = 0
+
+        while let item = pending.popLast() {
+            try Task.checkCancellation()
+            guard result.count < maximumEntries else {
+                throw SFTPRemoteOperationError.tooManyEntries(maximumEntries)
+            }
+            let attributes = try await client.getLinkAttributes(at: item.path)
+            switch attributes.fileType {
+            case .directory:
+                result.append(SFTPRemoteManifestEntry(
+                    relativePath: item.relativePath,
+                    kind: .directory,
+                    size: 0,
+                    permissions: attributes.permissions,
+                    accessTime: attributes.accessModificationTime?.accessTime,
+                    modificationTime: attributes.accessModificationTime?.modificationTime,
+                    digest: nil
+                ))
+                let children = try await client.listDirectory(atPath: item.path)
+                    .flatMap(\.components)
+                    .filter { $0.filename != "." && $0.filename != ".." }
+                for child in children.reversed() {
+                    guard isSafeBasename(child.filename) else {
+                        throw SFTPTransferError.unsafeName
+                    }
+                    let relativePath = item.relativePath.isEmpty
+                        ? child.filename
+                        : item.relativePath + "/" + child.filename
+                    pending.append((
+                        remotePath(directory: item.path, basename: child.filename),
+                        relativePath
+                    ))
+                }
+
+            case .regular:
+                guard let size = attributes.size else {
+                    throw SFTPTransferError.missingRemoteSize
+                }
+                let (newAggregate, overflow) = aggregateBytes.addingReportingOverflow(size)
+                guard !overflow, newAggregate <= maximumBytes else {
+                    throw SFTPRemoteOperationError.aggregateSizeExceeded(maximumBytes)
+                }
+                aggregateBytes = newAggregate
+                let digest = try await remoteDigest(
+                    client: client,
+                    path: item.path,
+                    expectedSize: size,
+                    maximumBytes: maximumBytes
+                )
+                result.append(SFTPRemoteManifestEntry(
+                    relativePath: item.relativePath,
+                    kind: .file,
+                    size: size,
+                    permissions: attributes.permissions,
+                    accessTime: attributes.accessModificationTime?.accessTime,
+                    modificationTime: attributes.accessModificationTime?.modificationTime,
+                    digest: digest
+                ))
+
+            case .symbolicLink, .characterDevice, .blockDevice, .fifo, .socket, .unknown, .none:
+                let name = item.relativePath.isEmpty
+                    ? (rootPath as NSString).lastPathComponent
+                    : item.relativePath
+                throw SFTPRemoteOperationError.unsupportedItem(name)
+            }
+        }
+
+        return result.sorted { $0.relativePath < $1.relativePath }
+    }
+
+    @concurrent
+    private static func remoteDigest(
+        client: SFTPClient,
+        path: String,
+        expectedSize: UInt64,
+        maximumBytes: UInt64
+    ) async throws -> Data {
+        guard expectedSize <= maximumBytes else {
+            throw SFTPRemoteOperationError.aggregateSizeExceeded(maximumBytes)
+        }
+        let file = try await client.openFile(filePath: path, flags: .read)
+        do {
+            let openedAttributes = try await file.readAttributes()
+            guard openedAttributes.isRegularFile,
+                  openedAttributes.size == expectedSize else {
+                throw SFTPTransferError.remoteSourceChanged
+            }
+            var hasher = SHA256()
+            var offset: UInt64 = 0
+            while true {
+                try Task.checkCancellation()
+                let chunk = try await file.read(from: offset, length: 262_144)
+                guard chunk.readableBytes > 0 else { break }
+                let data = Data(buffer: chunk)
+                hasher.update(data: data)
+                offset += UInt64(data.count)
+                guard offset <= expectedSize else {
+                    throw SFTPTransferError.remoteSourceChanged
+                }
+            }
+            let completedAttributes = try await file.readAttributes()
+            guard offset == expectedSize,
+                  completedAttributes.isRegularFile,
+                  completedAttributes.size == openedAttributes.size,
+                  completedAttributes.accessModificationTime?.modificationTime
+                    == openedAttributes.accessModificationTime?.modificationTime else {
+                throw SFTPTransferError.remoteSourceChanged
+            }
+            try await file.close()
+            return Data(hasher.finalize())
+        } catch {
+            try? await file.close()
+            throw error
+        }
+    }
+
+    nonisolated private static func copyManifestMatches(
+        source: [SFTPRemoteManifestEntry],
+        destination: [SFTPRemoteManifestEntry]
+    ) -> Bool {
+        guard source.count == destination.count else { return false }
+        return zip(source, destination).allSatisfy { sourceEntry, destinationEntry in
+            sourceEntry.relativePath == destinationEntry.relativePath
+                && sourceEntry.kind == destinationEntry.kind
+                && sourceEntry.size == destinationEntry.size
+                && sourceEntry.permissions.map { $0 & 0o7777 }
+                    == destinationEntry.permissions.map { $0 & 0o7777 }
+                && sourceEntry.modificationTime == destinationEntry.modificationTime
+                && sourceEntry.digest == destinationEntry.digest
+        }
+    }
+
+    nonisolated static func retainedSourceCanBeRemoved(
+        copiedBaseline: [SFTPRemoteManifestEntry],
+        retainedSource: [SFTPRemoteManifestEntry]
+    ) -> Bool {
+        copyManifestMatches(source: copiedBaseline, destination: retainedSource)
+    }
+
+    @concurrent
+    private static func relayRemoteCopy(
+        client: SFTPClient,
+        serverID: UUID,
+        sourceRoot: String,
+        stagingRoot: String,
+        manifest: [SFTPRemoteManifestEntry],
+        maximumBytes: UInt64
+    ) async throws {
+        guard let root = manifest.first else {
+            throw SFTPTransferError.remoteSourceChanged
+        }
+        let localRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("glas-sh-remote-copy-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: localRoot,
+            withIntermediateDirectories: false,
+            attributes: [.protectionKey: FileProtectionType.complete]
+        )
+        defer { try? FileManager.default.removeItem(at: localRoot) }
+        let localDirectory = try openLocalDirectoryNoFollow(at: localRoot)
+        defer { try? localDirectory.directory.close() }
+
+        switch root.kind {
+        case .file:
+            let sourceName = (sourceRoot as NSString).lastPathComponent
+            let stagingName = (stagingRoot as NSString).lastPathComponent
+            do {
+                try await performVerifiedDownload(
+                    client: client,
+                    serverID: serverID,
+                    remotePath: sourceRoot,
+                    sourceName: sourceName,
+                    destinationDirectory: localDirectory.directory,
+                    destinationDirectoryIdentity: localDirectory.identity,
+                    exactDestinationName: sourceName,
+                    progress: { _ in }
+                )
+            } catch let failure as SFTPDownloadWorkerFailure where failure.wasCancelled {
+                throw CancellationError()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                throw SFTPUploadWorkerFailure(message: SFTPRemoteOperationPhase
+                    .readSource
+                    .failureMessage(
+                        path: sourceRoot,
+                        serverDescription: error.localizedDescription
+                    ))
+            }
+            let localURL = localRoot.appendingPathComponent(sourceName)
+            do {
+                _ = try await performUpload(
+                    client: client,
+                    sourceURL: localURL,
+                    serverID: serverID,
+                    remoteDirectory: remoteParentPath(stagingRoot),
+                    sourceName: sourceName,
+                    finalName: stagingName,
+                    targetPath: stagingRoot,
+                    maximumUploadBytes: maximumBytes
+                )
+            } catch let failure as SFTPUploadWorkerFailure where failure.kind == .cancelled {
+                throw CancellationError()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                throw SFTPUploadWorkerFailure(message: SFTPRemoteOperationPhase
+                    .createStaging
+                    .failureMessage(
+                        path: remoteParentPath(stagingRoot),
+                        serverDescription: error.localizedDescription
+                    ))
+            }
+            do {
+                try await applyRemoteAttributes(
+                    client: client,
+                    path: stagingRoot,
+                    manifestEntry: root
+                )
+            } catch {
+                throw SFTPUploadWorkerFailure(message: SFTPRemoteOperationPhase
+                    .prepareStagingMetadata
+                    .failureMessage(
+                        path: stagingRoot,
+                        serverDescription: error.localizedDescription
+                    ))
+            }
+
+        case .directory:
+            do {
+                try await client.createDirectory(atPath: stagingRoot)
+            } catch {
+                throw SFTPUploadWorkerFailure(message: SFTPRemoteOperationPhase
+                    .createStaging
+                    .failureMessage(
+                        path: remoteParentPath(stagingRoot),
+                        serverDescription: error.localizedDescription
+                    ))
+            }
+            let directories = manifest
+                .filter { $0.kind == .directory && !$0.relativePath.isEmpty }
+                .sorted { pathDepth($0.relativePath) < pathDepth($1.relativePath) }
+            for directory in directories {
+                let destination = remotePath(directory: stagingRoot, relativePath: directory.relativePath)
+                do {
+                    try await client.createDirectory(atPath: destination)
+                } catch {
+                    throw SFTPUploadWorkerFailure(message: SFTPRemoteOperationPhase
+                        .createStaging
+                        .failureMessage(
+                            path: remoteParentPath(destination),
+                            serverDescription: error.localizedDescription
+                        ))
+                }
+            }
+
+            for fileEntry in manifest.filter({ $0.kind == .file }) {
+                try Task.checkCancellation()
+                let sourcePath = remotePath(directory: sourceRoot, relativePath: fileEntry.relativePath)
+                let destinationPath = remotePath(directory: stagingRoot, relativePath: fileEntry.relativePath)
+                let basename = (fileEntry.relativePath as NSString).lastPathComponent
+                guard isSafeBasename(basename) else { throw SFTPTransferError.unsafeName }
+                do {
+                    try await performVerifiedDownload(
+                        client: client,
+                        serverID: serverID,
+                        remotePath: sourcePath,
+                        sourceName: basename,
+                        destinationDirectory: localDirectory.directory,
+                        destinationDirectoryIdentity: localDirectory.identity,
+                        exactDestinationName: basename,
+                        progress: { _ in }
+                    )
+                } catch let failure as SFTPDownloadWorkerFailure where failure.wasCancelled {
+                    throw CancellationError()
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    throw SFTPUploadWorkerFailure(message: SFTPRemoteOperationPhase
+                        .readSource
+                        .failureMessage(
+                            path: sourcePath,
+                            serverDescription: error.localizedDescription
+                        ))
+                }
+                let localURL = localRoot.appendingPathComponent(basename)
+                do {
+                    _ = try await performUpload(
+                        client: client,
+                        sourceURL: localURL,
+                        serverID: serverID,
+                        remoteDirectory: remoteParentPath(destinationPath),
+                        sourceName: basename,
+                        finalName: basename,
+                        targetPath: destinationPath,
+                        maximumUploadBytes: maximumBytes
+                    )
+                } catch let failure as SFTPUploadWorkerFailure where failure.kind == .cancelled {
+                    throw CancellationError()
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    throw SFTPUploadWorkerFailure(message: SFTPRemoteOperationPhase
+                        .createStaging
+                        .failureMessage(
+                            path: remoteParentPath(destinationPath),
+                            serverDescription: error.localizedDescription
+                        ))
+                }
+                do {
+                    try await applyRemoteAttributes(
+                        client: client,
+                        path: destinationPath,
+                        manifestEntry: fileEntry
+                    )
+                } catch {
+                    throw SFTPUploadWorkerFailure(message: SFTPRemoteOperationPhase
+                        .prepareStagingMetadata
+                        .failureMessage(
+                            path: destinationPath,
+                            serverDescription: error.localizedDescription
+                        ))
+                }
+                try FileManager.default.removeItem(at: localURL)
+            }
+            for directory in directories.sorted(by: {
+                pathDepth($0.relativePath) > pathDepth($1.relativePath)
+            }) {
+                let destination = remotePath(
+                    directory: stagingRoot,
+                    relativePath: directory.relativePath
+                )
+                do {
+                    try await applyRemoteAttributes(
+                        client: client,
+                        path: destination,
+                        manifestEntry: directory
+                    )
+                } catch {
+                    throw SFTPUploadWorkerFailure(message: SFTPRemoteOperationPhase
+                        .prepareStagingMetadata
+                        .failureMessage(
+                            path: destination,
+                            serverDescription: error.localizedDescription
+                        ))
+                }
+            }
+            do {
+                try await applyRemoteAttributes(
+                    client: client,
+                    path: stagingRoot,
+                    manifestEntry: root
+                )
+            } catch {
+                throw SFTPUploadWorkerFailure(message: SFTPRemoteOperationPhase
+                    .prepareStagingMetadata
+                    .failureMessage(
+                        path: stagingRoot,
+                        serverDescription: error.localizedDescription
+                    ))
+            }
+        }
+    }
+
+    @concurrent
+    private static func applyRemoteAttributes(
+        client: SFTPClient,
+        path: String,
+        manifestEntry: SFTPRemoteManifestEntry
+    ) async throws {
+        var attributes = SFTPFileAttributes.none
+        attributes.permissions = manifestEntry.permissions.map { $0 & 0o7777 }
+        if let accessTime = manifestEntry.accessTime,
+           let modificationTime = manifestEntry.modificationTime {
+            attributes.accessModificationTime = .init(
+                accessTime: accessTime,
+                modificationTime: modificationTime
+            )
+        }
+        if !attributes.flags.isEmpty {
+            try await client.setAttributes(at: path, to: attributes)
+        }
+    }
+
+    nonisolated private static func pathDepth(_ path: String) -> Int {
+        path.split(separator: "/").count
+    }
+
+    nonisolated private static func remotePath(directory: String, relativePath: String) -> String {
+        guard !relativePath.isEmpty else { return directory }
+        return directory == "/" ? "/" + relativePath : directory + "/" + relativePath
+    }
+
+    @concurrent
+    private static func remoteEntryExists(client: SFTPClient, path: String) async throws -> Bool {
+        let parent = remoteParentPath(path)
+        let name = (path as NSString).lastPathComponent
+        return try await client.listDirectory(atPath: parent)
+            .flatMap(\.components)
+            .contains { $0.filename == name }
+    }
+
+    @concurrent
+    private static func removeRemoteTree(client: SFTPClient, path: String) async throws {
+        let attributes = try await client.getLinkAttributes(at: path)
+        if attributes.fileType == .directory {
+            let children = try await client.listDirectory(atPath: path)
+                .flatMap(\.components)
+                .filter { $0.filename != "." && $0.filename != ".." }
+            for child in children {
+                guard isSafeBasename(child.filename) else { throw SFTPTransferError.unsafeName }
+                try await removeRemoteTree(
+                    client: client,
+                    path: remotePath(directory: path, basename: child.filename)
+                )
+            }
+            try await client.rmdir(at: path)
+        } else {
+            try await client.remove(at: path)
         }
     }
 
@@ -1714,7 +4223,8 @@ struct SFTPBrowserView: View {
         sourceName: String,
         finalName: String,
         targetPath: String,
-        maximumUploadBytes: UInt64
+        maximumUploadBytes: UInt64,
+        progress: (@MainActor @Sendable (SFTPTransferProgressUpdate) -> Void)? = nil
     ) async throws -> Bool {
         try await performVerifiedUpload(
             client: client,
@@ -1725,7 +4235,8 @@ struct SFTPBrowserView: View {
             finalName: finalName,
             targetPath: targetPath,
             maximumUploadBytes: maximumUploadBytes,
-            commitPolicy: .createNoClobber
+            commitPolicy: .createNoClobber,
+            progress: progress
         ).cleanupWarning
     }
 
@@ -1768,7 +4279,8 @@ struct SFTPBrowserView: View {
         finalName: String,
         targetPath: String,
         maximumUploadBytes: UInt64,
-        commitPolicy: SFTPUploadCommitPolicy
+        commitPolicy: SFTPUploadCommitPolicy,
+        progress: (@MainActor @Sendable (SFTPTransferProgressUpdate) -> Void)? = nil
     ) async throws -> SFTPUploadResult {
         var replacementCommitMayHaveRun = false
         switch commitPolicy {
@@ -1795,6 +4307,10 @@ struct SFTPBrowserView: View {
                 message: "The transfer exceeded its \(formattedLimit) storage limit."
             )
         }
+        await progress?(.transferring(
+            completedBytes: 0,
+            totalBytes: sourceIdentity.size
+        ))
 
         let resumeIdentity = uploadResumeIdentity(
             serverID: serverID,
@@ -1873,6 +4389,9 @@ struct SFTPBrowserView: View {
                 throw SFTPTransferError.invalidResumePartial
             }
 
+            if initialRemoteSize > 0 {
+                await progress?(.verifying)
+            }
             while true {
                 try Task.checkCancellation()
                 let chunk = try await remoteFile.read(from: offset, length: 262_144)
@@ -1888,6 +4407,10 @@ struct SFTPBrowserView: View {
             guard offset == initialRemoteSize else {
                 throw SFTPTransferError.remoteSourceChanged
             }
+            await progress?(.transferring(
+                completedBytes: offset,
+                totalBytes: sourceIdentity.size
+            ))
 
             while let data = try localFile.read(upToCount: 262_144), !data.isEmpty {
                 try Task.checkCancellation()
@@ -1896,6 +4419,10 @@ struct SFTPBrowserView: View {
                 buffer.writeBytes(data)
                 try await remoteFile.write(buffer, at: offset)
                 offset += UInt64(data.count)
+                await progress?(.transferring(
+                    completedBytes: offset,
+                    totalBytes: sourceIdentity.size
+                ))
             }
             guard offset == sourceIdentity.size,
                   Self.localFile(localFile, matches: sourceIdentity) else {
@@ -1916,6 +4443,7 @@ struct SFTPBrowserView: View {
                 throw SFTPTransferError.sizeMismatch(expected: offset, actual: remoteSize)
             }
 
+            await progress?(.verifying)
             let localDigest = Data(localHasher.finalize())
             var remoteHasher = SHA256()
             var remoteOffset: UInt64 = 0
@@ -2043,7 +4571,10 @@ struct SFTPBrowserView: View {
                 let message = error is CancellationError
                     ? "Upload cancelled. A hidden partial may remain and will be validated before any future resume; no final file was exposed."
                     : "Upload of \(finalName) failed: \(error.localizedDescription). A hidden partial may remain and will be validated before any future resume; no incomplete final file was exposed."
-                throw SFTPUploadWorkerFailure(message: message)
+                throw SFTPUploadWorkerFailure(
+                    message: message,
+                    kind: error is CancellationError ? .cancelled : .general
+                )
 
             case .replaceExisting:
                 // Editor saves are bounded to the in-memory editor ceiling, so retrying
@@ -2056,6 +4587,8 @@ struct SFTPBrowserView: View {
                     kind = .remoteTargetChanged
                 } else if replacementCommitMayHaveRun {
                     kind = .commitOutcomeUnknown
+                } else if error is CancellationError {
+                    kind = .cancelled
                 } else {
                     kind = .general
                 }
@@ -2083,8 +4616,68 @@ struct SFTPBrowserView: View {
 
     // MARK: - Helpers
 
+    nonisolated static let downloadReadChunkSize: UInt32 = 256 * 1024
+    nonisolated static let downloadMaximumConcurrentReads = SFTPFile.maximumPipelinedReadCount
     nonisolated private static let uploadMetadataMaximumRecordCount = 128
     nonisolated private static let uploadMetadataMaximumRecordBytes = 64 * 1024
+
+    nonisolated static func downloadReadWindow(
+        from offset: UInt64,
+        through endOffset: UInt64,
+        chunkSize: UInt32 = downloadReadChunkSize
+    ) -> [SFTPFile.ReadRequest] {
+        guard offset < endOffset, chunkSize > 0 else { return [] }
+
+        var requests: [SFTPFile.ReadRequest] = []
+        requests.reserveCapacity(downloadMaximumConcurrentReads)
+        var nextOffset = offset
+        while nextOffset < endOffset,
+              requests.count < downloadMaximumConcurrentReads {
+            let length = UInt32(min(UInt64(chunkSize), endOffset - nextOffset))
+            requests.append(.init(offset: nextOffset, length: length))
+            nextOffset += UInt64(length)
+        }
+        return requests
+    }
+
+    nonisolated static func downloadReadBatchDecision(
+        requests: [SFTPFile.ReadRequest],
+        readableByteCounts: [Int]
+    ) throws -> SFTPDownloadReadBatchDecision {
+        guard requests.count == readableByteCounts.count else {
+            throw SFTPError.missingResponse
+        }
+
+        var acceptedResponseCount = 0
+        for (request, readableByteCount) in zip(requests, readableByteCounts) {
+            guard readableByteCount >= 0,
+                  readableByteCount <= Int(request.length) else {
+                throw SFTPError.invalidResponse
+            }
+            guard readableByteCount > 0 else {
+                return .init(
+                    acceptedResponseCount: acceptedResponseCount,
+                    nextChunkSize: nil,
+                    reachedEOF: true
+                )
+            }
+
+            acceptedResponseCount += 1
+            if readableByteCount < Int(request.length) {
+                return .init(
+                    acceptedResponseCount: acceptedResponseCount,
+                    nextChunkSize: UInt32(readableByteCount),
+                    reachedEOF: false
+                )
+            }
+        }
+
+        return .init(
+            acceptedResponseCount: acceptedResponseCount,
+            nextChunkSize: nil,
+            reachedEOF: false
+        )
+    }
 
     nonisolated static func checkCancellationBeforeCommit() throws {
         try Task.checkCancellation()
@@ -2577,7 +5170,7 @@ struct SFTPBrowserView: View {
 
     /// Collision policy is deterministic rename; the final descriptor-relative
     /// RENAME_EXCL remains authoritative if another writer wins after probing.
-    private func collisionSafeDestinationName(
+    private static func collisionSafeDestinationName(
         for basename: String,
         in directory: FileHandle
     ) throws -> String {
@@ -2713,72 +5306,256 @@ struct SFTPBrowserView: View {
     private var fileInfoBinding: Binding<Bool> {
         Binding(
             get: { showingFileInfo != nil },
-            set: { if !$0 { showingFileInfo = nil } }
+            set: {
+                if !$0 {
+                    showingFileInfo = nil
+                    refreshedFileInfoAttributes = nil
+                    fileInfoRefreshError = nil
+                }
+            }
         )
     }
 
-    private func fileInfoSheet(for entry: SFTPPathComponent) -> some View {
-        NavigationStack {
-            List {
-                Section("File") {
-                    LabeledContent("Name", value: entry.filename)
-                    if let size = entry.attributes.size {
-                        LabeledContent("Size", value: formattedFileSize(size))
-                    }
-                    let ext = (entry.filename as NSString).pathExtension
-                    if !ext.isEmpty {
-                        LabeledContent("Type", value: ext.uppercased())
-                    }
-                }
-
-                Section("Editor") {
-                    if let document = remoteEditorDocument,
-                       document.remotePath == remotePath(for: entry.filename) {
-                        LabeledContent(
-                            "Conflict",
-                            value: remoteEditorConflictDescription(document.model.conflictState)
-                        )
-                    }
-                    Button {
-                        showingFileInfo = nil
-                        beginRemoteEdit(entry)
-                    } label: {
-                        Label("Edit Remote File", systemImage: "pencil")
-                    }
-                }
-
-                Section("Attributes") {
-                    if let permissions = entry.attributes.permissions {
-                        LabeledContent("Permissions", value: formattedPermissions(permissions))
-                    }
-                    if let uidGid = entry.attributes.uidgid {
-                        LabeledContent("Owner (UID)", value: "\(uidGid.userId)")
-                        LabeledContent("Group (GID)", value: "\(uidGid.groupId)")
-                    }
-                }
-
-                Section("Timestamps") {
-                    if let time = entry.attributes.accessModificationTime {
-                        LabeledContent("Modified", value: formattedDate(time.modificationTime))
-                        LabeledContent("Accessed", value: formattedDate(time.accessTime))
-                    }
-                }
-
-                if !entry.longname.isEmpty {
-                    Section("Raw Listing") {
-                        Text(entry.longname)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .navigationTitle("File Info")
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { showingFileInfo = nil }
-                }
-            }
+    private func refreshFileInfo(for entry: SFTPPathComponent) async {
+        guard let client = sftpClient else { return }
+        do {
+            let attributes = try await client.getLinkAttributes(
+                at: remotePath(for: entry.filename)
+            )
+            guard showingFileInfo?.filename == entry.filename else { return }
+            refreshedFileInfoAttributes = attributes
+            fileInfoRefreshError = nil
+        } catch {
+            guard showingFileInfo?.filename == entry.filename else { return }
+            fileInfoRefreshError = "Live attributes unavailable: \(error.localizedDescription)"
         }
-        .frame(width: 420, height: 400)
+    }
+
+    private func fileInfoSheet(for entry: SFTPPathComponent) -> some View {
+        let attributes = refreshedFileInfoAttributes ?? entry.attributes
+        let isDir = isDirectory(entry)
+        let itemPath = remotePath(for: entry.filename)
+
+        return NavigationStack {
+            VStack(spacing: 0) {
+                HStack(alignment: .top, spacing: 16) {
+                    Image(systemName: iconName(for: entry))
+                        .font(.system(size: 44))
+                        .foregroundStyle(isDir ? Color.blue : Color.secondary)
+                        .frame(width: 58, height: 58)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(entry.filename)
+                            .font(.title3.weight(.semibold))
+                            .lineLimit(2)
+                            .textSelection(.enabled)
+                        if let size = attributes.size, !isDir {
+                            Text("\(formattedFileSize(size)) — \(size.formatted()) bytes")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text(isDir ? "Remote folder" : "Remote item")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        if let modified = attributes.accessModificationTime?.modificationTime {
+                            Text("Modified: \(formattedFullDate(modified))")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .padding(20)
+
+                Divider()
+
+                ScrollView {
+                    VStack(spacing: 0) {
+                        if let fileInfoRefreshError {
+                            Label(fileInfoRefreshError, systemImage: "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 10)
+                        }
+
+                        fileInfoDisclosure("General", isExpanded: $fileInfoGeneralExpanded) {
+                            infoValue("Kind", value: kindDescription(for: entry))
+                            if let size = attributes.size, !isDir {
+                                infoValue(
+                                    "Size",
+                                    value: "\(size.formatted()) bytes (\(formattedFileSize(size)))"
+                                )
+                            }
+                            infoValue("Where", value: currentPath)
+                            infoValue("Created", value: "Not provided by SFTP v3")
+                            if let times = attributes.accessModificationTime {
+                                infoValue("Modified", value: formattedFullDate(times.modificationTime))
+                                infoValue("Last accessed", value: formattedFullDate(times.accessTime))
+                            }
+                        }
+
+                        fileInfoDisclosure("Network", isExpanded: $fileInfoNetworkExpanded) {
+                            if let server = session?.server {
+                                let remoteURL = Self.remoteClipboardURL(
+                                    username: server.username,
+                                    host: server.host,
+                                    port: server.port,
+                                    path: itemPath
+                                )
+                                infoValue("Server", value: "\(server.host):\(server.port)")
+                                infoValue("Protocol", value: "SFTP over SSH")
+                                infoValue("User", value: server.username)
+                                infoValue("Status", value: sftpClient == nil ? "Disconnected" : "Connected")
+                                infoValue(
+                                    "Route",
+                                    value: session?.jumpHostChain.isEmpty == false
+                                        ? session!.jumpHostChain.map(\.name).joined(separator: " → ")
+                                        : "Direct connection"
+                                )
+                                if let remoteURL {
+                                    HStack(alignment: .firstTextBaseline) {
+                                        Text("Address")
+                                            .foregroundStyle(.secondary)
+                                            .frame(width: 108, alignment: .trailing)
+                                        Text(remoteURL.absoluteString)
+                                            .font(.callout.monospaced())
+                                            .textSelection(.enabled)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        Button {
+                                            copyRemoteReferences([entry])
+                                        } label: {
+                                            Image(systemName: "doc.on.doc")
+                                        }
+                                        .buttonStyle(.borderless)
+                                        .help("Copy SFTP address")
+                                    }
+                                }
+                            }
+                        }
+
+                        fileInfoDisclosure("Name & Extension", isExpanded: $fileInfoNameExpanded) {
+                            infoValue("Name", value: entry.filename)
+                            Button("Rename…") {
+                                showingFileInfo = nil
+                                beginRename(entry)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                        }
+
+                        if !isDir {
+                            fileInfoDisclosure("Editor", isExpanded: $fileInfoEditorExpanded) {
+                                if let document = remoteEditorDocument,
+                                   document.remotePath == itemPath {
+                                    infoValue(
+                                        "Conflict",
+                                        value: remoteEditorConflictDescription(document.model.conflictState)
+                                    )
+                                } else {
+                                    infoValue("Conflict", value: "None")
+                                }
+                                Button("Edit Remote File") {
+                                    showingFileInfo = nil
+                                    beginRemoteEdit(entry)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .trailing)
+                            }
+                        }
+
+                        fileInfoDisclosure(
+                            "Sharing & Permissions",
+                            isExpanded: $fileInfoPermissionsExpanded
+                        ) {
+                            if let permissions = attributes.permissions {
+                                infoValue("Permissions", value: formattedPermissions(permissions))
+                                infoValue(
+                                    "Mode",
+                                    value: String(format: "%04o", permissions & 0o7777)
+                                )
+                            }
+                            if let uidGid = attributes.uidgid {
+                                infoValue("Owner", value: "UID \(uidGid.userId)")
+                                infoValue("Group", value: "GID \(uidGid.groupId)")
+                            }
+                            Text("Permissions are reported by the remote server and are read-only here.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+
+                        if !entry.longname.isEmpty {
+                            fileInfoDisclosure("Raw Listing", isExpanded: $fileInfoRawExpanded) {
+                                Text(entry.longname)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                }
+
+                Divider()
+
+                HStack {
+                    Spacer()
+                    Button("Done") { showingFileInfo = nil }
+                        .keyboardShortcut(.defaultAction)
+                }
+                .padding(16)
+            }
+            .navigationTitle("\(entry.filename) Info")
+        }
+        #if os(macOS)
+        .frame(width: 520, height: 700)
+        #else
+        .presentationDetents([.medium, .large])
+        #endif
+    }
+
+    private func fileInfoDisclosure<Content: View>(
+        _ title: String,
+        isExpanded: Binding<Bool>,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        DisclosureGroup(isExpanded: isExpanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                content()
+            }
+            .padding(.top, 8)
+            .padding(.leading, 6)
+        } label: {
+            Text(title)
+                .font(.headline)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private func infoValue(_ label: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(label)
+                .foregroundStyle(.secondary)
+                .frame(width: 108, alignment: .trailing)
+            Text(value)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .font(.callout)
+    }
+
+    private func kindDescription(for entry: SFTPPathComponent) -> String {
+        if isDirectory(entry) { return "Folder" }
+        let pathExtension = (entry.filename as NSString).pathExtension
+        guard !pathExtension.isEmpty else { return "Document" }
+        return "\(pathExtension.uppercased()) document"
+    }
+
+    private func formattedFullDate(_ date: Date) -> String {
+        date.formatted(date: .complete, time: .shortened)
     }
 }

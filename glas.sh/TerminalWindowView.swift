@@ -104,6 +104,7 @@ struct TerminalWindowView: View {
     #if os(macOS)
     @State private var macTerminalWindow: NSWindow?
     @State private var isMacFullScreen = false
+    @State private var macInitialGeometryFitAttempts = 0
     #endif
     @Environment(\.openWindow) private var openWindow
     #if os(visionOS)
@@ -134,6 +135,9 @@ struct TerminalWindowView: View {
         self.onSessionRequestedClose = onSessionRequestedClose
         self.onSessionEndedCleanly = onSessionEndedCleanly
         _terminalHostModel = ObservedObject(wrappedValue: session.terminalHostModel)
+        let initialGeometry = session.currentTerminalGeometry
+        _terminalColumns = State(initialValue: initialGeometry.columns)
+        _terminalRows = State(initialValue: initialGeometry.rows)
     }
     
     var body: some View {
@@ -530,8 +534,26 @@ struct TerminalWindowView: View {
                     session.sendTerminalData(data)
                 },
                 onResize: { cols, rows in
-                    terminalColumns = max(20, cols)
-                    terminalRows = max(8, rows)
+                    let geometry = TerminalGeometry(rows: rows, columns: cols)
+                    #if os(macOS)
+                    let configuredGeometry = session.currentTerminalGeometry
+                    if !session.hasMeasuredTerminalGeometry,
+                       geometry != configuredGeometry,
+                       macInitialGeometryFitAttempts < 3 {
+                        macInitialGeometryFitAttempts += 1
+                        if terminalHostModel.fitMacWindowToTerminalGrid(
+                            columns: configuredGeometry.columns,
+                            rows: configuredGeometry.rows
+                        ) {
+                            // Wait for SwiftTerm to measure the resized canvas.
+                            // The PTY remains on its configured fallback until
+                            // renderer and window agree on the opening grid.
+                            return
+                        }
+                    }
+                    #endif
+                    terminalColumns = geometry.columns
+                    terminalRows = geometry.rows
                     session.updateTerminalGeometry(rows: rows, columns: cols)
                 },
                 onBell: {
@@ -806,10 +828,15 @@ struct TerminalWindowView: View {
             do {
                 let launch = try await sessionManager.duplicateAuthorizedSession(
                     from: session,
-                    settingsManager: settingsManager
+                    settingsManager: settingsManager,
+                    initialTerminalPresentation: { pendingSession in
+                        presentDuplicatedTerminal(pendingSession)
+                    }
                 )
                 if launch.session.state == .connected {
-                    presentDuplicatedTerminal(launch.session)
+                    if !launch.session.didRequestInitialTerminalPresentation {
+                        presentDuplicatedTerminal(launch.session)
+                    }
                 } else if let challenge = launch.session.pendingHostKeyChallenge {
                     if interactiveHostKeyTrustIsAllowed {
                         // The new window owns the exact trust prompt and reconnect
@@ -826,6 +853,7 @@ struct TerminalWindowView: View {
                         sessionManager.closeSession(launch.session)
                     }
                 } else if case .error(let message) = launch.session.state {
+                    guard !launch.session.didRequestInitialTerminalPresentation else { return }
                     notificationManager.post(
                         icon: "exclamationmark.triangle",
                         title: "Duplicate Failed",

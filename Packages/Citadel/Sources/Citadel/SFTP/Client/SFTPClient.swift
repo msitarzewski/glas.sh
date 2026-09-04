@@ -133,6 +133,74 @@ public final class SFTPClient: Sendable {
         }.get()
     }
 
+    /// Sends a bounded group of SFTP requests without waiting for each response before
+    /// writing the next request. Responses are returned in request order even when the
+    /// server completes them out of order.
+    ///
+    /// - Warning: Every request must have a unique ID that is not already in flight.
+    internal func sendRequests(_ requests: [SFTPRequest]) async throws -> [SFTPResponse] {
+        guard !requests.isEmpty else { return [] }
+
+        return try await self.eventLoop.flatSubmit {
+            let eventLoop = self.channel.eventLoop
+            var requestIds: [UInt32] = []
+            var responseFutures: [EventLoopFuture<SFTPResponse>] = []
+            var writeFutures: [EventLoopFuture<Void>] = []
+            requestIds.reserveCapacity(requests.count)
+            responseFutures.reserveCapacity(requests.count)
+            writeFutures.reserveCapacity(requests.count)
+
+            for request in requests {
+                let requestId = request.requestId
+                let responsePromise = eventLoop.makePromise(of: SFTPResponse.self)
+                assert(
+                    self.responses.responses[requestId] == nil,
+                    "Attempt to send request with request ID \(requestId) already in flight."
+                )
+
+                let message = request.makeMessage()
+                self.logger.trace("SFTP OUT: \(message.debugDescription)")
+                self.responses.responses[requestId] = responsePromise
+                requestIds.append(requestId)
+                responseFutures.append(responsePromise.futureResult)
+
+                let writePromise = eventLoop.makePromise(of: Void.self)
+                writeFutures.append(writePromise.futureResult)
+                self.channel.write(message, promise: writePromise)
+            }
+            self.channel.flush()
+
+            let responseResults = EventLoopFuture.whenAllComplete(
+                responseFutures,
+                on: eventLoop
+            )
+            let pendingRequestIds = requestIds
+            return EventLoopFuture.whenAllComplete(writeFutures, on: eventLoop).flatMap { writeResults in
+                let writeError = writeResults.lazy.compactMap { result -> Error? in
+                    guard case .failure(let error) = result else { return nil }
+                    return error
+                }.first
+
+                if let writeError {
+                    for requestId in pendingRequestIds {
+                        if let promise = self.responses.responses.removeValue(
+                            forKey: requestId
+                        ) {
+                            promise.fail(writeError)
+                        }
+                    }
+                }
+
+                return responseResults.flatMapThrowing { results in
+                    if let writeError {
+                        throw writeError
+                    }
+                    return try results.map { try $0.get() }
+                }
+            }
+        }.get()
+    }
+
     /// Set the attributes of a file on the SFTP server.
     ///
     /// - Parameters:

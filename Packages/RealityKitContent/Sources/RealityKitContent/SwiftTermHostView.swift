@@ -415,6 +415,16 @@ public final class SwiftTermHostModel: ObservableObject {
         publishRendererDiagnosticsIfChanged(.awaitingWindow)
     }
 
+    #if os(macOS)
+    /// Resizes the containing macOS window by the exact point delta between the
+    /// renderer's current grid and the requested grid. The surrounding SwiftUI
+    /// chrome keeps its existing size; only the terminal canvas delta is added.
+    @discardableResult
+    public func fitMacWindowToTerminalGrid(columns: Int, rows: Int) -> Bool {
+        terminalEngine?.fitHostWindow(columns: columns, rows: rows) ?? false
+    }
+    #endif
+
     fileprivate func updateRendererDiagnostics(_ diagnostics: SwiftTermRendererDiagnostics) {
         publishRendererDiagnosticsIfChanged(diagnostics)
     }
@@ -2065,6 +2075,75 @@ private protocol TerminalEngine: AnyObject {
     func findPrevious(_ term: String) -> Bool
     func clearSearch()
     func commitPaste(_ text: String, bracketed: Bool)
+    func fitHostWindow(columns: Int, rows: Int) -> Bool
+}
+
+@MainActor
+private func fitMacTerminalHostWindow(
+    _ terminalView: TerminalView,
+    columns: Int,
+    rows: Int
+) -> Bool {
+    guard columns > 0,
+          rows > 0,
+          let window = terminalView.window,
+          window.styleMask.contains(.resizable),
+          !window.styleMask.contains(.fullScreen),
+          terminalView.frame.width > 0,
+          terminalView.frame.height > 0 else { return false }
+
+    let terminal = terminalView.getTerminal()
+    let currentColumns = max(1, terminal.cols)
+    let currentRows = max(1, terminal.rows)
+    guard currentColumns != columns || currentRows != rows else { return false }
+
+    let optimalFrame = terminalView.getOptimalFrameSize()
+    let scrollerWidth = NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
+    let cellWidth = (optimalFrame.width - scrollerWidth) / CGFloat(currentColumns)
+    let cellHeight = optimalFrame.height / CGFloat(currentRows)
+    guard cellWidth.isFinite,
+          cellHeight.isFinite,
+          cellWidth > 0,
+          cellHeight > 0 else { return false }
+
+    let targetTerminalSize = NSSize(
+        width: cellWidth * CGFloat(columns) + scrollerWidth,
+        height: cellHeight * CGFloat(rows)
+    )
+    let widthDelta = targetTerminalSize.width - terminalView.frame.width
+    let heightDelta = targetTerminalSize.height - terminalView.frame.height
+    guard abs(widthDelta) >= 0.5 || abs(heightDelta) >= 0.5 else { return false }
+
+    let currentFrame = window.frame
+    var targetFrame = NSRect(
+        x: currentFrame.minX,
+        y: currentFrame.maxY - (currentFrame.height + heightDelta),
+        width: currentFrame.width + widthDelta,
+        height: currentFrame.height + heightDelta
+    )
+
+    if let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame {
+        targetFrame.size.width = min(
+            visibleFrame.width,
+            max(window.minSize.width, targetFrame.width)
+        )
+        targetFrame.size.height = min(
+            visibleFrame.height,
+            max(window.minSize.height, targetFrame.height)
+        )
+        targetFrame.origin.x = min(
+            max(targetFrame.minX, visibleFrame.minX),
+            visibleFrame.maxX - targetFrame.width
+        )
+        targetFrame.origin.y = min(
+            max(targetFrame.minY, visibleFrame.minY),
+            visibleFrame.maxY - targetFrame.height
+        )
+    }
+
+    window.setFrame(targetFrame, display: true, animate: false)
+    window.contentView?.layoutSubtreeIfNeeded()
+    return true
 }
 
 @MainActor
@@ -2187,6 +2266,10 @@ private final class MacSwiftTermEngine: TerminalEngine {
         let data = SwiftTermPastePolicy.framedData(for: text, bracketed: bracketed)
         recordInput(byteCount: data.count)
         onPasteData(data)
+    }
+
+    func fitHostWindow(columns: Int, rows: Int) -> Bool {
+        fitMacTerminalHostWindow(terminalView, columns: columns, rows: rows)
     }
 
     private func applyTheme(_ theme: SwiftTermTheme) {
@@ -3099,6 +3182,10 @@ private final class MacLocalProcessEngine: TerminalEngine, SwiftTermLocalProcess
     func commitPaste(_ text: String, bracketed: Bool) {
         let data = SwiftTermPastePolicy.framedData(for: text, bracketed: bracketed)
         sendUserInput(ArraySlice(data))
+    }
+
+    func fitHostWindow(columns: Int, rows: Int) -> Bool {
+        fitMacTerminalHostWindow(terminalView, columns: columns, rows: rows)
     }
 
     private func recordProcessOutput(_ bytes: ArraySlice<UInt8>, duration: Duration) {

@@ -40,6 +40,7 @@ public enum CitadelError: Error {
     case unsupported
     case unauthorized
     case commandOutputTooLarge
+    case commandExecutionTimedOut
     case channelCreationFailed
     case channelFailure
 }
