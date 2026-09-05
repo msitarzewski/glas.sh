@@ -387,6 +387,9 @@ struct ConnectionManagerView: View {
         #elseif os(iOS)
         if horizontalSizeClass == .compact {
             iOSCompactLibrary(connectionLibrary: connectionLibrary)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) { settingsButton }
+                }
                 .focusedSceneValue(
                     \.platformNewTerminalAction,
                     PlatformNewTerminalAction(title: "New Terminal") {
@@ -400,6 +403,9 @@ struct ConnectionManagerView: View {
                 libraryResults(connectionLibrary: connectionLibrary)
             } detail: {
                 libraryDetail(connectionLibrary: connectionLibrary)
+            }
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { settingsButton }
             }
             .focusedSceneValue(
                 \.platformNewTerminalAction,
@@ -578,7 +584,6 @@ struct ConnectionManagerView: View {
         #endif
     }
 
-    #if os(macOS)
     private var settingsButton: some View {
         Button {
             showSettings()
@@ -589,7 +594,6 @@ struct ConnectionManagerView: View {
         .accessibilityLabel("Settings")
         .accessibilityIdentifier("connection-library-settings")
     }
-    #endif
 
     private func collectionNavigation(
         connectionLibrary: ConnectionLibraryProjection
