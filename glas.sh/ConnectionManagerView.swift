@@ -387,9 +387,6 @@ struct ConnectionManagerView: View {
         #elseif os(iOS)
         if horizontalSizeClass == .compact {
             iOSCompactLibrary(connectionLibrary: connectionLibrary)
-                .toolbar {
-                    ToolbarItem(placement: .confirmationAction) { settingsButton }
-                }
                 .focusedSceneValue(
                     \.platformNewTerminalAction,
                     PlatformNewTerminalAction(title: "New Terminal") {
@@ -431,6 +428,9 @@ struct ConnectionManagerView: View {
     ) -> some View {
         NavigationStack(path: $compactNavigationPath) {
             libraryNavigation(connectionLibrary: connectionLibrary)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) { settingsButton }
+                }
                 .navigationDestination(for: ConnectionCompactDestination.self) { destination in
                     switch destination {
                     case .results:
