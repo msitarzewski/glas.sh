@@ -883,6 +883,14 @@ final class ConnectionLibraryUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Edit Connection"].waitForExistence(timeout: 5))
 
         let favorite = app.switches["edit-server-favorite"].firstMatch
+        // The keyboard leaves the name field under the app-level drag origin.
+        // Scroll the native Form container, not that focused text input.
+        for _ in 0..<8 where !favorite.isHittable {
+            let form = app.collectionViews.allElementsBoundByIndex.first(where: \.isHittable)
+                ?? app.scrollViews.allElementsBoundByIndex.first(where: \.isHittable)
+            guard let form else { break }
+            form.swipeUp()
+        }
         makeHittable(favorite)
         XCTAssertTrue(favorite.waitForExistence(timeout: 5))
         if !switchIsOn(favorite) {
@@ -894,6 +902,7 @@ final class ConnectionLibraryUITests: XCTestCase {
             switchIsOn(favorite),
             "The native Favorite switch should be on before saving the edited connection."
         )
+        retainScreenshot(named: "Edited Connection Favorite")
 
         let save = app.navigationBars["Edit Connection"].buttons["Save Changes"].firstMatch
         XCTAssertTrue(save.waitForExistence(timeout: 3))
