@@ -4,8 +4,6 @@ import SwiftUI
 
 enum MacTerminalToolbarItemID {
     static let tabActions = "sh.glas.toolbar.tab-actions"
-    static let workspaceTools = "sh.glas.toolbar.workspace-tools"
-    static let terminalTools = "sh.glas.toolbar.terminal-tools"
 }
 
 struct MacTerminalWindowReader: NSViewRepresentable {
@@ -48,7 +46,6 @@ struct MacTerminalWindowReader: NSViewRepresentable {
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
         coordinator.restoreWindowDelegate()
         coordinator.stopObservingWindowClose()
-        coordinator.stopManagingToolbar()
     }
 
     private func configure(_ window: NSWindow?, coordinator: Coordinator) {
@@ -56,7 +53,6 @@ struct MacTerminalWindowReader: NSViewRepresentable {
         MacTerminalWindowPolicy.apply(window, tabbingIdentifier: tabbingIdentifier)
         coordinator.observeWindowClose(window, action: onClose)
         coordinator.interceptWindowClose(window, shouldConfirm: shouldConfirmClose)
-        coordinator.manageToolbar(in: window)
         coordinator.configureInitialSidebar(in: window, enabled: opensSidebarInitially)
         onWindow(window)
     }
@@ -79,10 +75,6 @@ struct MacTerminalWindowReader: NSViewRepresentable {
         nonisolated(unsafe) private weak var originalWindowDelegate: (any NSWindowDelegate)?
         private var isConfirmingClose = false
         private var didRunCloseAction = false
-        private weak var observedToolbar: NSToolbar?
-        private weak var trailingFlexibleSpaceItem: NSToolbarItem?
-        private weak var interGroupSpaceItem: NSToolbarItem?
-        private var isReconcilingToolbar = false
         private var wantsInitialSidebar = false
         private var didApplyInitialSidebar = false
         private var sidebarDiscoveryAttempts = 0
@@ -134,7 +126,6 @@ struct MacTerminalWindowReader: NSViewRepresentable {
                     name: NSWindow.didUpdateNotification,
                     object: observedWindow
                 )
-                stopManagingToolbar()
             }
             observedWindow = window
             didRunCloseAction = false
@@ -167,35 +158,6 @@ struct MacTerminalWindowReader: NSViewRepresentable {
             observedWindow = nil
             closeAction = nil
             Self.active.remove(self)
-        }
-
-        func manageToolbar(in window: NSWindow) {
-            guard let toolbar = window.toolbar else { return }
-            if observedToolbar !== toolbar {
-                stopManagingToolbar()
-                observedToolbar = toolbar
-                NotificationCenter.default.addObserver(
-                    self,
-                    selector: #selector(toolbarWillAddItem(_:)),
-                    name: NSToolbar.willAddItemNotification,
-                    object: toolbar
-                )
-            }
-            reconcileNativeToolbarSpacing(in: toolbar)
-        }
-
-        func stopManagingToolbar() {
-            if let observedToolbar {
-                NotificationCenter.default.removeObserver(
-                    self,
-                    name: NSToolbar.willAddItemNotification,
-                    object: observedToolbar
-                )
-            }
-            observedToolbar = nil
-            trailingFlexibleSpaceItem = nil
-            interGroupSpaceItem = nil
-            isReconcilingToolbar = false
         }
 
         func interceptWindowClose(
@@ -257,87 +219,9 @@ struct MacTerminalWindowReader: NSViewRepresentable {
             return false
         }
 
-        @objc private func toolbarWillAddItem(_ notification: Notification) {
-            guard notification.object as? NSToolbar === observedToolbar else { return }
-            DispatchQueue.main.async { [weak self] in
-                guard let toolbar = self?.observedToolbar else { return }
-                self?.reconcileNativeToolbarSpacing(in: toolbar)
-            }
-        }
-
-        private func reconcileNativeToolbarSpacing(in toolbar: NSToolbar) {
-            guard !isReconcilingToolbar else { return }
-            isReconcilingToolbar = true
-            defer { isReconcilingToolbar = false }
-
-            guard let workspaceIndex = toolbar.items.firstIndex(where: {
-                $0.itemIdentifier.rawValue == MacTerminalToolbarItemID.workspaceTools
-            }) else {
-                removeOwnedItem(trailingFlexibleSpaceItem, from: toolbar)
-                removeOwnedItem(interGroupSpaceItem, from: toolbar)
-                return
-            }
-
-            if workspaceIndex > 0,
-               toolbar.items[workspaceIndex - 1].itemIdentifier == .flexibleSpace {
-                trailingFlexibleSpaceItem = toolbar.items[workspaceIndex - 1]
-            } else {
-                removeOwnedItem(trailingFlexibleSpaceItem, from: toolbar)
-                guard let insertionIndex = toolbar.items.firstIndex(where: {
-                    $0.itemIdentifier.rawValue == MacTerminalToolbarItemID.workspaceTools
-                }) else { return }
-                toolbar.insertItem(withItemIdentifier: .flexibleSpace, at: insertionIndex)
-                trailingFlexibleSpaceItem = insertedItem(
-                    with: .flexibleSpace,
-                    at: insertionIndex,
-                    in: toolbar
-                )
-            }
-
-            guard let terminalIndex = toolbar.items.firstIndex(where: {
-                $0.itemIdentifier.rawValue == MacTerminalToolbarItemID.terminalTools
-            }) else {
-                removeOwnedItem(interGroupSpaceItem, from: toolbar)
-                return
-            }
-
-            if terminalIndex > 0,
-               toolbar.items[terminalIndex - 1].itemIdentifier == .space {
-                interGroupSpaceItem = toolbar.items[terminalIndex - 1]
-            } else {
-                removeOwnedItem(interGroupSpaceItem, from: toolbar)
-                guard let insertionIndex = toolbar.items.firstIndex(where: {
-                    $0.itemIdentifier.rawValue == MacTerminalToolbarItemID.terminalTools
-                }) else { return }
-                toolbar.insertItem(withItemIdentifier: .space, at: insertionIndex)
-                interGroupSpaceItem = insertedItem(
-                    with: .space,
-                    at: insertionIndex,
-                    in: toolbar
-                )
-            }
-        }
-
-        private func insertedItem(
-            with identifier: NSToolbarItem.Identifier,
-            at index: Int,
-            in toolbar: NSToolbar
-        ) -> NSToolbarItem? {
-            guard toolbar.items.indices.contains(index),
-                  toolbar.items[index].itemIdentifier == identifier else { return nil }
-            return toolbar.items[index]
-        }
-
-        private func removeOwnedItem(_ item: NSToolbarItem?, from toolbar: NSToolbar) {
-            guard let item,
-                  let index = toolbar.items.firstIndex(where: { $0 === item }) else { return }
-            toolbar.removeItem(at: index)
-        }
-
         @objc private func observedWindowDidUpdate(_ notification: Notification) {
             guard let window = notification.object as? NSWindow,
                   window === observedWindow else { return }
-            manageToolbar(in: window)
             applyInitialSidebarIfNeeded(in: window)
         }
 
@@ -352,10 +236,9 @@ enum MacTerminalWindowPolicy {
     static func apply(_ window: NSWindow, tabbingIdentifier: String) {
         window.isOpaque = false
         window.backgroundColor = .clear
-        // Match Apple's full-height sidebar windows: native sidebar material
-        // extends beneath the traffic lights while the toolbar remains system
-        // glass and the terminal canvas keeps its independent clear backing.
-        window.titlebarAppearsTransparent = true
+        // Keep the system title-bar backing independent of the transparent
+        // terminal canvas, so windows behind it don't read as a second toolbar.
+        window.titlebarAppearsTransparent = false
         window.styleMask.insert(.fullSizeContentView)
         // SwiftUI's sidebar-adaptable TabView owns terminal tabs inside this
         // window. Disallow a second AppKit tab layer and its horizontal strip.

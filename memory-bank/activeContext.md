@@ -1,6 +1,18 @@
 # Active Context
 
 ## Current Focus (reconciled 2026-09-04)
+- Daily-driver Workgroups and native library polish are user-approved on
+  `agent/daily-driver-workspaces`. Saved Workgroups support ordered local/SSH
+  startup intentions and captured Mac split layouts. Mac launches start every
+  terminal eagerly, open the sidebar initially, and protect closing the active
+  tab/window without modifying the saved definition. The editor uses a native
+  reorderable table and staged child forms; details use native grouped sections
+  and panel-local actions. Library toolbar sizing and connection typography
+  match GlassDB; terminal toolbars remain compact with explicit native backing.
+  SFTP opens an existing connected SSH session from the connection detail.
+  iOS/visionOS retain native navigation, adaptive footer actions, and a native
+  Workgroup color picker. Publication and final platform evidence belong in the
+  feature PR; physical-device acceptance is not implied by simulator tests.
 - The shared server-form UX is implementation-, automated-QA-, and manual-review
   approved on `agent/connection-form-ux`. Add, Import, and Edit now route through
   one mode-driven form with visible requirements, field-keyed validation,
@@ -88,8 +100,9 @@
     the former AppKit tab-group mirror. `SessionManager` and the workspace model
     own selection, lifetime, explicit close, restoration, and transactional
     movement between windows.
-  - Connections and terminal windows use one native automatic sidebar control,
-    full-height sidebar material, and matching unified compact titlebars.
+  - Connections and terminal windows use one native automatic sidebar control
+    and full-height sidebar material. Connections use system-selected toolbar
+    sizing; terminal windows retain unified compact titlebars.
     Terminal identity and separate global/terminal tool clusters remain stable
     as the sidebar opens, closes, or adapts at compact widths.
   - The same authoritative workgroup/session intentions drive the system

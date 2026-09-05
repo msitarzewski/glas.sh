@@ -46,7 +46,9 @@ struct SettingsView: View {
                 }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .terminalPlatformGlassBackground(cornerRadius: 28)
+        #if os(visionOS)
+        .glassBackgroundEffect(in: .rect(cornerRadius: 28))
+        #endif
     }
 }
 

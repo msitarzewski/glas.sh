@@ -159,7 +159,7 @@ struct PortForwardRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 16) {
                 // Type indicator
                 VStack(alignment: .leading, spacing: 4) {
@@ -209,7 +209,6 @@ struct PortForwardRow: View {
                     .accessibilityLabel("Delete forward")
                 }
             }
-            .padding()
 
             // Error message display
             if forward.status == .error, let errorMessage = forward.errorMessage {
@@ -220,13 +219,8 @@ struct PortForwardRow: View {
                         .font(.caption)
                 }
                 .foregroundStyle(.red)
-                .padding(.horizontal)
-                .padding(.bottom, 8)
             }
         }
-        .background(.regularMaterial, in: .rect(cornerRadius: 12))
-        .padding(.horizontal)
-        .padding(.vertical, 4)
     }
 }
 

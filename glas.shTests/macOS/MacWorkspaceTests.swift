@@ -1710,6 +1710,7 @@ struct MacWorkspaceTests {
         window.isOpaque = true
         window.backgroundColor = .windowBackgroundColor
         window.alphaValue = 0.73
+        window.titlebarAppearsTransparent = true
         window.styleMask.remove(.fullSizeContentView)
         let toolbar = NSToolbar(identifier: "sh.glas.test-toolbar")
         window.toolbar = toolbar
@@ -1722,7 +1723,7 @@ struct MacWorkspaceTests {
         #expect(window.tabbingMode == .disallowed)
         #expect(window.tabbingIdentifier.isEmpty)
         #expect(window.styleMask.contains(.fullSizeContentView))
-        #expect(window.titlebarAppearsTransparent)
+        #expect(!window.titlebarAppearsTransparent)
         #expect(window.toolbarStyle == .unifiedCompact)
     }
 
@@ -1795,6 +1796,7 @@ struct MacWorkspaceTests {
             window.close()
         }
         window.contentViewController = host
+        host.view.setFrameSize(NSSize(width: 800, height: 760))
         func nativeTables(in view: NSView) -> [NSTableView] {
             (view as? NSTableView).map { [$0] } ?? view.subviews.flatMap { nativeTables(in: $0) }
         }
@@ -1804,6 +1806,11 @@ struct MacWorkspaceTests {
         })
         let table = try #require(nativeTables(in: host.view).first { $0.numberOfRows == 5 })
         #expect(table.numberOfColumns == 4)
+        let bitmap = try #require(host.view.bitmapImageRepForCachingDisplay(in: host.view.bounds))
+        host.view.cacheDisplay(in: host.view.bounds, to: bitmap)
+        let snapshot = FileManager.default.temporaryDirectory.appending(path: "workgroup-editor-controls.png")
+        try #require(bitmap.representation(using: .png, properties: [:])).write(to: snapshot)
+        print("Workgroup editor render: \(snapshot.path)")
         #expect(!window.isVisible)
         #expect(saves == 0)
 

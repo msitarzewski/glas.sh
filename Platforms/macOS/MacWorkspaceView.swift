@@ -102,6 +102,8 @@ struct MacWorkspaceView: View {
         .accessibilityIdentifier("mac-workspace-tabs")
         .frame(minWidth: 720, minHeight: 460)
         .containerBackground(.clear, for: .window)
+        .toolbarBackground(.regularMaterial, for: .windowToolbar)
+        .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
         .navigationTitle(identity.title)
         .navigationSubtitle(identity.subtitle ?? "")
         .background {
@@ -155,37 +157,32 @@ struct MacWorkspaceView: View {
                 .macOverflowFirstWhenCompact()
             }
 
-            ToolbarItem(id: MacTerminalToolbarItemID.workspaceTools) {
-                HStack {
-                    Button("New Local Pane", systemImage: "rectangle.split.2x1") {
-                        selected.addPane(intent: .local, axis: .horizontal)
-                    }
-                    .disabled(!selected.canAddPane)
-                    .accessibilityIdentifier("mac-workspace-new-local-pane")
-
-                    Button("Connect Host", systemImage: "network") {
-                        selected.requestSSHPane(axis: .horizontal)
-                    }
-                    .disabled(!selected.canAddPane)
-                    .accessibilityIdentifier("mac-workspace-connect-host")
-
-                    Button(
-                        "Secure Keyboard Entry",
-                        systemImage: secureKeyboardEntry.isEnabled(for: selected.workspaceID)
-                            ? "lock.fill"
-                            : "lock.open"
-                    ) {
-                        secureKeyboardEntry.toggle(for: selected.workspaceID)
-                    }
-                    .disabled(selected.focusedPaneID == nil)
-                    .accessibilityIdentifier("mac-workspace-secure-keyboard-entry")
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button("New Local Pane", systemImage: "rectangle.split.2x1") {
+                    selected.addPane(intent: .local, axis: .horizontal)
                 }
-                .padding(.horizontal, 6)
+                .disabled(!selected.canAddPane)
+                .accessibilityIdentifier("mac-workspace-new-local-pane")
+
+                Button("Connect Host", systemImage: "network") {
+                    selected.requestSSHPane(axis: .horizontal)
+                }
+                .disabled(!selected.canAddPane)
+                .accessibilityIdentifier("mac-workspace-connect-host")
+
+                Button(
+                    "Secure Keyboard Entry",
+                    systemImage: secureKeyboardEntry.isEnabled(for: selected.workspaceID)
+                        ? "lock.fill"
+                        : "lock.open"
+                ) {
+                    secureKeyboardEntry.toggle(for: selected.workspaceID)
+                }
+                .disabled(selected.focusedPaneID == nil)
+                .accessibilityIdentifier("mac-workspace-secure-keyboard-entry")
             }
             .macOverflowFirstWhenCompact()
         }
-        .toolbarBackground(.regularMaterial, for: .windowToolbar)
-        .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
         .focusedSceneValue(
             \.macNewWorkspaceTabAction,
             MacNewWorkspaceTabAction(
@@ -324,8 +321,6 @@ private struct MacWorkspaceTabContent: View {
         workspaceContent
             .frame(minHeight: 460)
             .containerBackground(.clear, for: .window)
-            .toolbarBackground(.regularMaterial, for: .windowToolbar)
-            .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
             .focusedSceneValue(\.macWorkspaceActions, focusedActions)
             .sheet(isPresented: sshPickerPresented) { sshPicker }
             .sheet(item: $credentialPrompt) { prompt in

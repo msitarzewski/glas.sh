@@ -1087,13 +1087,8 @@ struct TerminalWindowView: View {
     @ToolbarContentBuilder
     private var macTerminalToolbar: some ToolbarContent {
         if isTerminalActive {
-            ToolbarItem(id: MacTerminalToolbarItemID.terminalTools) {
-                HStack(spacing: 8) {
-                    bottomStatusBarContents(compact: true)
-                }
-                .padding(.horizontal, 6)
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("mac-terminal-tools")
+            ToolbarItemGroup(placement: .primaryAction) {
+                bottomStatusBarContents(compact: true)
             }
             .macKeepVisibleWhenCompact()
         }

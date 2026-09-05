@@ -126,46 +126,41 @@ struct MacLocalTerminalPaneView: View {
         })
         .toolbar {
             if isFocused {
-                ToolbarItem(id: MacTerminalToolbarItemID.terminalTools) {
-                    HStack(spacing: 8) {
-                        localProcessStatus
+                ToolbarItemGroup(placement: .primaryAction) {
+                    localProcessStatus
 
-                        Button("Connections", systemImage: "server.rack") {
-                            openWindow(id: "main")
-                        }
-                        .labelStyle(.iconOnly)
-                        .help("Connections")
-
-                        if aiAssistant.isAvailable {
-                            Button("AI Assistant", systemImage: "sparkles") {
-                                presentAIAssistant()
-                            }
-                            .labelStyle(.iconOnly)
-                            .disabled(!processState.isRunning)
-                            .help("AI Assistant")
-                        }
-
-                        Button("Reveal Working Directory", systemImage: "folder.fill") {
-                            revealWorkingDirectory()
-                        }
-                        .labelStyle(.iconOnly)
-                        .help("Reveal Working Directory in Finder")
-
-                        Button(
-                            isLocalFullScreen ? "Exit Focus Mode" : "Focus Mode",
-                            systemImage: isLocalFullScreen ? "moon.fill" : "moon"
-                        ) {
-                            processState.toggleFullScreen()
-                        }
-                        .labelStyle(.iconOnly)
-                        .help(isLocalFullScreen ? "Exit Focus Mode" : "Focus Mode")
-
-                        localRecordingIndicator
-                        localToolsMenu
+                    Button("Connections", systemImage: "server.rack") {
+                        openWindow(id: "main")
                     }
-                    .padding(.horizontal, 6)
-                    .accessibilityElement(children: .contain)
-                    .accessibilityIdentifier("mac-local-terminal-tools")
+                    .labelStyle(.iconOnly)
+                    .help("Connections")
+
+                    if aiAssistant.isAvailable {
+                        Button("AI Assistant", systemImage: "sparkles") {
+                            presentAIAssistant()
+                        }
+                        .labelStyle(.iconOnly)
+                        .disabled(!processState.isRunning)
+                        .help("AI Assistant")
+                    }
+
+                    Button("Reveal Working Directory", systemImage: "folder.fill") {
+                        revealWorkingDirectory()
+                    }
+                    .labelStyle(.iconOnly)
+                    .help("Reveal Working Directory in Finder")
+
+                    Button(
+                        isLocalFullScreen ? "Exit Focus Mode" : "Focus Mode",
+                        systemImage: isLocalFullScreen ? "moon.fill" : "moon"
+                    ) {
+                        processState.toggleFullScreen()
+                    }
+                    .labelStyle(.iconOnly)
+                    .help(isLocalFullScreen ? "Exit Focus Mode" : "Focus Mode")
+
+                    localRecordingIndicator
+                    localToolsMenu
                 }
                 .macKeepVisibleWhenCompact()
             }

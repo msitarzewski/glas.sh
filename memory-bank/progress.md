@@ -1,5 +1,21 @@
 # Progress
 
+- Daily-driver Workgroups and native library polish approved (2026-09-04):
+  - Added ordered startup intentions, captured Mac split layouts, eager terminal
+    startup, initial Workgroup sidebar visibility, and active-tab close
+    protection with clean last-tab window shutdown. Closing live tabs never
+    edits the saved Workgroup definition.
+  - Added native table reordering and staged child editors, grouped Workgroup
+    detail cards, panel-local Edit/Open/Connect actions, and an SFTP shortcut
+    gated on a connected SSH session. Server SFTP support is checked on opening.
+  - Removed redundant material/card styling and manual toolbar spacing. Kept
+    native titlebar backing, compact terminal controls, system-sized library
+    controls, and GlassDB-matched connection-list typography.
+  - Retained iOS/visionOS native navigation and added narrow-width detail-action
+    fallback plus the native Workgroup color picker. Final test results and
+    review/merge status are recorded in the publication PR.
+  - Preserved local checkpoint `704536c` before the visual makeover.
+
 - Shared Add/Edit server-form UX approved (2026-09-04):
   - Replaced the duplicated Add and Edit implementations with one mode-driven
     `ServerFormView`; the existing Add, Import, and Edit entry points remain thin
