@@ -100,7 +100,6 @@ struct TerminalWindowView: View {
     @State private var showingRecordingConsent = false
     @State private var terminalColumns = 120
     @State private var terminalRows = 40
-    @State private var previousSessionState: SessionState?
     #if os(macOS)
     @State private var macTerminalWindow: NSWindow?
     @State private var isMacFullScreen = false

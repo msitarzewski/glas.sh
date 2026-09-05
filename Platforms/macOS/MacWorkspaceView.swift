@@ -20,6 +20,10 @@ struct MacWorkspaceView: View {
     @State private var windowController: MacWorkspaceWindowController
     @State private var secureKeyboardEntry = MacSecureKeyboardEntry.shared
     @State private var terminalWindow: NSWindow?
+    @State private var workgroupEditorContext: WorkgroupEditorContext?
+    @State private var workspaceSaveError: String?
+    @State private var isConfirmingTabClose = false
+    @State private var pendingWindowClose = false
 
     @Environment(SessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
@@ -73,6 +77,28 @@ struct MacWorkspaceView: View {
             }
         }
         .tabViewStyle(.sidebarAdaptable)
+        .task {
+            SharedDefaults.migrateIfNeeded()
+            sessionManager.preloadPersistentStateIfNeeded()
+            settingsManager.loadPersistentStateIfNeeded()
+            let tabs = windowController.tabs
+            for tab in tabs {
+                tab.startLocalPanes(sessionManager: sessionManager, settingsManager: settingsManager) {
+                    closeTab(tab.workspaceID)
+                }
+            }
+            // Each SSH connection progresses independently, even in unvisited tabs.
+            let connections = tabs.flatMap { tab in
+                (tab.state.root?.panes ?? []).filter { $0.intent.kind == .ssh }.map { pane in
+                    Task { @MainActor in
+                        await tab.prepareSSHPaneIfNeeded(
+                            pane, sessionManager: sessionManager, settingsManager: settingsManager
+                        )
+                    }
+                }
+            }
+            for connection in connections { await connection.value }
+        }
         .accessibilityIdentifier("mac-workspace-tabs")
         .frame(minWidth: 720, minHeight: 460)
         .containerBackground(.clear, for: .window)
@@ -85,6 +111,9 @@ struct MacWorkspaceView: View {
                     terminalWindow = window
                     window.title = identity.title
                     window.subtitle = identity.subtitle ?? ""
+                    if pendingWindowClose {
+                        DispatchQueue.main.async { window.close() }
+                    }
                 },
                 onClose: {
                     windowController.closeAllSessions(sessionManager: sessionManager)
@@ -94,10 +123,19 @@ struct MacWorkspaceView: View {
                 },
                 shouldConfirmClose: {
                     settingsManager.confirmBeforeClosing && !windowController.isEmpty
-                }
+                },
+                opensSidebarInitially: windowController.tabs.contains { $0.workgroupID != nil }
             )
         }
         .toolbar {
+            ToolbarItem(id: "save-workspace") {
+                Button("Save Workspace as Workgroup…", systemImage: "rectangle.stack.badge.plus") {
+                    saveWorkspace()
+                }
+                .disabled(windowController.isEmpty)
+                .help("Save this window’s tabs and split layout as a Workgroup")
+                .accessibilityIdentifier("mac-workspace-save-workgroup")
+            }
             ToolbarItem(placement: .navigation) {
                 Button("New Terminal Tab", systemImage: "plus", action: addTab)
                     .help("New Terminal Tab")
@@ -155,6 +193,49 @@ struct MacWorkspaceView: View {
                 addTab
             )
         )
+        .focusedSceneValue(
+            \.macCloseWorkspaceTabAction,
+            MacCloseWorkspaceTabAction { requestCloseSelectedTab() }
+        )
+        .sheet(item: $workgroupEditorContext) { context in
+            WorkgroupEditorView(context: context, servers: sessionManager.serverManager.servers) { preset in
+                settingsManager.addLayoutPreset(preset)
+            }
+        }
+        .alert("Workspace Could Not Be Saved", isPresented: Binding(
+            get: { workspaceSaveError != nil },
+            set: { if !$0 { workspaceSaveError = nil } }
+        )) {
+            Button("OK", role: .cancel) { workspaceSaveError = nil }
+        } message: {
+            Text(workspaceSaveError ?? "")
+        }
+    }
+
+    private func saveWorkspace() {
+        do {
+            let defaults = MacLocalTerminalConfiguration.resolve(
+                shell: settingsManager.localShell,
+                directory: settingsManager.localWorkingDirectory
+            )
+            let preset = try windowController.capturePreset(
+                name: windowController.selectedTab.workgroupName ?? "Workgroup",
+                servers: sessionManager.serverManager.servers,
+                defaultLocalShell: defaults.executable,
+                defaultLocalDirectory: defaults.currentDirectory ?? NSHomeDirectory(),
+                sourcePresets: settingsManager.layoutPresets
+            )
+            // A capture is a new preset; saving does not overwrite its source.
+            workgroupEditorContext = WorkgroupEditorContext(
+                original: nil,
+                name: preset.name,
+                colorTag: preset.colorTag,
+                sessionIntents: preset.sessionIntents,
+                workspaceLayout: preset.workspaceLayout
+            )
+        } catch {
+            workspaceSaveError = error.localizedDescription
+        }
     }
 
     private var selectedTabBinding: Binding<UUID> {
@@ -175,7 +256,31 @@ struct MacWorkspaceView: View {
         )
         secureKeyboardEntry.disable(for: workspaceID)
         if closesWindow {
-            terminalWindow?.performClose(nil)
+            pendingWindowClose = true
+            terminalWindow?.close()
+        }
+    }
+
+    private func requestCloseSelectedTab() {
+        guard !isConfirmingTabClose else { return }
+        let tab = windowController.selectedTab
+        guard let warning = tab.closeWarning else {
+            closeTab(tab.workspaceID)
+            return
+        }
+        guard let window = terminalWindow, window.attachedSheet == nil else { return }
+        isConfirmingTabClose = true
+        let alert = NSAlert()
+        alert.messageText = "Close Terminal Tab?"
+        alert.informativeText = warning + " The saved Workgroup will not be changed."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Close Tab")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { response in
+            isConfirmingTabClose = false
+            if response == .alertFirstButtonReturn {
+                closeTab(tab.workspaceID)
+            }
         }
     }
 
@@ -185,11 +290,18 @@ struct MacWorkspaceView: View {
     }
 }
 
+private struct WorkspaceCredentialPrompt: Identifiable {
+    var id: UUID { paneID }
+    let paneID: UUID
+    let server: ServerConfiguration
+}
+
 private struct MacWorkspaceTabContent: View {
     private let controller: MacWorkspaceController
     @State private var secureKeyboardEntry = MacSecureKeyboardEntry.shared
     @State private var persistentStateReady = false
     @State private var showingPaneCloseConfirmation = false
+    @State private var credentialPrompt: WorkspaceCredentialPrompt?
 
     @Environment(SessionManager.self) private var sessionManager
     @Environment(SettingsManager.self) private var settingsManager
@@ -216,6 +328,21 @@ private struct MacWorkspaceTabContent: View {
             .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
             .focusedSceneValue(\.macWorkspaceActions, focusedActions)
             .sheet(isPresented: sshPickerPresented) { sshPicker }
+            .sheet(item: $credentialPrompt) { prompt in
+                ConnectionPasswordPromptSheet(server: prompt.server, savesPassword: true) { password in
+                    guard let current = sessionManager.server(for: prompt.server.id),
+                          controller.state.root?.pane(id: prompt.paneID) != nil else {
+                        return "This connection or terminal pane is no longer available."
+                    }
+                    do {
+                        try sessionManager.serverManager.updateServerOrThrow(current, password: password)
+                        controller.retryPane(prompt.paneID)
+                        return nil
+                    } catch {
+                        return "The password could not be saved. \(error.localizedDescription)"
+                    }
+                }
+            }
             .alert(
                 "Secure Keyboard Entry",
                 isPresented: secureKeyboardErrorPresented
@@ -306,12 +433,15 @@ private struct MacWorkspaceTabContent: View {
                     runtime: runtime,
                     recorder: recorder,
                     workspaceID: controller.workspaceID,
+                    shellOverride: pane.intent.localShell,
+                    directoryOverride: pane.intent.localDirectory,
                     isFocused: isFocused,
                     showsPaneChrome: showsPaneChrome,
                     findRequestNonce: findNonce(for: pane.id),
                     claimStartupCommand: { controller.claimStartupCommand(for: pane.id) },
                     onFocus: { controller.focus(pane.id) },
                     onDisconnect: {
+                        guard !controller.isClosed else { return }
                         let closesWorkspace = controller.state.root?.panes.count == 1
                         controller.removePane(pane.id, sessionManager: sessionManager)
                         if closesWorkspace {
@@ -336,12 +466,14 @@ private struct MacWorkspaceTabContent: View {
                     externalSearchRequestNonce: findNonce(for: pane.id),
                     onNewTerminalTab: onNewTab,
                     onSessionRequestedClose: {
+                        guard !controller.isClosed else { return }
                         controller.disconnectSSHPane(
                             pane.id,
                             sessionManager: sessionManager
                         )
                     },
                     onSessionEndedCleanly: {
+                        guard !controller.isClosed else { return }
                         let closesWorkspace = controller.completeCleanSSHExit(
                             pane.id,
                             sessionManager: sessionManager
@@ -383,7 +515,14 @@ private struct MacWorkspaceTabContent: View {
                 } description: {
                     Text(error)
                 } actions: {
+                    if let failure = controller.pendingCredentialErrorsByPaneID[pane.id],
+                       case .missingPassword(let server, _) = failure {
+                        Button("Enter Password…") {
+                            credentialPrompt = WorkspaceCredentialPrompt(paneID: pane.id, server: server)
+                        }
+                    }
                     Button("Retry") { controller.retryPane(pane.id) }
+                    Button("Connections") { openWindow(id: "main") }
                     Button("Close Pane", role: .destructive) {
                         controller.removePane(pane.id, sessionManager: sessionManager)
                     }

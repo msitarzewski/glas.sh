@@ -909,7 +909,7 @@ struct ServerFormView: View {
     }
 }
 
-private extension View {
+extension View {
     @ViewBuilder
     func serverFormControlPresentation() -> some View {
         #if os(macOS)

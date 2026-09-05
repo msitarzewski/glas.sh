@@ -2865,6 +2865,7 @@ private final class MacLocalProcessEngine: TerminalEngine, SwiftTermLocalProcess
     private var onRendererDiagnostics: (SwiftTermRendererDiagnostics) -> Void
     private var onOSC52Decision: (SwiftTermOSC52Decision) -> Void
     private var didReportTermination = false
+    private(set) var launchedShell: String?
     private(set) var rendererDiagnostics = SwiftTermRendererDiagnostics.awaitingWindow
     private(set) var performanceDiagnostics = SwiftTermPerformanceDiagnostics()
 
@@ -3005,6 +3006,7 @@ private final class MacLocalProcessEngine: TerminalEngine, SwiftTermLocalProcess
             return
         }
         processState.beganRunning(currentDirectory: configuration.currentDirectory)
+        launchedShell = configuration.executable
         if let currentDirectory = configuration.currentDirectory {
             delegateProxy.hostCurrentDirectoryUpdate(
                 source: terminalView,
@@ -3106,6 +3108,37 @@ private final class MacLocalProcessEngine: TerminalEngine, SwiftTermLocalProcess
         terminalView.terminate()
         reportProcessTermination(exitCode: nil)
         Self.reapTerminatedProcess(processID)
+    }
+
+    var hasActiveChildProcesses: Bool? {
+        guard let process = terminalView.process,
+              process.running, process.shellPid > 0, process.childfd >= 0 else { return nil }
+        let foregroundGroup = tcgetpgrp(process.childfd)
+        guard foregroundGroup > 0 else { return nil }
+        if foregroundGroup != process.shellPid { return true }
+        // Background jobs leave the shell in the foreground. Inspect its direct
+        // children as well so closing a prompt does not silently kill a job.
+        var children = [pid_t](repeating: 0, count: 64)
+        errno = 0
+        let bytes = children.withUnsafeMutableBytes { buffer in
+            proc_listpids(UInt32(PROC_PPID_ONLY), UInt32(process.shellPid),
+                         buffer.baseAddress, Int32(buffer.count))
+        }
+        guard bytes > 0 || (bytes == 0 && errno == 0) else { return nil }
+        return children.contains { $0 > 0 }
+    }
+
+    var currentWorkingDirectory: String? {
+        guard terminalView.process.running, terminalView.process.shellPid > 0 else { return nil }
+        var info = proc_vnodepathinfo()
+        let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)
+        guard proc_pidinfo(terminalView.process.shellPid, PROC_PIDVNODEPATHINFO, 0, &info, size) == size else {
+            return nil
+        }
+        return withUnsafeBytes(of: &info.pvi_cdir.vip_path) { bytes in
+            let path = String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+            return path.hasPrefix("/") ? path : nil
+        }
     }
 
     @discardableResult
@@ -3299,6 +3332,20 @@ private final class MacLocalProcessEngine: TerminalEngine, SwiftTermLocalProcess
 public final class SwiftTermLocalProcessRuntime {
     public let model: SwiftTermHostModel
     public let processState: SwiftTermLocalProcessState
+    public var launchedShell: String? { engine?.launchedShell }
+
+    /// True for foreground or background jobs, false for an inspected idle
+    /// shell, and nil when process inspection is unavailable.
+    public var hasActiveChildProcesses: Bool? { engine?.hasActiveChildProcesses }
+
+    /// Read the owned shell's directory even when it has no OSC 7 integration.
+    public var currentWorkingDirectory: String? {
+        if let directory = engine?.currentWorkingDirectory { return directory }
+        guard let reported = processState.currentDirectory else { return nil }
+        if reported.hasPrefix("/") { return reported }
+        guard let url = URL(string: reported), url.isFileURL else { return nil }
+        return url.path
+    }
 
     private var engine: MacLocalProcessEngine?
 
@@ -3315,6 +3362,52 @@ public final class SwiftTermLocalProcessRuntime {
     }
 
     public var hasEngine: Bool { engine != nil }
+
+    /// Starts a workspace-owned PTY without requiring the tab's SwiftUI view to
+    /// exist. Presenting the tab later attaches to this same engine and buffer.
+    /// Repeated calls do not restart the process or replay its ready callback.
+    public func start(
+        configuration: SwiftTermLocalProcessConfiguration = .init(),
+        theme: SwiftTermTheme,
+        runtimeSettings: SwiftTermRuntimeSettings,
+        onOutputData: @escaping (Data) -> Void = { _ in },
+        onInputData: @escaping (Data) -> Void = { _ in },
+        onResize: @escaping (Int, Int) -> Void = { _, _ in },
+        onTitleChanged: @escaping (String) -> Void = { _ in },
+        onCurrentDirectoryChanged: @escaping (String?) -> Void = { _ in },
+        onBell: @escaping () -> Void = {},
+        onProcessReady: @escaping () -> Void = {},
+        onProcessTerminated: @escaping (Int32?) -> Void = { _ in }
+    ) {
+        guard engine == nil else { return }
+        model.setFocusOwnershipAllowed(false)
+        let resolved = resolveEngine(
+            onPasteRequest: { [weak model] text, bracketed in
+                model?.requestPaste(text, bracketed: bracketed)
+            },
+            onOutputData: onOutputData,
+            onInputData: onInputData,
+            onResize: onResize,
+            onTitleChanged: onTitleChanged,
+            onCurrentDirectoryChanged: onCurrentDirectoryChanged,
+            onBell: onBell,
+            onProcessReady: onProcessReady,
+            onProcessTerminated: onProcessTerminated,
+            onRendererDiagnostics: { [weak model] diagnostics in
+                model?.updateRendererDiagnostics(diagnostics)
+            },
+            onOSC52Decision: { [weak model] decision in
+                model?.recordOSC52Decision(decision)
+            }
+        )
+        // Give programs a usable initial grid before a window supplies its real
+        // dimensions. The existing view resize delegate updates the PTY later.
+        resolved.engine.hostView.setFrameSize(NSSize(width: 800, height: 480))
+        model.attach(resolved.engine)
+        processState.attach(resolved.engine)
+        resolved.engine.configure(theme: theme, runtimeSettings: runtimeSettings)
+        resolved.engine.start(configuration)
+    }
 
     public func terminate() {
         engine?.terminateLocalProcess()

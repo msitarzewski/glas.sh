@@ -12,6 +12,229 @@ import Testing
 
 @Suite(.serialized)
 struct MacWorkspaceTests {
+    @Test @MainActor func workgroupStartsAllTabsAndClosingTabsLeavesDefinitionUnchanged() async throws {
+        let fixture = try WorkspaceDefaultsFixture()
+        defer { fixture.cleanup() }
+        let directory = FileManager.default.temporaryDirectory.appending(path: "glas-workgroup-start-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let preset = LayoutPreset(name: "Eager", sessionIntents: (0..<2).map {
+            .init(kind: .local, startupCommand: "printf started > tab-\($0)",
+                  localShell: "/bin/sh", localDirectory: directory.path)
+        })
+        let originalDefinition = preset
+        let broker = MacStartupCommandBroker()
+        let request = try MacWorkgroupLauncher.launch(preset: preset, broker: broker, openWindow: { _ in })[0]
+        let window = MacWorkspaceWindowController(request: request, startupCommandBroker: broker, defaults: fixture.defaults)
+        let manager = SessionManager(loadImmediately: false)
+        let settings = SettingsManager(loadImmediately: false)
+        defer { window.closeAllSessions(sessionManager: manager) }
+        for tab in window.tabs {
+            tab.startLocalPanes(sessionManager: manager, settingsManager: settings, onEmpty: {})
+        }
+        #expect(await waitForCondition(seconds: 3) {
+            (0..<2).allSatisfy { FileManager.default.fileExists(atPath: directory.appending(path: "tab-\($0)").path) }
+                && window.tabs.allSatisfy { $0.closeWarning == nil }
+        })
+        #expect(window.tabs.count == 2)
+        let second = window.tabs[1]
+        #expect(!window.removeTab(window.selectedTabID, sessionManager: manager))
+        #expect(window.selectedTabID == second.workspaceID)
+        #expect(second.localRuntimesByPaneID.values.allSatisfy { $0.processState.isRunning })
+        #expect(window.removeTab(second.workspaceID, sessionManager: manager))
+        #expect(second.isClosed)
+        #expect(preset == originalDefinition)
+    }
+
+    @Test @MainActor func failedSSHLaunchRetriesOnlyAnUndispatchedStartupCommand() async throws {
+        final class FailedLaunchManager: SessionManager {
+            var receivedCommands: [String?] = []
+            var dispatchBeforeFailure = false
+
+            override func createAuthorizedSessionByServerID(
+                _ serverID: UUID,
+                settingsManager: SettingsManager,
+                startupCommand: String? = nil,
+                initialTerminalPresentation: TerminalSession.InitialTerminalPresentationRequest? = nil
+            ) async throws -> AuthorizedSessionLaunch {
+                receivedCommands.append(startupCommand)
+                let session = TerminalSession(server: ServerConfiguration(name: "Unavailable", host: "unavailable.test", username: "tester"))
+                session.installStartupCommand(startupCommand)
+                initialTerminalPresentation?(session)
+                if dispatchBeforeFailure { session.state = .connected }
+                session.state = .error("Connection lost")
+                return AuthorizedSessionLaunch(session: session)
+            }
+        }
+        let fixture = try WorkspaceDefaultsFixture()
+        defer { fixture.cleanup() }
+        let broker = MacStartupCommandBroker()
+        let preset = LayoutPreset(name: "Remote", sessionIntents: [.init(serverID: UUID(), startupCommand: "echo START_ONCE")])
+        let request = try MacWorkgroupLauncher.launch(preset: preset, broker: broker, openWindow: { _ in })[0]
+        let controller = MacWorkspaceController(request: request, startupCommandBroker: broker, defaults: fixture.defaults)
+        let pane = try #require(controller.focusedPane)
+        let manager = FailedLaunchManager(loadImmediately: false)
+        let settings = SettingsManager(loadImmediately: false)
+        await controller.prepareSSHPaneIfNeeded(pane, sessionManager: manager, settingsManager: settings)
+        #expect(controller.session(for: pane.id) == nil)
+        controller.retryPane(pane.id)
+        manager.dispatchBeforeFailure = true
+        await controller.prepareSSHPaneIfNeeded(pane, sessionManager: manager, settingsManager: settings)
+        #expect(controller.session(for: pane.id) == nil)
+        controller.retryPane(pane.id)
+        await controller.prepareSSHPaneIfNeeded(pane, sessionManager: manager, settingsManager: settings)
+        #expect(manager.receivedCommands.count == 3)
+        #expect(manager.receivedCommands[0] == "echo START_ONCE")
+        #expect(manager.receivedCommands[1] == "echo START_ONCE")
+        #expect(manager.receivedCommands[2] == nil)
+    }
+
+    @Test @MainActor func restoredWorkspaceRecapturesConfiguredCommandWithoutExecutingIt() throws {
+        let preset = LayoutPreset(name: "Project", sessionIntents: [
+            .init(kind: .local, startupCommand: "echo RESTORED_CONFIG", localShell: " ", localDirectory: "")
+        ])
+        #expect(preset.isValidForPersistence)
+        let broker = MacStartupCommandBroker()
+        let request = try MacWorkgroupLauncher.launch(preset: preset, broker: broker, openWindow: { _ in })[0]
+        let suite = "WorkspaceCaptureTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let live = MacWorkspaceWindowController(request: request, startupCommandBroker: broker, defaults: defaults)
+        let paneID = try #require(live.selectedTab.focusedPaneID)
+        #expect(live.selectedTab.claimStartupCommand(for: paneID)?.command == "echo RESTORED_CONFIG")
+        let restored = MacWorkspaceWindowController(request: request, startupCommandBroker: broker, defaults: defaults)
+        #expect(restored.selectedTab.claimStartupCommand(for: paneID) == nil)
+        let captured = try restored.capturePreset(name: "Tomorrow", servers: [], sourcePresets: [preset])
+        #expect(captured.sessionIntents[0].startupCommand == "echo RESTORED_CONFIG")
+        #expect(captured.sessionIntents[0].localShell == nil)
+        #expect(captured.sessionIntents[0].localDirectory == nil)
+        #expect(!String(decoding: try JSONEncoder().encode(restored.selectedTab.state), as: UTF8.self).contains("RESTORED_CONFIG"))
+    }
+
+    @Test func overdeepSavedLayoutFailsDuringDecoding() throws {
+        var node = LayoutPreset.WorkspaceLayout.Node.session(0)
+        for _ in 0..<13 {
+            node = .split(axis: .horizontal, fraction: 0.5, first: node, second: .session(1))
+        }
+        let data = try JSONEncoder().encode(node)
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(LayoutPreset.WorkspaceLayout.Node.self, from: data)
+        }
+    }
+
+    @Test @MainActor func unvisitedPresetTabsRestoreTheirCompleteLayoutWithoutCommands() throws {
+        let fixture = try WorkspaceDefaultsFixture()
+        defer { fixture.cleanup() }
+        let preset = LayoutPreset(name: "Project", sessionIntents: [
+            .init(kind: .local, startupCommand: "echo NEVER_REPLAY"),
+            .init(kind: .ssh, serverID: UUID()),
+            .init(kind: .local, localDirectory: "/tmp")
+        ], workspaceLayout: .init(tabs: [
+            .init(label: "Unvisited", root: .split(axis: .vertical, fraction: 0.3,
+                first: .session(0), second: .session(1)), focusedSessionIndex: 1),
+            .init(label: "Selected", root: .session(2), focusedSessionIndex: 2)
+        ], selectedTabIndex: 1))
+        let broker = MacStartupCommandBroker()
+        let request = try MacWorkgroupLauncher.launch(preset: preset, broker: broker, openWindow: { _ in })[0]
+        let live = MacWorkspaceWindowController(request: request, startupCommandBroker: broker, defaults: fixture.defaults)
+        // No pane focus, startup ticket claim, or layout mutation before restoring.
+        let descriptorsOnly = MacWorkspaceLaunchRequest(windowID: request.windowID,
+            tabs: live.tabs.map { $0.restorationDescriptor.request })
+        let restored = MacWorkspaceWindowController(request: descriptorsOnly,
+            startupCommandBroker: broker, defaults: fixture.defaults)
+        #expect(restored.tabs.map(\.state) == live.tabs.map(\.state))
+        #expect(restored.selectedTabID == live.tabs[1].workspaceID)
+        for tab in restored.tabs {
+            for pane in tab.state.root?.panes ?? [] {
+                #expect(tab.claimStartupCommand(for: pane.id) == nil)
+            }
+        }
+    }
+
+    @Test @MainActor func completePresetRoundTripsAndLaunchesFreshWithoutCommandSerialization() throws {
+        let layout = LayoutPreset.WorkspaceLayout(tabs: [
+            .init(label: "Project", root: .split(axis: .vertical, fraction: 0.35,
+                                                first: .session(0), second: .session(1)), focusedSessionIndex: 1)
+        ], selectedTabIndex: 0)
+        let preset = LayoutPreset(name: "Project", sessionIntents: [
+            .init(kind: .local, startupCommand: "echo UNIQUE_STARTUP_COMMAND", localShell: "/bin/zsh", localDirectory: "/tmp"),
+            .init(kind: .local)
+        ], workspaceLayout: layout)
+        #expect(preset.isValidForPersistence)
+        #expect(try JSONDecoder().decode(LayoutPreset.self, from: JSONEncoder().encode(preset)) == preset)
+        let broker = MacStartupCommandBroker()
+        let first = try MacWorkgroupLauncher.launch(preset: preset, broker: broker, openWindow: { _ in })[0]
+        let second = try MacWorkgroupLauncher.launch(preset: preset, broker: broker, openWindow: { _ in })[0]
+        #expect(first.windowID != second.windowID)
+        #expect(first.tabs[0].initialState?.root?.paneIDs != second.tabs[0].initialState?.root?.paneIDs)
+        #expect(!String(decoding: try JSONEncoder().encode(first), as: UTF8.self).contains("UNIQUE_STARTUP_COMMAND"))
+        let defaults = UserDefaults(suiteName: "WorkspacePresetTests.\(UUID())")!
+        let controller = MacWorkspaceController(request: first, startupCommandBroker: broker, defaults: defaults)
+        let pane = try #require(controller.state.root?.panes.first)
+        #expect(controller.claimStartupCommand(for: pane.id)?.command == "echo UNIQUE_STARTUP_COMMAND")
+        #expect(controller.claimStartupCommand(for: pane.id) == nil)
+        let replay = MacWorkspaceController(request: first, startupCommandBroker: broker, defaults: defaults)
+        #expect(replay.claimStartupCommand(for: pane.id) == nil)
+    }
+
+    @Test func savedLayoutRejectsMissingDuplicateAndInvalidFocus() {
+        let duplicate = LayoutPreset.WorkspaceLayout(tabs: [
+            .init(label: nil, root: .split(axis: .horizontal, fraction: 0.5,
+                                         first: .session(0), second: .session(0)), focusedSessionIndex: 0)
+        ], selectedTabIndex: 0)
+        #expect(!duplicate.isValid(sessionCount: 2))
+        let missing = LayoutPreset.WorkspaceLayout(tabs: [.init(label: nil, root: .session(0), focusedSessionIndex: 0)], selectedTabIndex: 0)
+        #expect(!missing.isValid(sessionCount: 2))
+        let focus = LayoutPreset.WorkspaceLayout(tabs: [.init(label: nil, root: .session(0), focusedSessionIndex: 1)], selectedTabIndex: 0)
+        #expect(!focus.isValid(sessionCount: 1))
+        let legacy = LayoutPreset.SessionIntent(schemaVersion: 2, kind: .local).migratedToCurrentSchema()
+        #expect(legacy.isSupported)
+        #expect(legacy.localDirectory == nil)
+    }
+
+    @Test @MainActor func windowCloseGatePreservesDelegateAndFinalizesOnlyOnce() {
+        final class OriginalDelegate: NSObject, NSWindowDelegate {
+            var allowsClose = false
+            func windowShouldClose(_ sender: NSWindow) -> Bool { allowsClose }
+        }
+        let window = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let original = OriginalDelegate()
+        window.delegate = original
+        let coordinator = MacTerminalWindowReader.Coordinator()
+        var cleanupCount = 0
+        coordinator.observeWindowClose(window) { cleanupCount += 1 }
+        coordinator.interceptWindowClose(window, shouldConfirm: { false })
+
+        #expect(window.delegate === coordinator)
+        #expect(!coordinator.windowShouldClose(window))
+        #expect(cleanupCount == 0)
+        original.allowsClose = true
+        #expect(coordinator.windowShouldClose(window))
+        coordinator.finishSessions()
+        window.close()
+        #expect(cleanupCount == 1)
+        coordinator.restoreWindowDelegate()
+        #expect(window.delegate === original)
+        coordinator.stopObservingWindowClose()
+        #expect(!MacTerminalWindowReader.Coordinator.active.allObjects.contains { $0 === coordinator })
+    }
+
+    @Test @MainActor func windowCloseGateRefreshesConfirmationPreference() {
+        let window = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let coordinator = MacTerminalWindowReader.Coordinator()
+        var confirmationEnabled = true
+        coordinator.observeWindowClose(window, action: {})
+        coordinator.interceptWindowClose(window, shouldConfirm: { confirmationEnabled })
+        #expect(coordinator.requiresCloseConfirmation)
+        confirmationEnabled = false
+        #expect(!coordinator.requiresCloseConfirmation)
+        coordinator.restoreWindowDelegate()
+        coordinator.stopObservingWindowClose()
+        window.close()
+    }
+
     private static let hostKeyValidationFixture =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJfkNV4OS33ImTXvorZr72q4v5XhVEQKfvqsxOEJ/XaR"
 
@@ -1550,9 +1773,109 @@ struct MacWorkspaceTests {
         )
     }
 
-    @Test func localTerminalExitPolicyClosesOnlyAfterCleanShellExit() {
+    @Test @MainActor func workgroupEditorHostsNativeTableWithoutSavingOrShowingAWindow() async throws {
+        let preset = LayoutPreset(
+            name: "Five terminal tabs",
+            sessionIntents: (1...5).map { index in
+                LayoutPreset.SessionIntent(kind: .local, label: "Tab \(index)",
+                                           startupCommand: "echo \(index)")
+            }
+        )
+        var saves = 0
+        let host = NSHostingController(rootView: WorkgroupEditorView(
+            context: .edit(preset), servers: [], onSave: { _ in saves += 1 }
+        ))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 760),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        window.isReleasedWhenClosed = false
+        defer {
+            window.contentViewController = nil
+            window.close()
+        }
+        window.contentViewController = host
+        func nativeTables(in view: NSView) -> [NSTableView] {
+            (view as? NSTableView).map { [$0] } ?? view.subviews.flatMap { nativeTables(in: $0) }
+        }
+        #expect(await waitForCondition(seconds: 3) {
+            host.view.layoutSubtreeIfNeeded()
+            return nativeTables(in: host.view).contains { $0.numberOfRows == 5 }
+        })
+        let table = try #require(nativeTables(in: host.view).first { $0.numberOfRows == 5 })
+        #expect(table.numberOfColumns == 4)
+        #expect(!window.isVisible)
+        #expect(saves == 0)
+
+        // Construct the staged child editor on the same hidden native surface;
+        // merely presenting a draft must not commit or delete anything.
+        var deletes = 0
+        let child = NSHostingController(rootView: WorkgroupTabEditorView(
+            draft: WorkgroupTabDraft(intent: preset.sessionIntents[0]),
+            isNew: false, canDelete: true, servers: [],
+            onSave: { _ in saves += 1 }, onDelete: { deletes += 1 }
+        ))
+        window.contentViewController = child
+        child.view.layoutSubtreeIfNeeded()
+        #expect(child.view.window === window)
+        #expect(!window.isVisible)
+        #expect(saves == 0)
+        #expect(deletes == 0)
+    }
+
+    @Test func workgroupTabDraftRoundTripsLocalAndSSHIntentWithoutCrossKindSettings() {
+        let local = LayoutPreset.SessionIntent(
+            kind: .local, label: "Build", startupCommand: "swift build",
+            localShell: "/bin/zsh", localDirectory: "~/Projects"
+        )
+        let original = WorkgroupTabDraft(intent: local)
+        #expect(original.intent == local)
+        #expect(original.validationMessage(servers: []) == nil)
+        var edited = original
+        edited.label = "Changed"
+        #expect(original.label == "Build")
+        #expect(edited.id == original.id)
+
+        let server = ServerConfiguration(name: "Remote", host: "example.test", username: "tester")
+        edited.kind = .ssh
+        edited.serverID = server.id
+        #expect(edited.validationMessage(servers: [server]) == nil)
+        #expect(edited.intent.serverID == server.id)
+        #expect(edited.intent.localShell == nil)
+        #expect(edited.intent.localDirectory == nil)
+        #expect(WorkgroupTabDraft(intent: edited.intent).intent == edited.intent)
+        edited.kind = .local
+        #expect(edited.intent.serverID == nil)
+        #expect(edited.intent.localShell == "/bin/zsh")
+    }
+
+    @Test func workgroupTabDraftValidatesConnectionCommandLabelAndLocalPaths() {
+        var draft = WorkgroupTabDraft(kind: .ssh)
+        #expect(draft.validationMessage(servers: []) != nil)
+        draft.serverID = UUID()
+        #expect(draft.validationMessage(servers: []) != nil)
+        draft.kind = .local
+        #expect(draft.validationMessage(servers: []) == nil)
+        draft.startupCommand = "echo first\necho second"
+        #expect(draft.validationMessage(servers: []) != nil)
+        draft.startupCommand = "echo ready"
+        draft.label = String(repeating: "x", count: LayoutPreset.SessionIntent.maximumLabelLength + 1)
+        #expect(draft.validationMessage(servers: []) != nil)
+        draft.label = "Valid"
+        draft.localDirectory = "relative/path"
+        #expect(draft.validationMessage(servers: []) != nil)
+        draft.localDirectory = "~/Projects"
+        draft.localShell = "/bin/zsh\0"
+        #expect(draft.validationMessage(servers: []) != nil)
+        draft.localShell = "/bin/zsh"
+        #expect(draft.validationMessage(servers: []) == nil)
+    }
+
+    @Test func localTerminalExitPolicyClosesAfterNormalShellExit() {
         #expect(MacLocalTerminalExitPolicy.shouldClose(exitCode: 0))
-        #expect(!MacLocalTerminalExitPolicy.shouldClose(exitCode: 1))
+        #expect(MacLocalTerminalExitPolicy.shouldClose(exitCode: 1))
+        #expect(MacLocalTerminalExitPolicy.shouldClose(exitCode: 127))
+        #expect(!MacLocalTerminalExitPolicy.shouldClose(exitCode: 128))
         #expect(!MacLocalTerminalExitPolicy.shouldClose(exitCode: 143))
         #expect(!MacLocalTerminalExitPolicy.shouldClose(exitCode: nil))
     }
@@ -1646,7 +1969,7 @@ struct MacWorkspaceTests {
             executable: "/bin/sh",
             arguments: [
                 "-c",
-                "printf '%d' $$ > \"$1\"; while :; do sleep 1; done",
+                "cd /; printf '%d' $$ > \"$1\"; while :; do sleep 1; done",
                 "glas-retained-local-pty-test",
                 pidFile.path,
             ],
@@ -1695,6 +2018,10 @@ struct MacWorkspaceTests {
         hostingView = nil
         #expect(runtime.hasEngine)
         #expect(runtime.processState.isRunning)
+        // The shell changed directory without emitting OSC 7. Workspace capture
+        // must read that directory, not the configured initial directory.
+        #expect(runtime.currentWorkingDirectory == "/")
+        #expect(runtime.launchedShell == "/bin/sh")
         #expect(kill(processID, 0) == 0)
 
         hostingView = NSHostingView(
@@ -1720,6 +2047,131 @@ struct MacWorkspaceTests {
         })
         #expect(!runtime.hasEngine)
         #expect(!runtime.processState.isRunning)
+    }
+
+    @Test @MainActor func headlessLocalRuntimesRunCommandsBeforeTabsArePresented() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "glas-headless-pty-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let runtimes = [SwiftTermLocalProcessRuntime(), SwiftTermLocalProcessRuntime()]
+        defer {
+            runtimes.forEach { $0.terminate() }
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let theme = SwiftTermTheme(
+            fontSize: 13,
+            foreground: (1, 1, 1),
+            background: (0, 0, 0, 0),
+            cursor: (1, 1, 1)
+        )
+        let settings = SwiftTermRuntimeSettings(
+            cursorStyle: "block", blinkingCursor: false, scrollbackLines: 100
+        )
+        let configuration = SwiftTermLocalProcessConfiguration(
+            executable: "/bin/sh", arguments: ["-i"], executableName: "sh",
+            currentDirectory: directory.path
+        )
+        var readyCount = 0
+        for (index, runtime) in runtimes.enumerated() {
+            runtime.start(
+                configuration: configuration, theme: theme, runtimeSettings: settings,
+                onProcessReady: {
+                    readyCount += 1
+                    #expect(runtime.processState.sendCommand(
+                        "printf '%s\\n' $$ >> started-\(index); printf 'HEADLESS_READY_\(index)\\n'"
+                    ))
+                }
+            )
+            #expect(!runtime.model.allowsFocusOwnership)
+        }
+        // No hosting view or window exists: both startup commands must already
+        // have executed, with their output retained by the owned renderers.
+        #expect(await waitForCondition(seconds: 3) {
+            runtimes.enumerated().allSatisfy { index, runtime in
+                FileManager.default.fileExists(atPath: directory.appending(path: "started-\(index)").path)
+                    && runtime.model.getVisibleText().joined().contains("HEADLESS_READY_\(index)")
+            }
+        })
+        let marker = directory.appending(path: "started-0")
+        let initialMarker = try String(contentsOf: marker, encoding: .utf8)
+        let processID = try #require(pid_t(initialMarker.trimmingCharacters(in: .whitespacesAndNewlines)))
+        #expect(readyCount == 2)
+        runtimes[0].start(
+            configuration: configuration, theme: theme, runtimeSettings: settings,
+            onProcessReady: { readyCount += 1 }
+        )
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 480),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer {
+            window.contentView = nil
+            window.close()
+        }
+        var presentedReadyCount = 0
+        var presentedOutput = Data()
+        var presentedResizeCount = 0
+        window.contentView = NSHostingView(rootView: SwiftTermLocalProcessHostView(
+            runtime: runtimes[0], configuration: configuration, theme: theme,
+            runtimeSettings: settings,
+            onOutputData: { presentedOutput.append($0) },
+            onResize: { _, _ in presentedResizeCount += 1 },
+            onProcessReady: { presentedReadyCount += 1 }
+        ))
+        #expect(await waitForCondition(seconds: 2) { presentedResizeCount > 0 })
+        // Wait for view reconstruction by sending fresh input through the same
+        // PTY and checking the presentation's updated output callback.
+        #expect(runtimes[0].processState.sendCommand("printf 'ATTACHED_OUTPUT\\n'"))
+        #expect(await waitForCondition(seconds: 2) {
+            String(decoding: presentedOutput, as: UTF8.self).contains("ATTACHED_OUTPUT")
+        })
+        #expect(kill(processID, 0) == 0)
+        #expect(try String(contentsOf: marker, encoding: .utf8) == initialMarker)
+        #expect(runtimes[0].model.getVisibleText().joined().contains("HEADLESS_READY_0"))
+        #expect(readyCount == 2)
+        #expect(presentedReadyCount == 0)
+    }
+
+    @Test @MainActor func localRuntimeDetectsBackgroundJobsAndReportsInheritedExitStatus() async throws {
+        let runtime = SwiftTermLocalProcessRuntime()
+        defer { runtime.terminate() }
+        var terminationCode: Int32?
+        var terminated = false
+        runtime.start(
+            configuration: SwiftTermLocalProcessConfiguration(
+                executable: "/bin/sh", arguments: ["-i"], executableName: "sh",
+                currentDirectory: FileManager.default.temporaryDirectory.path
+            ),
+            theme: SwiftTermTheme(fontSize: 13, foreground: (1, 1, 1),
+                                 background: (0, 0, 0, 0), cursor: (1, 1, 1)),
+            runtimeSettings: SwiftTermRuntimeSettings(
+                cursorStyle: "block", blinkingCursor: false, scrollbackLines: 100
+            ),
+            onProcessTerminated: {
+                terminationCode = $0
+                terminated = true
+            }
+        )
+        #expect(await waitForCondition(seconds: 2) {
+            runtime.hasActiveChildProcesses == false
+        })
+        #expect(runtime.processState.sendCommand("sleep 30 &"))
+        #expect(await waitForCondition(seconds: 2) {
+            runtime.hasActiveChildProcesses == true
+        })
+        #expect(runtime.processState.sendCommand("kill -KILL %1; wait; false; exit"))
+        try #require(await waitForCondition(seconds: 3) { terminated },
+                 "Shell output: \(runtime.model.getVisibleText().joined(separator: "\n"))")
+        #expect(terminationCode == 1)
+        #expect(MacLocalTerminalExitPolicy.shouldClose(exitCode: terminationCode))
+        #expect(!runtime.processState.isRunning)
+        #expect(runtime.hasActiveChildProcesses == nil)
+    }
+
+    @Test @MainActor func closeWorkspaceTabActionInvokesFocusedHandler() {
+        var calls = 0
+        let action = MacCloseWorkspaceTabAction { calls += 1 }
+        action()
+        #expect(calls == 1)
     }
 
     @Test @MainActor func exitedLocalPTYRestartsInTheExistingTerminal() async throws {

@@ -1152,17 +1152,6 @@ class PortForwardManager {
         }
     }
 
-    func stopAllForwards(for sessionID: UUID) {
-        guard let sessionForwards = forwards[sessionID] else { return }
-        for forward in sessionForwards {
-            stopForward(forward.id)
-            if let idx = forwards[sessionID]?.firstIndex(where: { $0.id == forward.id }) {
-                forwards[sessionID]?[idx].status = .inactive
-                forwards[sessionID]?[idx].errorMessage = nil
-            }
-        }
-    }
-
     func purgeAllForwards(for sessionID: UUID) {
         let forwardIDs = forwards[sessionID]?.map(\.id) ?? []
         for forwardID in forwardIDs {

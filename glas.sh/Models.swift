@@ -714,10 +714,7 @@ class TerminalSession: Identifiable, Hashable {
         let connectionToDisconnect = detachSSHConnection(for: .explicitDisconnect)
         connectionProgress = nil
         state = .disconnected
-        Task {
-            await self.awaitLifecycleCleanup()
-            await connectionToDisconnect?.disconnect()
-        }
+        appendTransportDisconnectToLifecycleCleanup(connectionToDisconnect)
     }
 
     func reconnect() async {
@@ -897,12 +894,6 @@ class TerminalSession: Identifiable, Hashable {
         output.removeAll()
     }
     
-    func searchOutput(_ query: String) -> [Int] {
-        output.enumerated().compactMap { index, line in
-            line.text.localizedCaseInsensitiveContains(query) ? index : nil
-        }
-    }
-
     func reportError(_ message: String) {
         let failedConnection = detachSSHConnection(for: .terminalError)
         appendTransportDisconnectToLifecycleCleanup(failedConnection)
@@ -2704,12 +2695,12 @@ struct TerminalWorkgroup: Identifiable, Equatable, Sendable {
 }
 
 struct LayoutPreset: Identifiable, Codable, Hashable {
-    static let currentSchemaVersion = 3
+    static let currentSchemaVersion = 4
     static let maximumNameLength = 80
     static let maximumSessionCount = 32
 
     struct SessionIntent: Codable, Hashable {
-        static let currentSchemaVersion = 2
+        static let currentSchemaVersion = 3
         static let maximumLabelLength = 80
 
         enum Kind: String, Codable, Hashable, Sendable {
@@ -2749,6 +2740,8 @@ struct LayoutPreset: Identifiable, Codable, Hashable {
         var restoration: Restoration
         var label: String?
         var startupCommand: String?
+        var localShell: String? = nil
+        var localDirectory: String? = nil
 
         init(
             schemaVersion: Int = SessionIntent.currentSchemaVersion,
@@ -2771,10 +2764,14 @@ struct LayoutPreset: Identifiable, Codable, Hashable {
             serverID: UUID? = nil,
             restoration: Restoration = .freshAuthorizedSession,
             label: String? = nil,
-            startupCommand: String? = nil
+            startupCommand: String? = nil,
+            localShell: String? = nil,
+            localDirectory: String? = nil
         ) {
             self.schemaVersion = schemaVersion
             self.kind = kind
+            self.localShell = Self.normalizedLocalPath(localShell)
+            self.localDirectory = Self.normalizedLocalPath(localDirectory)
             self.serverID = serverID
             self.restoration = restoration
             self.label = Self.normalizedLabel(label)
@@ -2787,6 +2784,8 @@ struct LayoutPreset: Identifiable, Codable, Hashable {
                 && ((kind == .local && serverID == nil) || (kind == .ssh && serverID != nil))
                 && label == Self.normalizedLabel(label)
                 && startupCommand == Self.normalizedCommand(startupCommand)
+                && [localShell, localDirectory].allSatisfy { $0 == nil || (!$0!.isEmpty && !$0!.utf8.contains(0)) }
+                && (kind == .local || (localShell == nil && localDirectory == nil))
         }
 
         var needsMigration: Bool { schemaVersion < Self.currentSchemaVersion }
@@ -2813,6 +2812,11 @@ struct LayoutPreset: Identifiable, Codable, Hashable {
             TerminalStartupCommandTicket(command: value)?.command
         }
 
+        private static func normalizedLocalPath(_ value: String?) -> String? {
+            guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return value
+        }
+
         private enum CodingKeys: String, CodingKey {
             case schemaVersion
             case kind
@@ -2820,12 +2824,15 @@ struct LayoutPreset: Identifiable, Codable, Hashable {
             case restoration
             case label
             case startupCommand
+            case localShell, localDirectory
         }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
             kind = try container.decodeIfPresent(Kind.self, forKey: .kind) ?? .ssh
+            localShell = Self.normalizedLocalPath(try container.decodeIfPresent(String.self, forKey: .localShell))
+            localDirectory = Self.normalizedLocalPath(try container.decodeIfPresent(String.self, forKey: .localDirectory))
             serverID = try container.decodeIfPresent(UUID.self, forKey: .serverID)
             restoration = try container.decodeIfPresent(Restoration.self, forKey: .restoration)
                 ?? .freshAuthorizedSession
@@ -2843,6 +2850,97 @@ struct LayoutPreset: Identifiable, Codable, Hashable {
             try container.encode(restoration, forKey: .restoration)
             try container.encodeIfPresent(label, forKey: .label)
             try container.encodeIfPresent(startupCommand, forKey: .startupCommand)
+            try container.encodeIfPresent(localShell, forKey: .localShell)
+            try container.encodeIfPresent(localDirectory, forKey: .localDirectory)
+        }
+    }
+
+    struct WorkspaceLayout: Codable, Hashable {
+        enum Axis: String, Codable, Hashable { case horizontal, vertical }
+        indirect enum Node: Codable, Hashable {
+            case session(Int)
+            case split(axis: Axis, fraction: Double, first: Node, second: Node)
+
+            private enum CodingKeys: String, CodingKey { case session, split }
+            private enum SessionKeys: String, CodingKey { case index = "_0" }
+            private enum SplitKeys: String, CodingKey { case axis, fraction, first, second }
+
+            init(from decoder: Decoder) throws {
+                // Check before descending, rather than recursively decoding an
+                // arbitrarily deep tree and validating only afterward.
+                let depth = 1 + decoder.codingPath.filter {
+                    $0.stringValue == "first" || $0.stringValue == "second"
+                }.count
+                guard depth <= 12 else {
+                    throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                        debugDescription: "A workspace split layout may be at most 12 levels deep."))
+                }
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                guard container.allKeys.count == 1 else {
+                    throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                        debugDescription: "A workspace node requires exactly one variant."))
+                }
+                if container.contains(.session) {
+                    let value = try container.nestedContainer(keyedBy: SessionKeys.self, forKey: .session)
+                    self = .session(try value.decode(Int.self, forKey: .index))
+                } else {
+                    let value = try container.nestedContainer(keyedBy: SplitKeys.self, forKey: .split)
+                    let fraction = try value.decode(Double.self, forKey: .fraction)
+                    guard fraction.isFinite, (0.1...0.9).contains(fraction) else {
+                        throw DecodingError.dataCorruptedError(forKey: .fraction, in: value,
+                            debugDescription: "Invalid workspace split position.")
+                    }
+                    self = .split(axis: try value.decode(Axis.self, forKey: .axis), fraction: fraction,
+                                  first: try value.decode(Node.self, forKey: .first),
+                                  second: try value.decode(Node.self, forKey: .second))
+                }
+            }
+
+            func encode(to encoder: Encoder) throws {
+                var container = encoder.container(keyedBy: CodingKeys.self)
+                switch self {
+                case .session(let index):
+                    var value = container.nestedContainer(keyedBy: SessionKeys.self, forKey: .session)
+                    try value.encode(index, forKey: .index)
+                case let .split(axis, fraction, first, second):
+                    var value = container.nestedContainer(keyedBy: SplitKeys.self, forKey: .split)
+                    try value.encode(axis, forKey: .axis)
+                    try value.encode(fraction, forKey: .fraction)
+                    try value.encode(first, forKey: .first)
+                    try value.encode(second, forKey: .second)
+                }
+            }
+
+            fileprivate func indices(depth: Int = 1) -> [Int]? {
+                guard depth <= 12 else { return nil }
+                switch self {
+                case .session(let index): return [index]
+                case let .split(_, fraction, first, second):
+                    guard fraction.isFinite, (0.1...0.9).contains(fraction),
+                          let left = first.indices(depth: depth + 1),
+                          let right = second.indices(depth: depth + 1) else { return nil }
+                    return left + right
+                }
+            }
+        }
+        struct Tab: Codable, Hashable {
+            var label: String?
+            var root: Node
+            var focusedSessionIndex: Int
+        }
+        var tabs: [Tab]
+        var selectedTabIndex: Int
+
+        func isValid(sessionCount: Int) -> Bool {
+            guard (1...LayoutPreset.maximumSessionCount).contains(sessionCount),
+                  !tabs.isEmpty, tabs.count <= sessionCount,
+                  tabs.indices.contains(selectedTabIndex) else { return false }
+            var all: [Int] = []
+            for tab in tabs {
+                guard let indices = tab.root.indices(), indices.contains(tab.focusedSessionIndex) else { return false }
+                all += indices
+            }
+            return all.sorted() == Array(0..<sessionCount)
         }
     }
 
@@ -2851,6 +2949,7 @@ struct LayoutPreset: Identifiable, Codable, Hashable {
     var colorTag: ServerColorTag
     private(set) var schemaVersion: Int
     var sessionIntents: [SessionIntent]
+    var workspaceLayout: WorkspaceLayout? = nil
     let createdAt: Date
     var lastUsed: Date?
 
@@ -2878,6 +2977,7 @@ struct LayoutPreset: Identifiable, Codable, Hashable {
         name: String,
         colorTag: ServerColorTag = .blue,
         sessionIntents: [SessionIntent],
+        workspaceLayout: WorkspaceLayout? = nil,
         createdAt: Date = Date(),
         lastUsed: Date? = nil
     ) {
@@ -2886,6 +2986,7 @@ struct LayoutPreset: Identifiable, Codable, Hashable {
         self.colorTag = colorTag
         self.schemaVersion = Self.currentSchemaVersion
         self.sessionIntents = Array(sessionIntents.prefix(Self.maximumSessionCount))
+        self.workspaceLayout = workspaceLayout
         self.createdAt = createdAt
         self.lastUsed = lastUsed
     }
@@ -2902,10 +3003,12 @@ struct LayoutPreset: Identifiable, Codable, Hashable {
     }
 
     var isValidForPersistence: Bool {
-        name == Self.normalizedName(name)
+        schemaVersion == Self.currentSchemaVersion
+            && name == Self.normalizedName(name)
             && !sessionIntents.isEmpty
             && sessionIntents.count <= Self.maximumSessionCount
             && sessionIntents.allSatisfy(\.isSupported)
+            && (workspaceLayout?.isValid(sessionCount: sessionIntents.count) ?? true)
     }
 
     func migratedToCurrentSchema() -> LayoutPreset {
@@ -2932,6 +3035,7 @@ struct LayoutPreset: Identifiable, Codable, Hashable {
         case colorTag
         case schemaVersion
         case sessionIntents
+        case workspaceLayout
         case serverIDs
         case createdAt
         case lastUsed
@@ -2944,6 +3048,7 @@ struct LayoutPreset: Identifiable, Codable, Hashable {
         colorTag = try container.decodeIfPresent(ServerColorTag.self, forKey: .colorTag) ?? .blue
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         lastUsed = try container.decodeIfPresent(Date.self, forKey: .lastUsed)
+        workspaceLayout = try container.decodeIfPresent(WorkspaceLayout.self, forKey: .workspaceLayout)
 
         if let decodedIntents = try container.decodeIfPresent([SessionIntent].self, forKey: .sessionIntents) {
             sessionIntents = decodedIntents
@@ -2963,6 +3068,7 @@ struct LayoutPreset: Identifiable, Codable, Hashable {
         try container.encode(colorTag, forKey: .colorTag)
         try container.encode(schemaVersion, forKey: .schemaVersion)
         try container.encode(sessionIntents, forKey: .sessionIntents)
+        try container.encodeIfPresent(workspaceLayout, forKey: .workspaceLayout)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encodeIfPresent(lastUsed, forKey: .lastUsed)
     }

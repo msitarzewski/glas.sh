@@ -46,8 +46,18 @@ struct MacWorkspacePaneIntent: Codable, Hashable, Sendable {
     let schemaVersion: Int
     let kind: Kind
     let serverID: UUID?
+    var localShell: String? = nil
+    var localDirectory: String? = nil
+    var label: String? = nil
+    var sourceSessionIndex: Int? = nil
 
     static let local = MacWorkspacePaneIntent(kind: .local, serverID: nil)
+    static func local(shell: String?, directory: String?) -> Self {
+        var intent = Self.local
+        intent.localShell = shell
+        intent.localDirectory = directory
+        return intent
+    }
 
     static func ssh(serverID: UUID) -> MacWorkspacePaneIntent {
         MacWorkspacePaneIntent(kind: .ssh, serverID: serverID)
@@ -73,6 +83,10 @@ struct MacWorkspacePaneIntent: Codable, Hashable, Sendable {
         self.schemaVersion = schemaVersion
         self.kind = kind
         self.serverID = serverID
+        self.localShell = try container.decodeIfPresent(String.self, forKey: .localShell)
+        self.localDirectory = try container.decodeIfPresent(String.self, forKey: .localDirectory)
+        self.label = try container.decodeIfPresent(String.self, forKey: .label)
+        self.sourceSessionIndex = try container.decodeIfPresent(Int.self, forKey: .sourceSessionIndex)
     }
 }
 
@@ -308,6 +322,8 @@ struct MacWorkspaceTabRequest: Codable, Hashable, Sendable, Identifiable {
     /// An opaque lookup key for a runtime-only session that was authenticated
     /// before its workspace opened. Live session state is never Codable.
     let liveSessionTicketID: UUID?
+    var initialState: MacWorkspaceRestorationState? = nil
+    var paneStartupTicketIDs: [UUID: UUID]? = nil
 
     init(
         workspaceID: UUID = UUID(),
@@ -351,6 +367,8 @@ struct MacWorkspaceTabRequest: Codable, Hashable, Sendable, Identifiable {
         )
         startupTicketID = try container.decodeIfPresent(UUID.self, forKey: .startupTicketID)
         liveSessionTicketID = try container.decodeIfPresent(UUID.self, forKey: .liveSessionTicketID)
+        initialState = try container.decodeIfPresent(MacWorkspaceRestorationState.self, forKey: .initialState)?.validated(for: workspaceID)
+        paneStartupTicketIDs = try container.decodeIfPresent([UUID: UUID].self, forKey: .paneStartupTicketIDs)
     }
 
     private static func normalizedDisplayText(_ value: String?) -> String? {
@@ -367,6 +385,7 @@ struct MacWorkspaceLaunchRequest: Codable, Hashable, Sendable {
     /// Opaque runtime handoff for “Move Tab to New Window.” The controller and
     /// its live sessions never enter the Codable scene value.
     let transferredTabTicketID: UUID?
+    var initialSelectedTabID: UUID? = nil
 
     var workspaceID: UUID { tabs[0].workspaceID }
     var startsEmpty: Bool { tabs[0].startsEmpty }
@@ -459,6 +478,7 @@ struct MacWorkspaceLaunchRequest: Codable, Hashable, Sendable {
             windowID = try container.decodeIfPresent(UUID.self, forKey: .windowID)
                 ?? decodedTabs[0].workspaceID
             tabs = decodedTabs
+            initialSelectedTabID = try container.decodeIfPresent(UUID.self, forKey: .initialSelectedTabID)
             transferredTabTicketID = try container.decodeIfPresent(
                 UUID.self,
                 forKey: .transferredTabTicketID
@@ -702,6 +722,57 @@ enum MacLiveSessionWorkspaceRouter {
 /// Callers remain responsible for filtering unavailable servers before launch.
 @MainActor
 enum MacWorkgroupLauncher {
+    @discardableResult
+    static func launch(
+        preset: LayoutPreset,
+        broker: MacStartupCommandBroker = .shared,
+        openWindow: (MacWorkspaceLaunchRequest) -> Void
+    ) throws -> [MacWorkspaceLaunchRequest] {
+        let preset = preset.migratedToCurrentSchema()
+        guard preset.isValidForPersistence else { throw MacWorkspaceStateError.invalidPaneIntent }
+        let layout = preset.workspaceLayout ?? LayoutPreset.WorkspaceLayout(
+            tabs: preset.sessionIntents.indices.map {
+                .init(label: preset.sessionIntents[$0].label, root: .session($0), focusedSessionIndex: $0)
+            }, selectedTabIndex: 0
+        )
+        var requests: [MacWorkspaceTabRequest] = []
+        for tab in layout.tabs {
+            var paneIDs: [Int: UUID] = [:]
+            var tickets: [UUID: UUID] = [:]
+            func convert(_ node: LayoutPreset.WorkspaceLayout.Node) -> MacWorkspaceNode {
+                switch node {
+                case .session(let index):
+                    let item = preset.sessionIntents[index]
+                    var intent: MacWorkspacePaneIntent = item.kind == .local
+                        ? .local(shell: item.localShell, directory: item.localDirectory)
+                        : .ssh(serverID: item.serverID!)
+                    intent.label = item.label
+                    intent.sourceSessionIndex = index
+                    let pane = MacWorkspacePane(intent: intent)
+                    paneIDs[index] = pane.id
+                    tickets[pane.id] = broker.issue(command: item.startupCommand)
+                    return .pane(pane)
+                case let .split(axis, fraction, first, second):
+                    return .split(.init(axis: axis == .horizontal ? .horizontal : .vertical,
+                                        fraction: fraction, first: convert(first), second: convert(second)))
+                }
+            }
+            var state = MacWorkspaceRestorationState.empty()
+            state.root = convert(tab.root)
+            state.focusedPaneID = paneIDs[tab.focusedSessionIndex]
+            var request = MacWorkspaceTabRequest(workspaceID: state.id, workgroupID: preset.id,
+                                                workgroupName: preset.name, workgroupColor: preset.colorTag,
+                                                tabLabel: tab.label)
+            request.initialState = state
+            request.paneStartupTicketIDs = tickets
+            requests.append(request)
+        }
+        var request = MacWorkspaceLaunchRequest(tabs: requests)
+        request.initialSelectedTabID = requests[layout.selectedTabIndex].workspaceID
+        openWindow(request)
+        return [request]
+    }
+
     @discardableResult
     static func launch(
         workgroupID: UUID,
