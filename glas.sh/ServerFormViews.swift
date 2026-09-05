@@ -544,7 +544,7 @@ struct ServerFormView: View {
                 collectionEditor.serverFormControlPresentation()
             }
             #else
-            mobileColorTagEditor
+            colorTagPicker
             VStack(alignment: .leading, spacing: 8) {
                 Text("Tags")
                     .font(.headline)
@@ -555,6 +555,7 @@ struct ServerFormView: View {
 
         Section("Preferences") {
             Toggle("Favorite", systemImage: "heart.fill", isOn: $isFavorite)
+                .accessibilityIdentifier("\(identifierPrefix)-favorite")
         }
     }
 
@@ -690,34 +691,6 @@ struct ServerFormView: View {
                 Label(tag.rawValue.capitalized, systemImage: "circle.fill")
                     .foregroundStyle(tag.color)
                     .tag(tag)
-            }
-        }
-    }
-
-    private var mobileColorTagEditor: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Color Tag")
-                .font(.headline)
-            HStack(spacing: 12) {
-                ForEach(ServerColorTag.allCases, id: \.self) { tag in
-                    Button {
-                        colorTag = tag
-                    } label: {
-                        Circle()
-                            .fill(tag.color)
-                            .frame(width: 44, height: 44)
-                            .overlay {
-                                if colorTag == tag {
-                                    Circle().strokeBorder(.white, lineWidth: 3)
-                                }
-                            }
-                    }
-                    .buttonStyle(.plain)
-                    .frame(minWidth: 60, minHeight: 60)
-                    .contentShape(Circle())
-                    .accessibilityLabel("\(tag.rawValue) color")
-                    .accessibilityAddTraits(colorTag == tag ? .isSelected : [])
-                }
             }
         }
     }

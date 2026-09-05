@@ -882,7 +882,7 @@ final class ConnectionLibraryUITests: XCTestCase {
         activate(edit)
         XCTAssertTrue(app.navigationBars["Edit Connection"].waitForExistence(timeout: 5))
 
-        let favorite = app.switches["Favorite"].firstMatch
+        let favorite = app.switches["edit-server-favorite"].firstMatch
         makeHittable(favorite)
         XCTAssertTrue(favorite.waitForExistence(timeout: 5))
         if !switchIsOn(favorite) {
