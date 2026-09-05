@@ -100,7 +100,6 @@ struct TerminalWindowView: View {
     @State private var showingRecordingConsent = false
     @State private var terminalColumns = 120
     @State private var terminalRows = 40
-    @State private var previousSessionState: SessionState?
     #if os(macOS)
     @State private var macTerminalWindow: NSWindow?
     @State private var isMacFullScreen = false
@@ -1088,13 +1087,8 @@ struct TerminalWindowView: View {
     @ToolbarContentBuilder
     private var macTerminalToolbar: some ToolbarContent {
         if isTerminalActive {
-            ToolbarItem(id: MacTerminalToolbarItemID.terminalTools) {
-                HStack(spacing: 8) {
-                    bottomStatusBarContents(compact: true)
-                }
-                .padding(.horizontal, 6)
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("mac-terminal-tools")
+            ToolbarItemGroup(placement: .primaryAction) {
+                bottomStatusBarContents(compact: true)
             }
             .macKeepVisibleWhenCompact()
         }

@@ -608,16 +608,6 @@ enum KeychainManager {
         return Set(records.map { $0.publicKeyData.base64EncodedString() })
     }
 
-    // MARK: - Secure Enclave Wrapped P256
-
-    static func saveSecureEnclaveWrappedP256(_ wrapped: Data, keyTag: String, for keyID: UUID) throws {
-        try SSHKeyKeychainStore.saveSecureEnclaveWrapped(wrapped, keyTag: keyTag, for: keyID, config: config)
-    }
-
-    static func retrieveSecureEnclaveWrappedP256(for keyID: UUID) throws -> (wrapped: Data, keyTag: String) {
-        try SSHKeyKeychainStore.retrieveSecureEnclaveWrapped(for: keyID, config: config)
-    }
-
     // MARK: - Tailscale API Key
 
     nonisolated static let tailscaleAPIKeyAccount = "\(terminalAccountPrefix).tailscale.api-key"

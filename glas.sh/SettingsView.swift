@@ -46,7 +46,9 @@ struct SettingsView: View {
                 }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .terminalPlatformGlassBackground(cornerRadius: 28)
+        #if os(visionOS)
+        .glassBackgroundEffect(in: .rect(cornerRadius: 28))
+        #endif
     }
 }
 
@@ -107,6 +109,18 @@ struct GeneralSettingsView: View {
                     }
             }
             
+            #if os(macOS)
+            Section("Local Terminal") {
+                TextField("Shell (default: login shell)", text: $settings.localShell)
+                    .onChange(of: settings.localShell) { _, _ in settings.saveSettings() }
+                TextField("Working directory (default: home)", text: $settings.localWorkingDirectory)
+                    .onChange(of: settings.localWorkingDirectory) { _, _ in settings.saveSettings() }
+                Text("Use an absolute path or ~. Changes apply to new terminals. Saved Workgroups can override these defaults.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            #endif
+
             Section("Session Recording") {
                 let recordings = SessionRecorder.loadRecordings()
                 let totalSize = Self.recordingStorageSize()
@@ -256,13 +270,16 @@ struct GeneralSettingsView: View {
             }
 
             Section("Import SSH Config") {
+                Text("Imports explicit Host entries. Match, Include, wildcard defaults, and unsupported options are reported for review. IdentityFile must match an SSH key already imported here.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 TextEditor(text: $sshConfigText)
                     .font(.system(.body, design: .monospaced))
                     .frame(minHeight: 140)
 
                 Button("Import into Server Configs") {
                     let result = settings.importSSHConfig(sshConfigText, serverManager: serverManager)
-                    let warnings = result.warnings.prefix(3).joined(separator: "\n")
+                    let warnings = result.warnings.joined(separator: "\n")
                     importResultMessage =
                         "Imported: \(result.imported), Updated: \(result.updated), Skipped: \(result.skipped)"
                         + (warnings.isEmpty ? "" : "\n\nWarnings:\n\(warnings)")
@@ -274,6 +291,7 @@ struct GeneralSettingsView: View {
                     Text(importResultMessage)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                 }
             }
         }

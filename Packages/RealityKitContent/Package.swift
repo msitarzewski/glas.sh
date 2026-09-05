@@ -27,9 +27,6 @@ let package = Package(
             dependencies: [
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
             ],
-            resources: [
-                .process("RealityKitContent.rkassets")
-            ],
             swiftSettings: [
                 .enableUpcomingFeature("MemberImportVisibility")
             ]),

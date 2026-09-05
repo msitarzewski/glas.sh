@@ -1,5 +1,5 @@
 {
-  "originHash" : "f2139357767e7320440831c9b306147638b375379402ce7e482b0e2ecd32f1bd",
+  "originHash" : "11cbd6ff1ae884de0043cb9b03a77a4d7662511026b9afdf829d39484ad49537",
   "pins" : [
     {
       "identity" : "bigint",
@@ -16,6 +16,14 @@
       "location" : "https://github.com/msitarzewski/GlasSecretStore.git",
       "state" : {
         "revision" : "1ffaa96312b8e4b4d6b82eb82cc40c8f6df6317f"
+      }
+    },
+    {
+      "identity" : "glasseditorkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/msitarzewski/GlassEditorKit.git",
+      "state" : {
+        "revision" : "5d8f00366b148880ff4f0e6a154c68a0cfc7c137"
       }
     },
     {

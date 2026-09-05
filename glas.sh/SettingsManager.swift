@@ -153,6 +153,9 @@ class SettingsManager {
     var maxScrollbackLines: Int = 10000
     var initialTerminalColumns: Int = TerminalGeometry.default.columns
     var initialTerminalRows: Int = TerminalGeometry.default.rows
+    // Device-local paths deliberately stay out of portable iCloud preferences.
+    var localShell: String = ""
+    var localWorkingDirectory: String = ""
     var bellEnabled: Bool = false
     var visualBell: Bool = true
     var hostKeyVerificationMode: String = HostKeyVerificationMode.ask.rawValue
@@ -228,6 +231,8 @@ class SettingsManager {
     func loadPersistentStateIfNeeded() {
         guard !hasLoadedPersistentState else { return }
         hasLoadedPersistentState = true
+        localShell = settingsDefaults.string(forKey: UserDefaultsKeys.localShell) ?? ""
+        localWorkingDirectory = settingsDefaults.string(forKey: UserDefaultsKeys.localWorkingDirectory) ?? ""
 
         if settingsDefaults.object(forKey: UserDefaultsKeys.autoReconnect) != nil {
             autoReconnect = settingsDefaults.bool(forKey: UserDefaultsKeys.autoReconnect)
@@ -353,6 +358,8 @@ class SettingsManager {
         settingsDefaults.set(maxScrollbackLines, forKey: UserDefaultsKeys.maxScrollbackLines)
         settingsDefaults.set(initialTerminalColumns, forKey: UserDefaultsKeys.initialTerminalColumns)
         settingsDefaults.set(initialTerminalRows, forKey: UserDefaultsKeys.initialTerminalRows)
+        settingsDefaults.set(localShell, forKey: UserDefaultsKeys.localShell)
+        settingsDefaults.set(localWorkingDirectory, forKey: UserDefaultsKeys.localWorkingDirectory)
         settingsDefaults.set(bellEnabled, forKey: UserDefaultsKeys.bellEnabled)
         settingsDefaults.set(visualBell, forKey: UserDefaultsKeys.visualBell)
         settingsDefaults.set(hostKeyVerificationMode, forKey: UserDefaultsKeys.hostKeyVerificationMode)
@@ -461,14 +468,6 @@ class SettingsManager {
             // Retain the last verified in-memory view and block every metadata or
             // Keychain mutation until a subsequent load verifies the catalog.
             sshKeyCatalogLoadError = .invalidSSHKeyCatalog
-        }
-    }
-
-    private func saveSSHKeys() {
-        do {
-            try persistSSHKeysAndVerify(sshKeys)
-        } catch {
-            Logger.settings.error("Failed to save ssh keys: \(error)")
         }
     }
 
@@ -999,6 +998,7 @@ class SettingsManager {
     }
 
     func importSSHConfig(_ text: String, serverManager: ServerManager) -> SSHConfigImportResult {
+        serverManager.loadServersIfNeeded()
         let (entries, parserWarnings) = SSHConfigParser.parse(text)
         var warnings = parserWarnings
         var imported = 0
@@ -1021,33 +1021,49 @@ class SettingsManager {
             let port = entry.port ?? 22
             let identityFile = entry.identityFile
             let matchedKeyID = resolveKeyID(for: identityFile)
+            if identityFile != nil && matchedKeyID == nil {
+                warnings.append("Skipped Host '\(entry.alias)': IdentityFile does not uniquely match an imported SSH key. Import the key in Settings, give it the file name, then retry. Private key files are not read by this importer.")
+                skipped += 1
+                continue
+            }
             let authMethod: AuthenticationMethod = identityFile == nil ? .password : .sshKey
 
-            if let idx = serverManager.servers.firstIndex(where: { $0.name == entry.alias }) {
-                serverManager.servers[idx].host = host
-                serverManager.servers[idx].port = port
-                serverManager.servers[idx].username = username
-                serverManager.servers[idx].authMethod = authMethod
-                serverManager.servers[idx].sshKeyPath = identityFile
-                serverManager.servers[idx].sshKeyID = matchedKeyID
-                updated += 1
-            } else {
-                let server = ServerConfiguration(
-                    name: entry.alias,
-                    host: host,
-                    port: port,
-                    username: username,
-                    authMethod: authMethod,
-                    sshKeyPath: identityFile,
-                    sshKeyID: matchedKeyID,
-                    tags: ["imported"]
-                )
-                serverManager.servers.append(server)
-                imported += 1
+            let existing = serverManager.servers.filter { $0.name == entry.alias }
+            guard existing.count <= 1 else {
+                warnings.append("Skipped Host '\(entry.alias)' because multiple saved profiles have that name. Rename them before importing.")
+                skipped += 1
+                continue
+            }
+            do {
+                if var server = existing.first {
+                    server.host = host
+                    server.port = port
+                    server.username = username
+                    server.authMethod = authMethod
+                    server.sshKeyPath = identityFile
+                    server.sshKeyID = matchedKeyID
+                    try serverManager.updateServerOrThrow(server)
+                    updated += 1
+                } else {
+                    let server = ServerConfiguration(
+                        name: entry.alias,
+                        host: host,
+                        port: port,
+                        username: username,
+                        authMethod: authMethod,
+                        sshKeyPath: identityFile,
+                        sshKeyID: matchedKeyID,
+                        tags: ["imported"]
+                    )
+                    try serverManager.addServerOrThrow(server)
+                    imported += 1
+                }
+            } catch {
+                warnings.append("Could not save Host '\(entry.alias)': \(error.localizedDescription)")
+                skipped += 1
             }
         }
 
-        serverManager.saveServers()
         return SSHConfigImportResult(imported: imported, updated: updated, skipped: skipped, warnings: warnings)
     }
 
@@ -1056,10 +1072,11 @@ class SettingsManager {
         let normalized = identityFile.trimmingCharacters(in: .whitespacesAndNewlines)
         let basename = URL(fileURLWithPath: normalized).lastPathComponent.lowercased()
 
-        return sshKeys.first {
+        let matches = sshKeys.filter {
             let keyName = $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             return keyName == normalized.lowercased() || keyName == basename
-        }?.id
+        }
+        return matches.count == 1 ? matches.first?.id : nil
     }
 
     private func ensureSSHKeyCatalogAvailable() throws {
@@ -1132,29 +1149,6 @@ class SettingsManager {
     }
 
     @discardableResult
-    func selectTheme(id: UUID) -> Bool {
-        guard themeLibraryLoadError == nil else { return false }
-        guard themeLibrary.select(id), let selected = themeLibrary.selectedTheme else { return false }
-        currentTheme = selected
-        persistThemeLibrary()
-        return true
-    }
-
-    @discardableResult
-    func createTheme(named name: String = "New Theme") -> UUID? {
-        guard themeLibraryLoadError == nil, canAddThemeRecord else { return nil }
-        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let theme = currentTheme.reidentified(
-            name: trimmedName.isEmpty ? "New Theme" : String(trimmedName.prefix(80))
-        )
-        themeLibrary.upsert(theme, origin: .custom)
-        _ = themeLibrary.select(theme.id)
-        currentTheme = theme
-        persistThemeLibrary()
-        return theme.id
-    }
-
-    @discardableResult
     func duplicateTheme(id: UUID) -> UUID? {
         guard themeLibraryLoadError == nil, canAddThemeRecord,
               let source = themeLibrary.activeRecords.first(where: { $0.id == id }) else {
@@ -1173,20 +1167,6 @@ class SettingsManager {
         guard themeLibraryLoadError == nil else { return false }
         guard themeLibrary.delete(id), let selected = themeLibrary.selectedTheme else { return false }
         currentTheme = selected
-        persistThemeLibrary()
-        return true
-    }
-
-    @discardableResult
-    func resetTheme(id: UUID) -> Bool {
-        guard themeLibraryLoadError == nil,
-              let record = themeLibrary.activeRecords.first(where: { $0.id == id }),
-              record.isBuiltIn else {
-            return false
-        }
-        let reset = TerminalTheme.default.reidentified(id: record.id, name: record.theme.name)
-        themeLibrary.upsert(reset, origin: .builtIn)
-        if selectedThemeID == id { currentTheme = reset }
         persistThemeLibrary()
         return true
     }

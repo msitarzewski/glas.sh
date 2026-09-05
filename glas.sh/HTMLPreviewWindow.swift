@@ -28,13 +28,7 @@ struct HTMLPreviewWindow: View {
     }
     
     var body: some View {
-        VStack(spacing: 0) {
-            // Toolbar
-            toolbar
-            
-            Divider()
-            
-            // Web content
+        NavigationStack {
             ZStack {
                 WebView(webPage)
                 
@@ -44,14 +38,25 @@ struct HTMLPreviewWindow: View {
                         .scaleEffect(1.5)
                 }
             }
+            .navigationTitle("HTML Preview")
+            .toolbar { previewToolbar }
         }
-        .terminalPlatformGlassBackground(cornerRadius: 28)
+        #if os(visionOS)
+        .glassBackgroundEffect(in: .rect(cornerRadius: 28))
+        #endif
         .onAppear {
             loadURL()
             setupAutoReload()
         }
         .onDisappear {
             stopAutoReload()
+        }
+        .onChange(of: autoReload) { _, newValue in
+            if newValue {
+                setupAutoReload()
+            } else {
+                stopAutoReload()
+            }
         }
         .sheet(isPresented: $showingURLEditor) {
             urlEditorSheet
@@ -60,59 +65,42 @@ struct HTMLPreviewWindow: View {
     
     // MARK: - Toolbar
     
-    private var toolbar: some View {
-        HStack(spacing: 16) {
-            Button {
-                loadURL()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .symbolEffect(.rotate, isActive: isLoading)
-            }
-            .buttonStyle(.bordered)
-            .accessibilityLabel("Reload")
-            
-            // URL display
+    @ToolbarContentBuilder
+    private var previewToolbar: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
             Button {
                 showingURLEditor = true
             } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "link")
-                        .foregroundStyle(.secondary)
-                    
+                Label {
                     Text(editingURL)
-                        .font(.subheadline)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    
-                    Spacer()
-                    
-                    Image(systemName: "pencil")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                } icon: {
+                    Image(systemName: "link")
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
             }
-            .buttonStyle(.plain)
-            .background(.regularMaterial, in: .capsule)
-            
+            .labelStyle(.titleAndIcon)
+            .accessibilityLabel("Edit preview URL")
+            .accessibilityValue(editingURL)
+            .help("Edit preview URL")
+        }
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button {
+                loadURL()
+            } label: {
+                Label("Reload", systemImage: "arrow.clockwise")
+                    .symbolEffect(.rotate, isActive: isLoading)
+            }
+            .help("Reload preview")
+
             Toggle(isOn: $autoReload) {
                 Label("Auto Reload", systemImage: "arrow.clockwise.circle")
             }
             .toggleStyle(.button)
-            .buttonStyle(.bordered)
             .accessibilityLabel("Auto reload")
             .accessibilityValue(autoReload ? "On" : "Off")
-            .onChange(of: autoReload) { _, newValue in
-                if newValue {
-                    setupAutoReload()
-                } else {
-                    stopAutoReload()
-                }
-            }
-            
+            .help("Auto reload preview")
         }
-        .padding()
     }
     
     // MARK: - URL Editor Sheet

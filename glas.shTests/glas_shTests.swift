@@ -23,6 +23,51 @@ import UIKit
 import AppKit
 #endif
 
+#if os(macOS)
+@Suite(.serialized)
+struct MacTerminalWindowPolicyTests {
+    @Test @MainActor func nativeTabSidebarOpensOnceAndRespectsUserToggle() async throws {
+        let tabs = TabView {
+            Tab("Local", systemImage: "terminal") { Text("Local shell") }
+            Tab("Remote", systemImage: "server.rack") { Text("Remote shell") }
+        }
+        .tabViewStyle(.sidebarAdaptable)
+        .frame(width: 900, height: 600)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = NSHostingController(rootView: tabs)
+        defer { window.contentViewController = nil }
+        func nativeSidebar(_ view: NSView) -> NSSplitViewItem? {
+            if let split = view as? NSSplitView,
+               let owner = split.delegate as? NSSplitViewController,
+               let sidebar = owner.splitViewItems.first(where: { $0.behavior == .sidebar }) { return sidebar }
+            return view.subviews.lazy.compactMap { nativeSidebar($0) }.first
+        }
+        let root = try #require(window.contentView)
+        var discovered: NSSplitViewItem?
+        for _ in 0..<20 {
+            root.layoutSubtreeIfNeeded()
+            discovered = nativeSidebar(root)
+            if discovered != nil { break }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        let sidebar = try #require(discovered)
+        sidebar.isCollapsed = true
+        let coordinator = MacTerminalWindowReader.Coordinator()
+        coordinator.configureInitialSidebar(in: window, enabled: true)
+        #expect(!sidebar.isCollapsed)
+        sidebar.isCollapsed = true
+        coordinator.configureInitialSidebar(in: window, enabled: true)
+        #expect(sidebar.isCollapsed)
+        let ordinary = MacTerminalWindowReader.Coordinator()
+        ordinary.configureInitialSidebar(in: window, enabled: false)
+        #expect(sidebar.isCollapsed)
+        #expect(!window.isVisible)
+    }
+}
+#endif
+
 private struct LegacyKEXFixture: Error, CustomStringConvertible {
     var description: String { "keyExchangeNegotiationFailure" }
 }
@@ -8439,6 +8484,133 @@ struct glas_shTests {
     }
 
     // MARK: - SSH Config Parser Edge Cases
+
+    @Test func sshConfigMatchCannotOverwritePreviousHost() {
+        let (entries, warnings) = SSHConfigParser.parse("""
+        Host production
+          HostName prod.example.com
+          User deploy
+        Match host staging
+          HostName staging.example.com
+          User root
+          Port 2222
+        Match all
+          IdentityFile ~/.ssh/conditional
+        Host development
+          User developer
+        """)
+        #expect(entries.count == 2)
+        #expect(entries[0].hostName == "prod.example.com")
+        #expect(entries[0].user == "deploy")
+        #expect(entries[0].port == nil)
+        #expect(entries[0].identityFile == nil)
+        #expect(entries[1].user == "developer")
+        #expect(warnings.filter { $0.contains("Match block") }.count == 2)
+    }
+
+    @Test func sshConfigMalformedScopeDeclarationsDoNotLeak() {
+        let (entries, warnings) = SSHConfigParser.parse("""
+        Host first
+          User original
+        Match
+          User conditional
+        Host second
+          User second
+        Host
+          HostName stray.example.com
+        """)
+        #expect(entries.count == 2)
+        #expect(entries[0].user == "original")
+        #expect(entries[1].hostName == nil)
+        #expect(!warnings.isEmpty)
+    }
+
+    @Test func sshConfigParsesEqualsAndQuotedValues() {
+        let (entries, warnings) = SSHConfigParser.parse("""
+        Host=dev
+          HostName = "dev.example.com"
+          User="developer"
+          IdentityFile "~/.ssh/key #1" # comment
+        """)
+        #expect(entries.count == 1)
+        #expect(entries.first?.hostName == "dev.example.com")
+        #expect(entries.first?.user == "developer")
+        #expect(entries.first?.identityFile == "~/.ssh/key #1")
+        #expect(warnings.isEmpty)
+    }
+
+    @Test func sshConfigRepeatedHostsKeepFirstValuesAndNegationsCannotImportExcludedHost() {
+        let (entries, warnings) = SSHConfigParser.parse("""
+        Host dev
+          User first
+        Host dev
+          User second
+          Port 2222
+        Host excluded !excluded
+          User forbidden
+        """)
+        #expect(entries.count == 1)
+        #expect(entries.first?.user == "first")
+        #expect(entries.first?.port == 2222)
+        #expect(warnings.contains { $0.contains("negated Host block") })
+    }
+
+    @Test func sshConfigReportsUnsupportedOptionsAndRejectsInvalidPorts() {
+        let (entries, warnings) = SSHConfigParser.parse("""
+        User global
+        Include ~/.ssh/config.d/*
+        Host invalid
+          User deploy
+          Port 65536
+        Host valid
+          User deploy
+          ProxyJump gateway
+          ForwardAgent yes
+        """)
+        #expect(entries.map(\.alias) == ["valid"])
+        #expect(warnings.contains { $0.contains("global User") })
+        #expect(warnings.contains { $0.contains("Include") })
+        #expect(warnings.contains { $0.contains("ProxyJump") })
+        #expect(warnings.contains { $0.contains("ForwardAgent") })
+        #expect(warnings.contains { $0.contains("Port is invalid") })
+    }
+
+    @Test @MainActor func sshConfigImportSkipsUnresolvedIdentityWithoutChangingSavedProfile() throws {
+        let suite = "sh.glas.tests.ssh-import.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = SettingsManager(loadImmediately: false, settingsDefaults: defaults)
+        let manager = ServerManager(defaults: defaults)
+        let original = ServerConfiguration(name: "dev", host: "original.example.com", username: "original")
+        try manager.addServerOrThrow(original)
+
+        let result = settings.importSSHConfig("""
+        Host dev
+          HostName changed.example.com
+          User deploy
+          IdentityFile ~/.ssh/not-imported
+        """, serverManager: manager)
+
+        #expect(result.imported == 0)
+        #expect(result.updated == 0)
+        #expect(result.skipped == 1)
+        #expect(result.warnings.contains { $0.contains("Import the key") })
+        #expect(manager.servers.first?.host == original.host)
+        #expect(manager.servers.first?.authMethod == original.authMethod)
+    }
+
+    @Test @MainActor func sshConfigImportReportsPersistenceFailureWithoutPublishingProfile() throws {
+        let suite = "sh.glas.tests.ssh-import-failure.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = SettingsManager(loadImmediately: false, settingsDefaults: defaults)
+        let manager = ServerManager(defaults: defaults, serverDataWriter: { _ in })
+        let result = settings.importSSHConfig("Host dev\n User deploy", serverManager: manager)
+        #expect(result.imported == 0)
+        #expect(result.skipped == 1)
+        #expect(result.warnings.contains { $0.contains("Could not save") })
+        #expect(manager.servers.isEmpty)
+    }
 
     @Test func sshConfigParserMultipleHosts() {
         let input = """

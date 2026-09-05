@@ -13,6 +13,9 @@ final class MacWorkspaceController {
     private(set) var sessionsByPaneID: [UUID: TerminalSession] = [:]
     private(set) var loadingPaneIDs: Set<UUID> = []
     private(set) var errorsByPaneID: [UUID: String] = [:]
+    private(set) var pendingCredentialErrorsByPaneID: [UUID: SessionOpenError] = [:]
+    private(set) var explicitStartupCommandsByPaneID: [UUID: String] = [:]
+    private var retainedStartupTicketsByPaneID: [UUID: TerminalStartupCommandTicket] = [:]
     private(set) var localRuntimesByPaneID: [UUID: SwiftTermLocalProcessRuntime] = [:]
     private(set) var recordersByPaneID: [UUID: SessionRecorder] = [:]
     private(set) var findTargetPaneID: UUID?
@@ -85,6 +88,17 @@ final class MacWorkspaceController {
             defaults: defaults
         )
         self.state = loaded.state
+        var acceptedInitialLayout = false
+        if !loaded.hadRestorationData, let initial = request.initialState,
+           let validated = try? initial.validated(for: request.workspaceID) {
+            self.state = validated
+            acceptedInitialLayout = true
+            startupTicketIDsByPaneID = request.paneStartupTicketIDs ?? [:]
+        } else {
+            for id in request.paneStartupTicketIDs?.values ?? Dictionary<UUID, UUID>().values {
+                startupCommandBroker.discard(id)
+            }
+        }
         if !loaded.hadRestorationData,
            let paneID = loaded.state.focusedPaneID,
            let ticketID = request.startupTicketID {
@@ -109,6 +123,23 @@ final class MacWorkspaceController {
             }
         } else if let ticketID = request.liveSessionTicketID {
             liveSessionBroker.discard(ticketID)
+        }
+        for (paneID, ticketID) in startupTicketIDsByPaneID {
+            guard state.root?.pane(id: paneID) != nil else {
+                startupCommandBroker.discard(ticketID)
+                continue
+            }
+            if let ticket = startupCommandBroker.claim(ticketID) {
+                retainedStartupTicketsByPaneID[paneID] = ticket
+                explicitStartupCommandsByPaneID[paneID] = ticket.command
+            }
+        }
+        startupTicketIDsByPaneID.removeAll()
+        // Unselected tabs may never receive a focus or layout event. Save their
+        // fresh trees now so window descriptors can restore every tab later.
+        // Existing malformed restoration data is deliberately left untouched.
+        if !loaded.hadRestorationData && (request.initialState == nil || acceptedInitialLayout) {
+            persist()
         }
     }
 
@@ -157,7 +188,7 @@ final class MacWorkspaceController {
         switch focusedPane.intent.kind {
         case .local:
             return MacWorkspaceWindowIdentity(
-                title: tabLabel ?? workgroupName ?? "Local",
+                title: tabLabel ?? focusedPane.intent.label ?? workgroupName ?? "Local",
                 subtitle: "\(localUsername)@localhost"
             )
         case .ssh:
@@ -170,7 +201,7 @@ final class MacWorkspaceController {
                 )
             }
             return MacWorkspaceWindowIdentity(
-                title: server.name,
+                title: tabLabel ?? focusedPane.intent.label ?? server.name,
                 subtitle: "\(server.username)@\(server.host):\(server.port)"
             )
         }
@@ -207,12 +238,67 @@ final class MacWorkspaceController {
         return recorder
     }
 
+    /// Start every local pane independently of SwiftUI's lazy tab presentation.
+    func startLocalPanes(sessionManager: SessionManager, settingsManager: SettingsManager, onEmpty: @escaping () -> Void) {
+        for pane in state.root?.panes ?? [] where pane.intent.kind == .local {
+            guard let runtime = localRuntime(for: pane.id), !runtime.hasEngine,
+                  let recorder = recorder(for: pane.id) else { continue }
+            runtime.start(
+                configuration: MacLocalTerminalConfiguration.resolve(
+                    shell: pane.intent.localShell ?? settingsManager.localShell,
+                    directory: pane.intent.localDirectory ?? settingsManager.localWorkingDirectory
+                ),
+                theme: settingsManager.currentTheme.swiftTermTheme,
+                runtimeSettings: SwiftTermRuntimeSettings(
+                    cursorStyle: settingsManager.cursorStyle,
+                    blinkingCursor: settingsManager.blinkingCursor,
+                    scrollbackLines: settingsManager.saveScrollback ? settingsManager.maxScrollbackLines : 0
+                ),
+                onOutputData: { recorder.recordOutput($0) },
+                onInputData: { recorder.recordInput($0) },
+                onResize: { recorder.recordResize(width: $0, height: $1) },
+                onProcessReady: { [weak self, weak runtime] in
+                    guard let ticket = self?.claimStartupCommand(for: pane.id) else { return }
+                    _ = runtime?.processState.sendCommand(ticket.command)
+                },
+                onProcessTerminated: { [weak self] exitCode in
+                    if recorder.isRecording { _ = recorder.stop() }
+                    guard let self, !isClosed,
+                          MacLocalTerminalExitPolicy.shouldClose(exitCode: exitCode) else { return }
+                    removePane(pane.id, sessionManager: sessionManager)
+                    if state.root == nil { onEmpty() }
+                }
+            )
+        }
+    }
+
     func error(for paneID: UUID) -> String? {
         errorsByPaneID[paneID]
     }
 
     func isLoading(_ paneID: UUID) -> Bool {
         loadingPaneIDs.contains(paneID)
+    }
+
+    var closeWarning: String? {
+        if recordersByPaneID.values.contains(where: \.isRecording)
+            || sessionsByPaneID.values.contains(where: { $0.recorder?.isRecording == true }) {
+            return "This tab is recording. Closing it will stop the recording and disconnect its terminals."
+        }
+        if !loadingPaneIDs.isEmpty {
+            return "This tab is still starting a connection. Closing it will cancel that connection."
+        }
+        if sessionsByPaneID.values.contains(where: {
+            $0.state == .connected || $0.state == .connecting || $0.pendingHostKeyChallenge != nil
+        }) {
+            return "This tab has an SSH session. Remote command activity cannot be verified; closing it will disconnect the session."
+        }
+        if localRuntimesByPaneID.values.contains(where: {
+            $0.processState.isRunning && $0.hasActiveChildProcesses != false
+        }) {
+            return "This tab has running commands, or its activity could not be verified. Closing it will stop those commands."
+        }
+        return nil
     }
 
     func focus(_ paneID: UUID) {
@@ -271,7 +357,7 @@ final class MacWorkspaceController {
     }
 
     func removePane(_ paneID: UUID, sessionManager: SessionManager) {
-        guard let root = state.root, root.pane(id: paneID) != nil else { return }
+        guard !isClosed, let root = state.root, root.pane(id: paneID) != nil else { return }
         if let session = sessionsByPaneID.removeValue(forKey: paneID) {
             sessionManager.closeSession(session)
         }
@@ -294,6 +380,7 @@ final class MacWorkspaceController {
     func retryPane(_ paneID: UUID) {
         guard !isClosed else { return }
         errorsByPaneID.removeValue(forKey: paneID)
+        pendingCredentialErrorsByPaneID.removeValue(forKey: paneID)
     }
 
     func disconnectSSHPane(_ paneID: UUID, sessionManager: SessionManager) {
@@ -337,7 +424,8 @@ final class MacWorkspaceController {
         loadingPaneIDs.insert(pane.id)
         defer { loadingPaneIDs.remove(pane.id) }
 
-        let startupCommand = claimStartupCommand(for: pane.id)?.command
+        let startupTicket = retainedStartupTicketsByPaneID.removeValue(forKey: pane.id) ?? claimStartupCommand(for: pane.id)
+        let startupCommand = startupTicket?.command
         do {
             let launch = try await sessionManager.createAuthorizedSessionByServerID(
                 serverID,
@@ -365,6 +453,10 @@ final class MacWorkspaceController {
                 } else {
                     errorsByPaneID[pane.id] = "The SSH session ended before the pane opened."
                 }
+                if launch.session.hasPendingStartupCommand {
+                    retainedStartupTicketsByPaneID[pane.id] = startupTicket
+                }
+                sessionsByPaneID.removeValue(forKey: pane.id)
                 sessionManager.closeSession(launch.session)
             }
         } catch {
@@ -372,6 +464,14 @@ final class MacWorkspaceController {
                   generation == lifecycleGeneration,
                   state.root?.pane(id: pane.id)?.intent == pane.intent else { return }
             errorsByPaneID[pane.id] = error.localizedDescription
+            let pendingSession = sessionsByPaneID.removeValue(forKey: pane.id)
+            if pendingSession == nil || pendingSession?.hasPendingStartupCommand == true {
+                retainedStartupTicketsByPaneID[pane.id] = startupTicket
+            }
+            if let pendingSession { sessionManager.closeSession(pendingSession) }
+            if let credentialError = error as? SessionOpenError {
+                pendingCredentialErrorsByPaneID[pane.id] = credentialError
+            }
         }
     }
 
@@ -389,6 +489,9 @@ final class MacWorkspaceController {
             startupCommandBroker.discard(ticketID)
         }
         startupTicketIDsByPaneID.removeAll()
+        retainedStartupTicketsByPaneID.removeAll()
+        explicitStartupCommandsByPaneID.removeAll()
+        pendingCredentialErrorsByPaneID.removeAll()
         for session in sessions {
             sessionManager.closeSession(session)
         }
@@ -401,15 +504,22 @@ final class MacWorkspaceController {
     }
 
     func claimStartupCommand(for paneID: UUID) -> TerminalStartupCommandTicket? {
+        guard !isClosed, state.root?.pane(id: paneID) != nil else { return nil }
+        if let ticket = retainedStartupTicketsByPaneID.removeValue(forKey: paneID) { return ticket }
         guard !isClosed,
               state.root?.pane(id: paneID) != nil,
               let ticketID = startupTicketIDsByPaneID.removeValue(forKey: paneID) else {
             return nil
         }
-        return startupCommandBroker.claim(ticketID)
+        let ticket = startupCommandBroker.claim(ticketID)
+        explicitStartupCommandsByPaneID[paneID] = ticket?.command
+        return ticket
     }
 
     private func discardStartupCommand(for paneID: UUID) {
+        retainedStartupTicketsByPaneID.removeValue(forKey: paneID)
+        explicitStartupCommandsByPaneID.removeValue(forKey: paneID)
+        pendingCredentialErrorsByPaneID.removeValue(forKey: paneID)
         guard let ticketID = startupTicketIDsByPaneID.removeValue(forKey: paneID) else { return }
         startupCommandBroker.discard(ticketID)
     }
@@ -653,7 +763,9 @@ final class MacWorkspaceWindowController {
                     defaults: defaults
                 )
             }
-            resolvedSelectedTabID = resolvedTabs[0].workspaceID
+            resolvedSelectedTabID = request.initialSelectedTabID.flatMap { requested in
+                resolvedTabs.first(where: { $0.workspaceID == requested })?.workspaceID
+            } ?? resolvedTabs[0].workspaceID
         }
         tabs = resolvedTabs
         selectedTabID = resolvedSelectedTabID
@@ -662,6 +774,66 @@ final class MacWorkspaceWindowController {
 
     var selectedTab: MacWorkspaceController {
         tabs.first(where: { $0.workspaceID == selectedTabID }) ?? tabs[0]
+    }
+
+    func capturePreset(
+        name: String,
+        servers: [ServerConfiguration],
+        defaultLocalShell: String? = nil,
+        defaultLocalDirectory: String? = nil,
+        sourcePresets: [LayoutPreset] = []
+    ) throws -> LayoutPreset {
+        var intents: [LayoutPreset.SessionIntent] = []
+        var savedTabs: [LayoutPreset.WorkspaceLayout.Tab] = []
+        var selectedIndex = 0
+        for tab in tabs {
+            guard let root = tab.state.root else { continue }
+            var indices: [UUID: Int] = [:]
+            func convert(_ node: MacWorkspaceNode) throws -> LayoutPreset.WorkspaceLayout.Node {
+                switch node {
+                case .pane(let pane):
+                    guard intents.count < LayoutPreset.maximumSessionCount else { throw MacWorkspaceStateError.tooManyPanes }
+                    let index = intents.count
+                    indices[pane.id] = index
+                    let intent = pane.intent
+                    let sourcePreset = sourcePresets.first { $0.id == tab.workgroupID }
+                    let sourceIntent = intent.sourceSessionIndex.flatMap { sourceIndex in
+                        sourcePreset?.sessionIntents.indices.contains(sourceIndex) == true
+                            ? sourcePreset?.sessionIntents[sourceIndex] : nil
+                    }
+                    let sourceCommand = sourceIntent.flatMap { source in
+                        source.kind.rawValue == intent.kind.rawValue && source.serverID == intent.serverID
+                            ? source.startupCommand : nil
+                    }
+                    if intent.kind == .ssh,
+                       !servers.contains(where: { $0.id == intent.serverID }) {
+                        throw MacWorkspaceStateError.invalidPaneIntent
+                    }
+                    intents.append(.init(kind: intent.kind == .local ? .local : .ssh,
+                                         serverID: intent.serverID,
+                                         label: intent.label,
+                                         startupCommand: tab.explicitStartupCommandsByPaneID[pane.id] ?? sourceCommand,
+                                         localShell: intent.kind == .local
+                                            ? (tab.localRuntimesByPaneID[pane.id]?.launchedShell ?? intent.localShell ?? defaultLocalShell) : nil,
+                                         localDirectory: intent.kind == .local
+                                            ? (tab.localRuntimesByPaneID[pane.id]?.currentWorkingDirectory ?? intent.localDirectory ?? defaultLocalDirectory)
+                                            : nil))
+                    return .session(index)
+                case .split(let split):
+                    return .split(axis: split.axis == .horizontal ? .horizontal : .vertical,
+                                  fraction: split.fraction, first: try convert(split.first), second: try convert(split.second))
+                }
+            }
+            let savedRoot = try convert(root)
+            if tab.workspaceID == selectedTabID { selectedIndex = savedTabs.count }
+            savedTabs.append(.init(label: tab.tabLabel, root: savedRoot,
+                                   focusedSessionIndex: tab.focusedPaneID.flatMap { indices[$0] } ?? indices[root.paneIDs[0]]!))
+        }
+        let preset = LayoutPreset(name: name, colorTag: selectedTab.workgroupColor ?? .blue,
+                                  sessionIntents: intents,
+                                  workspaceLayout: .init(tabs: savedTabs, selectedTabIndex: selectedIndex))
+        guard preset.isValidForPersistence else { throw MacWorkspaceStateError.invalidPaneIntent }
+        return preset
     }
 
     var isEmpty: Bool {

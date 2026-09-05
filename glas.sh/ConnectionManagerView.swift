@@ -73,6 +73,11 @@ struct ConnectionManagerView: View {
     @State private var connectingServerIDs: Set<UUID> = []
     @State private var pendingLegacyAlgorithmServer: ServerConfiguration?
     @State private var passwordPromptServer: ServerConfiguration?
+    #if os(visionOS) || os(iOS)
+    @State private var pendingPasswordWorkgroup: LayoutPreset?
+    @State private var workgroupPasswordWasSaved = false
+    @State private var isOpeningWorkgroup = false
+    #endif
     @State private var quickConnectPassword: String = ""
     @State private var quickConnectUsername: String = ""
     @State private var quickConnectPort: String = "22"
@@ -196,12 +201,30 @@ struct ConnectionManagerView: View {
         } message: { server in
             Text("\(server.name) permits obsolete SSH algorithms. They provide weaker protection and should only be used for a server you control when upgrading it is not currently possible.")
         }
-        .sheet(item: $passwordPromptServer) { server in
+        .sheet(item: $passwordPromptServer, onDismiss: {
+            #if os(visionOS) || os(iOS)
+            resumeWorkgroupAfterPasswordPrompt()
+            #endif
+        }) { server in
             ConnectionPasswordPromptSheet(
                 server: server,
                 savesPassword: serverManager.server(for: server.id) != nil
             ) { password in
-                await submitPassword(password, for: server)
+                #if os(visionOS) || os(iOS)
+                if pendingPasswordWorkgroup != nil {
+                    guard let current = serverManager.server(for: server.id) else {
+                        return "This saved connection is no longer available."
+                    }
+                    do {
+                        try serverManager.updateServerOrThrow(current, password: password)
+                        workgroupPasswordWasSaved = true
+                        return nil
+                    } catch {
+                        return "The password could not be saved. \(error.localizedDescription)"
+                    }
+                }
+                #endif
+                return await submitPassword(password, for: server)
             }
         }
         .task {
@@ -290,31 +313,39 @@ struct ConnectionManagerView: View {
             libraryDetail(connectionLibrary: connectionLibrary)
         }
         .toolbar {
-            ToolbarItem(placement: .navigation) {
-                HStack {
+            ToolbarItemGroup(placement: .navigation) {
+                if selectedMode == .workgroups {
                     Button {
-                        showingAddServer = true
+                        workgroupEditorContext = .new()
                     } label: {
                         Image(systemName: "plus")
                     }
-                    .help("Add Connection")
-                    .accessibilityLabel("Add connection")
-                    .accessibilityIdentifier(
-                        "connection-library-add-server-toolbar"
-                    )
+                    .help("New Workgroup")
+                    .accessibilityLabel("New workgroup")
+                    .accessibilityIdentifier("connection-library-add-workgroup")
+                } else {
+                        Button {
+                            showingAddServer = true
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                        .help("Add Connection")
+                        .accessibilityLabel("Add connection")
+                        .accessibilityIdentifier(
+                            "connection-library-add-server-toolbar"
+                        )
 
-                    Button {
-                        openLocalTerminal()
-                    } label: {
-                        Image(systemName: "apple.terminal")
-                    }
-                    .help("Local Terminal")
-                    .accessibilityLabel("Local terminal")
-                    .accessibilityIdentifier(
-                        "connection-library-local-terminal-toolbar"
-                    )
+                        Button {
+                            openLocalTerminal()
+                        } label: {
+                            Image(systemName: "apple.terminal")
+                        }
+                        .help("Local Terminal")
+                        .accessibilityLabel("Local terminal")
+                        .accessibilityIdentifier(
+                            "connection-library-local-terminal-toolbar"
+                        )
                 }
-                .padding(.horizontal, 6)
             }
 
             ToolbarItem(placement: .confirmationAction) {
@@ -370,6 +401,9 @@ struct ConnectionManagerView: View {
             } detail: {
                 libraryDetail(connectionLibrary: connectionLibrary)
             }
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { settingsButton }
+            }
             .focusedSceneValue(
                 \.platformNewTerminalAction,
                 PlatformNewTerminalAction(title: "New Terminal") {
@@ -394,6 +428,9 @@ struct ConnectionManagerView: View {
     ) -> some View {
         NavigationStack(path: $compactNavigationPath) {
             libraryNavigation(connectionLibrary: connectionLibrary)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) { settingsButton }
+                }
                 .navigationDestination(for: ConnectionCompactDestination.self) { destination in
                     switch destination {
                     case .results:
@@ -547,7 +584,6 @@ struct ConnectionManagerView: View {
         #endif
     }
 
-    #if os(macOS)
     private var settingsButton: some View {
         Button {
             showSettings()
@@ -558,7 +594,6 @@ struct ConnectionManagerView: View {
         .accessibilityLabel("Settings")
         .accessibilityIdentifier("connection-library-settings")
     }
-    #endif
 
     private func collectionNavigation(
         connectionLibrary: ConnectionLibraryProjection
@@ -865,6 +900,7 @@ struct ConnectionManagerView: View {
             }
         }
         .toolbar {
+            #if !os(macOS)
             ToolbarItemGroup(placement: .primaryAction) {
                 if showsExplicitSearchAction {
                     Button {
@@ -876,6 +912,7 @@ struct ConnectionManagerView: View {
                     .accessibilityIdentifier("connection-library-search")
                 }
 
+                #if !os(macOS)
                 Button {
                     editCurrentSessionsAsWorkgroup()
                 } label: {
@@ -884,6 +921,7 @@ struct ConnectionManagerView: View {
                 .disabled(currentSavedSessionIntents.isEmpty)
                 .accessibilityLabel("Save current SSH sessions as workgroup")
                 .accessibilityIdentifier("connection-library-save-current-workgroup")
+                #endif
 
                 Button {
                     workgroupEditorContext = .new()
@@ -893,6 +931,7 @@ struct ConnectionManagerView: View {
                 .accessibilityLabel("New workgroup")
                 .accessibilityIdentifier("connection-library-add-workgroup")
             }
+            #endif
         }
     }
 
@@ -915,6 +954,9 @@ struct ConnectionManagerView: View {
         connectionLibrary: ConnectionLibraryProjection
     ) -> some View {
         if let server = selectedServer(in: connectionLibrary) {
+            let sftpSession = sessionManager.sessions.first {
+                $0.server.id == server.id && $0.state == .connected
+            }
             VStack(spacing: 0) {
                 Form {
                     Section("Connection") {
@@ -945,23 +987,9 @@ struct ConnectionManagerView: View {
                     "connection-library-detail-server-\(server.id.uuidString.lowercased())"
                 )
 
-                HStack {
-                    Button("Details", systemImage: "info.circle") {
-                        viewingServer = server
-                    }
-                    Button("Edit", systemImage: "pencil") {
-                        editingServer = server
-                    }
-                    Spacer()
-                    Button("Connect", systemImage: "terminal") {
-                        connectToServer(server)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .accessibilityIdentifier(
-                        "connection-library-connect-server-\(server.id.uuidString.lowercased())"
-                    )
-                }
+                serverDetailActions(server: server, sftpSession: sftpSession)
+                .buttonStyle(.bordered)
+                .labelStyle(.titleAndIcon)
                 .padding()
                 .background(.bar)
             }
@@ -998,6 +1026,62 @@ struct ConnectionManagerView: View {
         }
     }
 
+    private func serverDetailSecondaryActions(server: ServerConfiguration) -> some View {
+        HStack {
+            Button("Edit", systemImage: "pencil") { editingServer = server }
+            Button("Details", systemImage: "info.circle") { viewingServer = server }
+        }
+    }
+
+    private func serverDetailPrimaryActions(server: ServerConfiguration, sftpSession: TerminalSession?) -> some View {
+        HStack {
+            Button("SFTP", systemImage: "folder") {
+                guard let session = sftpSession else { return }
+                #if os(iOS)
+                iOSRouter.showSFTP(sessionID: session.id)
+                #else
+                openWindow(id: "sftp", value: SFTPBrowserContext(sessionID: session.id))
+                #endif
+            }
+            .disabled(sftpSession == nil)
+            .help(sftpSession == nil ? "Connect to this host to browse files using SFTP" : "Browse remote files using SFTP")
+            .accessibilityIdentifier("connection-library-sftp-server-\(server.id.uuidString.lowercased())")
+            Button("Connect", systemImage: "terminal") { connectToServer(server) }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .accessibilityIdentifier("connection-library-connect-server-\(server.id.uuidString.lowercased())")
+        }
+    }
+
+    @ViewBuilder
+    private func serverDetailActions(server: ServerConfiguration, sftpSession: TerminalSession?) -> some View {
+        #if os(macOS)
+        HStack {
+            serverDetailSecondaryActions(server: server)
+            Spacer()
+            serverDetailPrimaryActions(server: server, sftpSession: sftpSession)
+        }
+        #else
+        ViewThatFits(in: .horizontal) {
+            HStack {
+                serverDetailSecondaryActions(server: server).fixedSize()
+                Spacer()
+                serverDetailPrimaryActions(server: server, sftpSession: sftpSession).fixedSize()
+            }
+            VStack(spacing: 12) {
+                HStack {
+                    serverDetailSecondaryActions(server: server)
+                    Spacer()
+                }
+                HStack {
+                    Spacer()
+                    serverDetailPrimaryActions(server: server, sftpSession: sftpSession)
+                }
+            }
+        }
+        #endif
+    }
+
     @ViewBuilder
     private func workgroupDetail(
         connectionLibrary: ConnectionLibraryProjection
@@ -1031,9 +1115,9 @@ struct ConnectionManagerView: View {
                         }
                     }
                 }
+                #if os(iOS)
                 HStack {
                     Spacer()
-                    #if os(iOS)
                     Button("Resume Terminal", systemImage: "arrow.uturn.backward.circle") {
                         resumeLiveWorkgroup(workgroup.id)
                     }
@@ -1041,54 +1125,70 @@ struct ConnectionManagerView: View {
                     .accessibilityIdentifier(
                         "connection-library-resume-workgroup-\(workgroup.id.uuidString.lowercased())"
                     )
-                    #endif
                 }
+                .labelStyle(.titleAndIcon)
                 .padding()
                 .background(.bar)
+                #endif
             }
             .navigationTitle(workgroup.name)
             .accessibilityIdentifier(
                 "connection-library-detail-live-workgroup-\(workgroup.id.uuidString.lowercased())"
             )
         } else if let preset = selectedWorkgroup(in: connectionLibrary) {
-            VStack(spacing: 0) {
-                List {
-                    Section("Workgroup") {
-                        LabeledContent("Name", value: preset.name)
-                        LabeledContent("Tabs", value: "\(preset.sessionIntents.count)")
-                    }
-                    Section("Ordered Tabs") {
-                        ForEach(Array(preset.sessionIntents.enumerated()), id: \.offset) { index, intent in
-                            HStack {
-                                Text("\(index + 1)")
-                                    .foregroundStyle(.secondary)
-                                    .monospacedDigit()
-                                Image(systemName: intent.kind == .local ? "apple.terminal" : "network")
-                                VStack(alignment: .leading) {
-                                    Text(intent.label ?? defaultIntentLabel(intent))
-                                    if intent.startupCommand != nil {
-                                        Label("Runs startup command", systemImage: "checkmark.shield")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
+            Form {
+                Section {
+                    HStack(alignment: .top, spacing: 14) {
+                        Image(systemName: "rectangle.stack.fill")
+                            .font(.largeTitle)
+                            .foregroundStyle(preset.colorTag.color)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(preset.name)
+                                .font(.title2.bold())
+                                .textSelection(.enabled)
+                            Text("\(preset.workspaceLayout?.tabs.count ?? preset.sessionIntents.count) tabs · \(preset.sessionIntents.count) terminals · \(preset.sessionIntents.filter { $0.startupCommand != nil }.count) startup commands")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
+                ForEach(Array(preset.sessionIntents.enumerated()), id: \.offset) { index, intent in
+                    Section {
+                        workgroupIntentRow(intent, index: index, preset: preset)
+                    } header: {
+                        if index == 0 {
+                            Text("Startup Plan")
+                        }
+                    } footer: {
+                        if index == preset.sessionIntents.count - 1 {
+                            Text("All terminals start when you open this Workgroup. Commands run independently, without waiting for another tab.")
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
                 HStack {
                     Button("Edit", systemImage: "pencil") {
                         workgroupEditorContext = .edit(preset)
                     }
+                    .labelStyle(.titleAndIcon)
+                    .help("Edit Workgroup")
+                    .accessibilityIdentifier("connection-library-edit-workgroup-\(preset.id.uuidString.lowercased())")
                     Spacer()
                     Button("Open Workgroup", systemImage: "rectangle.stack") {
                         openWorkgroup(preset)
                     }
                     .buttonStyle(.borderedProminent)
+                    .labelStyle(.titleAndIcon)
+                    .keyboardShortcut(.defaultAction)
+                    .help("Open Workgroup")
                     .accessibilityIdentifier(
                         "connection-library-open-workgroup-\(preset.id.uuidString.lowercased())"
                     )
                 }
+                .buttonStyle(.bordered)
                 .padding()
                 .background(.bar)
             }
@@ -1111,6 +1211,79 @@ struct ConnectionManagerView: View {
         }
     }
 
+    private func workgroupIntentRow(
+        _ intent: LayoutPreset.SessionIntent, index: Int, preset: LayoutPreset
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                Text("\(index + 1)")
+                    .font(.caption.bold().monospacedDigit())
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(intent.label ?? defaultIntentLabel(intent))
+                        .font(.headline)
+                    Label(workgroupIntentDestination(intent), systemImage: intent.kind == .local ? "apple.terminal" : "network")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                    if let layout = preset.workspaceLayout,
+                       let tabIndex = layout.tabs.firstIndex(where: { workgroupNode($0.root, contains: index) }) {
+                        Text("Tab \(tabIndex + 1)\(layout.tabs[tabIndex].label.map { " · " + $0 } ?? "")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            if intent.kind == .local {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(intent.localDirectory ?? "App default working directory", systemImage: "folder")
+                    Label(intent.localShell ?? "App default shell", systemImage: "chevron.left.forwardslash.chevron.right")
+                }
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                #if !os(macOS)
+                Label("Local terminals require macOS", systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                #endif
+            }
+            if let command = intent.startupCommand {
+                Text(command)
+                    .font(.system(.callout, design: .monospaced))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel("Startup command: \(command)")
+            } else {
+                Text("Interactive shell · No startup command")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("workgroup-terminal-plan-\(index)")
+    }
+
+    private func workgroupIntentDestination(_ intent: LayoutPreset.SessionIntent) -> String {
+        guard intent.kind == .ssh else { return "Local terminal" }
+        guard let id = intent.serverID, let server = serverManager.server(for: id) else {
+            return "Missing SSH connection — edit this Workgroup to choose a host"
+        }
+        return "\(server.username)@\(server.host):\(server.port)"
+    }
+
+    private func workgroupNode(_ node: LayoutPreset.WorkspaceLayout.Node, contains index: Int) -> Bool {
+        switch node {
+        case .session(let candidate): return candidate == index
+        case let .split(_, _, first, second):
+            return workgroupNode(first, contains: index) || workgroupNode(second, contains: index)
+        }
+    }
+
     @ViewBuilder
     private var tailscaleDeviceDetail: some View {
         if let device = selectedTailscaleDevice {
@@ -1129,6 +1302,7 @@ struct ConnectionManagerView: View {
                         LabeledContent("Saved Connection", value: savedServer?.name ?? "Not imported")
                     }
                 }
+                .formStyle(.grouped)
                 HStack {
                     if let savedServer {
                         Button("Edit", systemImage: "pencil") {
@@ -1159,6 +1333,8 @@ struct ConnectionManagerView: View {
                         )
                     }
                 }
+                .buttonStyle(.bordered)
+                .labelStyle(.titleAndIcon)
                 .padding()
                 .background(.bar)
             }
@@ -1986,8 +2162,38 @@ struct ConnectionManagerView: View {
     }
 
     #if os(visionOS) || os(iOS)
+    private func resumeWorkgroupAfterPasswordPrompt() {
+        guard let preset = pendingPasswordWorkgroup else { return }
+        let shouldContinue = workgroupPasswordWasSaved
+        pendingPasswordWorkgroup = nil
+        workgroupPasswordWasSaved = false
+        guard shouldContinue else { return }
+        openVisionWorkgroup(preset, plan: LayoutRestorationPlan(
+            preset: preset, availableServers: serverManager.servers
+        ))
+    }
+
     private func openVisionWorkgroup(_ preset: LayoutPreset, plan: LayoutRestorationPlan) {
+        guard !isOpeningWorkgroup, passwordPromptServer == nil else { return }
+        // Resolve credentials for the entire recipe before opening any sessions.
+        // This also finds missing jump-host passwords through the shared policy.
+        for target in plan.targets {
+            guard let server = target.server else { continue }
+            do {
+                _ = try sessionManager.prepareConnection(for: server)
+            } catch SessionOpenError.missingPassword(let missingServer, _) {
+                pendingPasswordWorkgroup = preset
+                workgroupPasswordWasSaved = false
+                passwordPromptServer = missingServer
+                return
+            } catch {
+                // The launch path below reports non-password failures per pane.
+                continue
+            }
+        }
+        isOpeningWorkgroup = true
         Task { @MainActor in
+            defer { isOpeningWorkgroup = false }
             let workgroupID = sessionManager.createWorkgroup(
                 name: preset.name,
                 colorTag: preset.colorTag
@@ -2050,33 +2256,21 @@ struct ConnectionManagerView: View {
     }
     #else
     private func openMacWorkgroup(_ preset: LayoutPreset, plan: LayoutRestorationPlan) {
-        let items = plan.targets.compactMap { target -> MacWorkgroupLaunchItem? in
-            let paneIntent: MacWorkspacePaneIntent
-            switch target.intent.kind {
-            case .local:
-                paneIntent = .local
-            case .ssh:
-                guard let serverID = target.intent.serverID else { return nil }
-                paneIntent = .ssh(serverID: serverID)
-            }
-            return MacWorkgroupLaunchItem(
-                intent: paneIntent,
-                label: target.displayName,
-                startupCommand: target.intent.startupCommand
-            )
+        // Keep every pane's position even when a saved endpoint is missing;
+        // its native pane offers recovery without rearranging the workspace.
+        // Legacy algorithm consent still requires the direct connection flow.
+        if preset.sessionIntents.contains(where: { intent in
+            serverManager.servers.contains { $0.id == intent.serverID && $0.legacyAlgorithmsEnabled }
+        }) {
+            connectionFailureMessage = "A connection in this Workgroup uses legacy algorithms. Open that connection directly to review its security settings."
+            return
         }
-        if !items.isEmpty {
-            MacWorkgroupLauncher.launch(
-                workgroupID: UUID(),
-                name: preset.name,
-                color: preset.colorTag,
-                items: items
-            ) { request in
+        do {
+            try MacWorkgroupLauncher.launch(preset: preset) { request in
                 openWindow(id: "workspace", value: request)
             }
-        }
-        if !plan.failures.isEmpty {
-            connectionFailureMessage = plan.failures.joined(separator: "\n")
+        } catch {
+            connectionFailureMessage = error.localizedDescription
         }
     }
     #endif
@@ -2131,12 +2325,13 @@ struct LayoutRestorationPlan {
     }
 }
 
-private struct WorkgroupEditorContext: Identifiable {
+struct WorkgroupEditorContext: Identifiable {
     let id = UUID()
     let original: LayoutPreset?
     let name: String
     let colorTag: ServerColorTag
     let sessionIntents: [LayoutPreset.SessionIntent]
+    var workspaceLayout: LayoutPreset.WorkspaceLayout? = nil
 
     static func new(
         name: String = "Workgroup",
@@ -2156,7 +2351,8 @@ private struct WorkgroupEditorContext: Identifiable {
             original: preset,
             name: preset.name,
             colorTag: preset.colorTag,
-            sessionIntents: preset.sessionIntents
+            sessionIntents: preset.sessionIntents,
+            workspaceLayout: preset.workspaceLayout
         )
     }
 
@@ -2166,17 +2362,32 @@ private struct WorkgroupEditorContext: Identifiable {
             original: nil,
             name: copyName,
             colorTag: preset.colorTag,
-            sessionIntents: preset.sessionIntents
+            sessionIntents: preset.sessionIntents,
+            workspaceLayout: preset.workspaceLayout
         )
     }
 }
 
-private struct WorkgroupTabDraft: Identifiable {
+private extension ToolbarItemPlacement {
+    static var workgroupActions: Self {
+        #if os(visionOS)
+        .bottomOrnament
+        #elseif os(iOS)
+        .bottomBar
+        #else
+        .primaryAction
+        #endif
+    }
+}
+
+struct WorkgroupTabDraft: Identifiable {
     let id: UUID
     var kind: LayoutPreset.SessionIntent.Kind
     var serverID: UUID?
     var label: String
     var startupCommand: String
+    var localShell: String = ""
+    var localDirectory: String = ""
 
     init(
         id: UUID = UUID(),
@@ -2199,10 +2410,47 @@ private struct WorkgroupTabDraft: Identifiable {
             label: intent.label ?? "",
             startupCommand: intent.startupCommand ?? ""
         )
+        localShell = intent.localShell ?? ""
+        localDirectory = intent.localDirectory ?? ""
+    }
+
+    var intent: LayoutPreset.SessionIntent {
+        LayoutPreset.SessionIntent(
+            kind: kind,
+            serverID: kind == .ssh ? serverID : nil,
+            label: label,
+            startupCommand: startupCommand,
+            localShell: kind == .local ? localShell : nil,
+            localDirectory: kind == .local ? localDirectory : nil
+        )
+    }
+
+    func validationMessage(servers: [ServerConfiguration]) -> String? {
+        if kind == .ssh {
+            guard let serverID, servers.contains(where: { $0.id == serverID }) else {
+                return "Choose a saved connection."
+            }
+        }
+        let label = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard label.count <= LayoutPreset.SessionIntent.maximumLabelLength,
+              !label.utf8.contains(0) else { return "Enter a label no longer than \(LayoutPreset.SessionIntent.maximumLabelLength) characters without null characters." }
+        let command = startupCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !command.isEmpty, TerminalStartupCommandTicket(command: command) == nil {
+            return "Use a single-line startup command no larger than 4 KB."
+        }
+        if kind == .local {
+            for path in [localShell, localDirectory] {
+                let value = path.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !value.isEmpty && (!(value.hasPrefix("/") || value == "~" || value.hasPrefix("~/")) || value.utf8.contains(0)) {
+                    return "Use an absolute path or ~ for the shell and working directory."
+                }
+            }
+        }
+        return nil
     }
 }
 
-private struct WorkgroupEditorView: View {
+struct WorkgroupEditorView: View {
     @Environment(\.dismiss) private var dismiss
 
     let context: WorkgroupEditorContext
@@ -2212,6 +2460,10 @@ private struct WorkgroupEditorView: View {
     @State private var name: String
     @State private var colorTag: ServerColorTag
     @State private var tabs: [WorkgroupTabDraft]
+    @State private var selectedTabID: UUID?
+    @State private var editingTab: WorkgroupTabDraft?
+    @State private var pendingDeletionIDs: [UUID] = []
+    @State private var showingTabDeletion = false
 
     init(
         context: WorkgroupEditorContext,
@@ -2226,135 +2478,328 @@ private struct WorkgroupEditorView: View {
         _tabs = State(initialValue: context.sessionIntents.map(WorkgroupTabDraft.init(intent:)))
     }
 
+    @FocusState private var nameIsFocused: Bool
+
     var body: some View {
         NavigationStack {
-            List {
-                Section("Workgroup") {
-                    TextField("Name", text: $name)
-
-                    LabeledContent("Color") {
-                        HStack(spacing: 10) {
-                            ForEach(ServerColorTag.allCases, id: \.self) { tag in
-                                Button {
-                                    colorTag = tag
-                                } label: {
-                                    Circle()
-                                        .fill(tag.color)
-                                        .frame(width: 26, height: 26)
-                                        .overlay {
-                                            if colorTag == tag {
-                                                Circle()
-                                                    .strokeBorder(.primary, lineWidth: 2)
-                                                    .padding(2)
-                                            }
-                                        }
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("\(tag.rawValue) color")
-                                .accessibilityAddTraits(colorTag == tag ? .isSelected : [])
-                            }
-                        }
+            platformForm
+                .navigationTitle(context.original == nil ? "New Workgroup" : "Edit Workgroup")
+                .toolbar {
+                    #if !os(macOS)
+                    ToolbarItemGroup(placement: .workgroupActions) { tabListControls }
+                    #endif
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { dismiss() }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") { save() }
+                            .disabled(validationMessage != nil)
+                            #if os(macOS)
+                            .keyboardShortcut(.defaultAction)
+                            #endif
                     }
                 }
+        }
+        #if os(macOS)
+        .frame(minWidth: 680, idealWidth: 760, maxWidth: 900,
+               minHeight: 620, idealHeight: 720, maxHeight: 820)
+        #endif
+        .onAppear { nameIsFocused = true }
+        .sheet(item: $editingTab) { draft in
+            WorkgroupTabEditorView(
+                draft: draft,
+                isNew: !tabs.contains(where: { $0.id == draft.id }),
+                canDelete: canChangeStructure,
+                servers: servers,
+                onSave: { updated in
+                    if let index = tabs.firstIndex(where: { $0.id == updated.id }) {
+                        tabs[index] = updated
+                    } else if canChangeStructure, tabs.count < LayoutPreset.maximumSessionCount {
+                        tabs.append(updated)
+                    }
+                    selectedTabID = updated.id
+                },
+                onDelete: { deleteTabs([draft.id]) }
+            )
+        }
+        .confirmationDialog("Delete \(pendingDeletionIDs.count == 1 ? "Tab" : "Tabs")?", isPresented: $showingTabDeletion, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                deleteTabs(pendingDeletionIDs)
+                pendingDeletionIDs = []
+            }
+            Button("Cancel", role: .cancel) { pendingDeletionIDs = [] }
+        } message: {
+            Text("This removes the selected tabs from this draft. The saved Workgroup is unchanged until you save.")
+        }
+    }
 
-                Section {
-                    ForEach($tabs) { $tab in
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack {
-                                #if os(macOS)
-                                Picker("Type", selection: $tab.kind) {
-                                    Text("Local").tag(LayoutPreset.SessionIntent.Kind.local)
-                                    Text("SSH").tag(LayoutPreset.SessionIntent.Kind.ssh)
-                                }
-                                .pickerStyle(.segmented)
-                                .frame(maxWidth: 220)
-                                .onChange(of: tab.kind) { _, kind in
-                                    tab.serverID = kind == .ssh ? (tab.serverID ?? servers.first?.id) : nil
-                                }
-                                #else
-                                Label(
-                                    tab.kind == .local ? "Local (macOS)" : "SSH",
-                                    systemImage: tab.kind == .local ? "apple.terminal" : "network"
-                                )
-                                    .font(.headline)
-                                #endif
+    @ViewBuilder
+    private var platformForm: some View {
+        #if os(macOS)
+        Form { formSections }
+            .formStyle(.grouped)
+        #else
+        Form { formSections }
+        #endif
+    }
 
-                                Spacer()
-                                Button("Move Tab Up", systemImage: "arrow.up") {
-                                    moveTab(tab.id, by: -1)
-                                }
-                                .labelStyle(.iconOnly)
-                                .disabled(tabs.first?.id == tab.id)
+    @ViewBuilder
+    private var formSections: some View {
+        Section("Workgroup") {
+            LabeledContent {
+                TextField("Name", text: $name)
+                    .terminalTextInputDefaults()
+                    .focused($nameIsFocused)
+                    .serverFormTextFieldPresentation()
+                    .onSubmit { nameIsFocused = false }
+            } label: {
+                fieldLabel("Name", required: true)
+            }
 
-                                Button("Move Tab Down", systemImage: "arrow.down") {
-                                    moveTab(tab.id, by: 1)
-                                }
-                                .labelStyle(.iconOnly)
-                                .disabled(tabs.last?.id == tab.id)
-
-                                Button("Remove Tab", systemImage: "trash", role: .destructive) {
-                                    tabs.removeAll { $0.id == tab.id }
-                                }
-                                .labelStyle(.iconOnly)
-                            }
-
-                            if tab.kind == .ssh {
-                                Picker("Connection", selection: $tab.serverID) {
-                                    Text("Choose a saved connection").tag(UUID?.none)
-                                    ForEach(servers) { server in
-                                        Text(server.name).tag(Optional(server.id))
+            #if os(macOS)
+            LabeledContent("Color") {
+                HStack(spacing: 10) {
+                    ForEach(ServerColorTag.allCases, id: \.self) { tag in
+                        Button {
+                            colorTag = tag
+                        } label: {
+                            Circle()
+                                .fill(tag.color)
+                                .frame(width: 26, height: 26)
+                                .overlay {
+                                    if colorTag == tag {
+                                        Circle().strokeBorder(.primary, lineWidth: 2).padding(2)
                                     }
-                                    if let serverID = tab.serverID,
-                                       !servers.contains(where: { $0.id == serverID }) {
-                                        Text("Missing Connection").tag(Optional(serverID))
-                                    }
                                 }
-                            }
-
-                            TextField("Tab label (optional)", text: $tab.label)
-                            TextField("Startup command (optional)", text: $tab.startupCommand)
-                                .font(.body.monospaced())
                         }
-                        .padding(.vertical, 4)
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(tag.rawValue) color")
+                        .accessibilityAddTraits(colorTag == tag ? .isSelected : [])
                     }
-                    .onMove { source, destination in
-                        tabs.move(fromOffsets: source, toOffset: destination)
-                    }
-
-                    HStack {
-                        #if os(macOS)
-                        Button("Add Local Tab", systemImage: "apple.terminal") {
-                            appendTab(kind: .local)
-                        }
-                        #endif
-                        Button("Add SSH Tab", systemImage: "network") {
-                            appendTab(kind: .ssh)
-                        }
-                        .disabled(servers.isEmpty)
-                    }
-                    .disabled(tabs.count >= LayoutPreset.maximumSessionCount)
-                } header: {
-                    Text("Ordered Tabs")
-                } footer: {
-                    Text(
-                        validationMessage
-                            ?? "Startup commands are saved unencrypted in app preferences. Do not include passwords, tokens, or other secrets. Commands run once, only after the terminal is connected and host trust succeeds."
-                    )
-                        .foregroundStyle(validationMessage == nil ? Color.secondary : Color.red)
+                }
+                .serverFormControlPresentation()
+            }
+            #else
+            Picker("Color", selection: $colorTag) {
+                ForEach(ServerColorTag.allCases, id: \.self) { tag in
+                    Label(tag.rawValue.capitalized, systemImage: "circle.fill")
+                        .foregroundStyle(tag.color)
+                        .tag(tag)
                 }
             }
-            .navigationTitle(context.original == nil ? "New Workgroup" : "Edit Workgroup")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+            #endif
+        }
+
+        Section {
+            #if os(macOS)
+            tabTable
+                .frame(height: min(360, max(220, CGFloat(tabs.count) * 36 + 32)))
+            #else
+            ForEach(tabs) { tab in
+                Button { editTab(tab.id) } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: tab.kind == .local ? "apple.terminal" : "network")
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(tabTitle(tab)).font(.headline)
+                            if let group = layoutGroup(for: tab) {
+                                Text(group).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Text(tab.startupCommand.isEmpty ? "Interactive shell" : tab.startupCommand)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { save() }
-                        .disabled(validationMessage != nil)
-                }
+                .buttonStyle(.plain)
+                .moveDisabled(!canChangeStructure)
+                .deleteDisabled(!canChangeStructure)
+            }
+            .onMove { source, destination in
+                guard canChangeStructure else { return }
+                tabs.move(fromOffsets: source, toOffset: destination)
+            }
+            .onDelete { indices in
+                guard canChangeStructure else { return }
+                requestDeletion(indices.map { tabs[$0].id })
+            }
+            #endif
+        } header: {
+            HStack {
+                Text("\(canChangeStructure ? "Tabs" : "Terminals in saved layout") · \(tabs.count)")
+                #if os(macOS)
+                Spacer()
+                ControlGroup { tabListControls }
+                    .controlSize(.small)
+                    .accessibilityIdentifier("workgroup-tab-controls")
+                #endif
+            }
+        } footer: {
+            if !canChangeStructure {
+                Text("Split layout preserved. Edit terminal settings here; rearrange or remove panes in the Mac workspace, then save it again.")
             }
         }
-        .frame(minWidth: 620, minHeight: 560)
+
+        Section {
+            if let validationMessage {
+                Label(validationMessage, systemImage: "exclamationmark.circle")
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } footer: {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Startup commands run once when you open the Workgroup. Do not include passwords or tokens; commands are saved with the Workgroup.")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func fieldLabel(_ title: String, required: Bool = false) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+            Text(required ? "Required" : "Optional")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private var canChangeStructure: Bool { context.workspaceLayout == nil }
+
+    #if os(macOS)
+    private var tabTable: some View {
+        Table(of: WorkgroupTabDraft.self, selection: $selectedTabID) {
+            TableColumn("Order") { tab in
+                HStack(spacing: 6) {
+                    Image(systemName: canChangeStructure ? "line.3.horizontal" : "lock")
+                        .foregroundStyle(.tertiary)
+                    Text("\((tabs.firstIndex(where: { $0.id == tab.id }) ?? 0) + 1)")
+                        .monospacedDigit()
+                }
+            }.width(55)
+            TableColumn("Label") { tab in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(tabTitle(tab)).lineLimit(1)
+                    if let group = layoutGroup(for: tab) {
+                        Text(group).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+            }.width(min: 120, ideal: 160)
+            TableColumn("Type") { tab in
+                Label(tab.kind == .local ? "Local" : "SSH", systemImage: tab.kind == .local ? "apple.terminal" : "network")
+            }.width(75)
+            TableColumn("Startup command") { tab in
+                Text(tab.startupCommand.isEmpty ? "Interactive shell" : tab.startupCommand)
+                    .font(.body.monospaced())
+                    .foregroundStyle(tab.startupCommand.isEmpty ? .secondary : .primary)
+                    .lineLimit(1)
+                    .help(tab.startupCommand)
+            }.width(min: 150, ideal: 240)
+        } rows: {
+            ForEach(tabs) { tab in
+                if canChangeStructure {
+                    TableRow(tab).draggable(tab.id.uuidString)
+                } else {
+                    TableRow(tab)
+                }
+            }
+            .dropDestination(for: String.self) { destination, payloads in
+                guard canChangeStructure, let payload = payloads.first,
+                      let id = UUID(uuidString: payload),
+                      let source = tabs.firstIndex(where: { $0.id == id }) else { return }
+                tabs.move(fromOffsets: IndexSet(integer: source), toOffset: destination)
+                selectedTabID = id
+            }
+        }
+        .contextMenu(forSelectionType: UUID.self) { ids in
+            if let id = ids.first {
+                Button("Edit Tab", systemImage: "pencil") { editTab(id) }
+                Button("Move Up", systemImage: "arrow.up") { moveTab(id, by: -1) }
+                    .disabled(!canChangeStructure || tabs.first?.id == id)
+                Button("Move Down", systemImage: "arrow.down") { moveTab(id, by: 1) }
+                    .disabled(!canChangeStructure || tabs.last?.id == id)
+                Button("Delete Tab", systemImage: "trash", role: .destructive) { requestDeletion([id]) }
+                    .disabled(!canChangeStructure)
+            }
+        } primaryAction: { ids in
+            if let id = ids.first { editTab(id) }
+        }
+        .accessibilityIdentifier("workgroup-tabs-table")
+        .accessibilityHint("Drag to reorder. Double-click a tab to edit it.")
+    }
+    #endif
+
+    @ViewBuilder private var tabListControls: some View {
+            Button("Add Tab", systemImage: "plus") { beginAddingTab() }
+                .help("Add Tab")
+                .disabled(!canChangeStructure || tabs.count >= LayoutPreset.maximumSessionCount)
+                .accessibilityIdentifier("workgroup-add-tab")
+            #if os(macOS)
+            Button("Delete Tab", systemImage: "minus") {
+                if let id = selectedTabID { requestDeletion([id]) }
+            }
+            .help("Delete selected tab")
+            .accessibilityIdentifier("workgroup-delete-tab")
+            .disabled(!canChangeStructure || selectedTabID == nil)
+            Button("Edit Tab", systemImage: "pencil") {
+                if let id = selectedTabID { editTab(id) }
+            }
+            .disabled(selectedTabID == nil)
+            .help("Edit selected tab")
+            .accessibilityIdentifier("workgroup-edit-tab")
+            #else
+            if canChangeStructure { EditButton() }
+            #endif
+    }
+
+    private func tabTitle(_ tab: WorkgroupTabDraft) -> String {
+        let label = tab.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !label.isEmpty { return label }
+        if tab.kind == .local { return "Local Terminal" }
+        return servers.first(where: { $0.id == tab.serverID })?.name ?? "Missing Connection"
+    }
+
+    private func editTab(_ id: UUID) {
+        selectedTabID = id
+        editingTab = tabs.first(where: { $0.id == id })
+    }
+
+    private func layoutGroup(for tab: WorkgroupTabDraft) -> String? {
+        guard let layout = context.workspaceLayout,
+              let terminalIndex = tabs.firstIndex(where: { $0.id == tab.id }) else { return nil }
+        func contains(_ node: LayoutPreset.WorkspaceLayout.Node) -> Bool {
+            switch node {
+            case .session(let index): return index == terminalIndex
+            case let .split(_, _, first, second): return contains(first) || contains(second)
+            }
+        }
+        guard let index = layout.tabs.firstIndex(where: { contains($0.root) }) else { return nil }
+        return "Tab \(index + 1)\(layout.tabs[index].label.map { " · " + $0 } ?? "")"
+    }
+
+    private func requestDeletion(_ ids: [UUID]) {
+        guard canChangeStructure, !ids.isEmpty else { return }
+        pendingDeletionIDs = ids
+        showingTabDeletion = true
+    }
+
+    private func beginAddingTab() {
+        guard canChangeStructure, tabs.count < LayoutPreset.maximumSessionCount else { return }
+        #if os(macOS)
+        editingTab = WorkgroupTabDraft(kind: .local)
+        #else
+        editingTab = WorkgroupTabDraft(kind: .ssh, serverID: servers.first?.id)
+        #endif
+    }
+
+    private func deleteTabs(_ ids: [UUID]) {
+        guard canChangeStructure else { return }
+        tabs.removeAll { ids.contains($0.id) }
+        if let selectedTabID, ids.contains(selectedTabID) { self.selectedTabID = tabs.first?.id }
     }
 
     private var normalizedName: String {
@@ -2372,35 +2817,15 @@ private struct WorkgroupEditorView: View {
             return "A workgroup can contain at most \(LayoutPreset.maximumSessionCount) tabs."
         }
         for (index, tab) in tabs.enumerated() {
-            if tab.kind == .ssh {
-                guard let serverID = tab.serverID,
-                      servers.contains(where: { $0.id == serverID }) else {
-                    return "Choose a saved connection for tab \(index + 1)."
-                }
-            }
-            let label = tab.label.trimmingCharacters(in: .whitespacesAndNewlines)
-            if label.count > LayoutPreset.SessionIntent.maximumLabelLength
-                || label.utf8.contains(0) {
-                return "Tab \(index + 1) has an invalid label."
-            }
-            let command = tab.startupCommand.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !command.isEmpty, TerminalStartupCommandTicket(command: command) == nil {
-                return "Tab \(index + 1) has an invalid startup command. Use one line no larger than 4 KB."
+            if let message = tab.validationMessage(servers: servers) {
+                return "Tab \(index + 1): \(message)"
             }
         }
         return nil
     }
 
-    private func appendTab(kind: LayoutPreset.SessionIntent.Kind) {
-        guard tabs.count < LayoutPreset.maximumSessionCount else { return }
-        tabs.append(WorkgroupTabDraft(
-            kind: kind,
-            serverID: kind == .ssh ? servers.first?.id : nil
-        ))
-    }
-
     private func moveTab(_ id: UUID, by offset: Int) {
-        guard let source = tabs.firstIndex(where: { $0.id == id }) else { return }
+        guard canChangeStructure, let source = tabs.firstIndex(where: { $0.id == id }) else { return }
         let destination = source + offset
         guard tabs.indices.contains(destination) else { return }
         tabs.swapAt(source, destination)
@@ -2408,15 +2833,8 @@ private struct WorkgroupEditorView: View {
 
     private func save() {
         guard validationMessage == nil else { return }
-        let intents = tabs.map { tab in
-            LayoutPreset.SessionIntent(
-                kind: tab.kind,
-                serverID: tab.kind == .ssh ? tab.serverID : nil,
-                label: tab.label,
-                startupCommand: tab.startupCommand
-            )
-        }
-        let preset = LayoutPreset(
+        let intents = tabs.map(\.intent)
+        var preset = LayoutPreset(
             id: context.original?.id ?? UUID(),
             name: normalizedName,
             colorTag: colorTag,
@@ -2424,8 +2842,187 @@ private struct WorkgroupEditorView: View {
             createdAt: context.original?.createdAt ?? Date(),
             lastUsed: context.original?.lastUsed
         )
+        preset.workspaceLayout = context.workspaceLayout
         onSave(preset)
         dismiss()
+    }
+}
+
+struct WorkgroupTabEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: WorkgroupTabDraft
+    @State private var showingDeleteConfirmation = false
+    let isNew: Bool
+    let canDelete: Bool
+    let servers: [ServerConfiguration]
+    let onSave: (WorkgroupTabDraft) -> Void
+    let onDelete: () -> Void
+    private let includesLocalChoice: Bool
+
+    init(
+        draft: WorkgroupTabDraft,
+        isNew: Bool,
+        canDelete: Bool,
+        servers: [ServerConfiguration],
+        onSave: @escaping (WorkgroupTabDraft) -> Void,
+        onDelete: @escaping () -> Void
+    ) {
+        _draft = State(initialValue: draft)
+        self.isNew = isNew
+        self.canDelete = canDelete
+        self.servers = servers
+        self.onSave = onSave
+        self.onDelete = onDelete
+        #if os(macOS)
+        includesLocalChoice = true
+        #else
+        includesLocalChoice = draft.kind == .local
+        #endif
+    }
+
+    var body: some View {
+        NavigationStack {
+            platformForm
+                .navigationTitle(isNew ? "Add Tab" : "Edit Tab")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { dismiss() }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(isNew ? "Add" : "Save") {
+                            guard draft.validationMessage(servers: servers) == nil else { return }
+                            onSave(draft)
+                            dismiss()
+                        }
+                        .disabled(draft.validationMessage(servers: servers) != nil)
+                        #if os(macOS)
+                        .keyboardShortcut(.defaultAction)
+                        #endif
+                    }
+                }
+        }
+        #if os(macOS)
+        .frame(minWidth: 560, idealWidth: 600, maxWidth: 680,
+               minHeight: 420, idealHeight: 540, maxHeight: 720)
+        #endif
+        .confirmationDialog("Delete this tab?", isPresented: $showingDeleteConfirmation, titleVisibility: .visible) {
+            Button("Delete Tab", role: .destructive) {
+                guard canDelete else { return }
+                onDelete()
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The tab will be removed when you save the Workgroup.")
+        }
+    }
+
+    @ViewBuilder private var platformForm: some View {
+        #if os(macOS)
+        Form { sections }.formStyle(.grouped)
+        #else
+        Form { sections }
+        #endif
+    }
+
+    @ViewBuilder private var sections: some View {
+        Section("Connection") {
+            LabeledContent("Type") {
+                Picker("Type", selection: $draft.kind) {
+                    if includesLocalChoice {
+                        Text("Local").tag(LayoutPreset.SessionIntent.Kind.local)
+                    }
+                    Text("SSH").tag(LayoutPreset.SessionIntent.Kind.ssh)
+                }
+                .pickerStyle(.segmented)
+                .serverFormControlPresentation()
+                .onChange(of: draft.kind) { _, kind in
+                    draft.serverID = kind == .ssh ? (draft.serverID ?? servers.first?.id) : nil
+                }
+            }
+            if draft.kind == .ssh {
+                LabeledContent {
+                    Picker("Connection", selection: $draft.serverID) {
+                        Text("Choose a saved connection").tag(UUID?.none)
+                        ForEach(servers) { server in
+                            Text(server.name).tag(Optional(server.id))
+                        }
+                        if let serverID = draft.serverID,
+                           !servers.contains(where: { $0.id == serverID }) {
+                            Text("Missing Connection").tag(Optional(serverID))
+                        }
+                    }
+                    .serverFormControlPresentation()
+                } label: {
+                    fieldLabel("Connection", required: true)
+                }
+            }
+            textField("Label", text: $draft.label)
+        }
+        Section {
+            textField("Startup command", text: $draft.startupCommand, monospaced: true)
+            if draft.kind == .local {
+                textField("Shell", text: $draft.localShell, prompt: "App default")
+                textField("Working directory", text: $draft.localDirectory, prompt: "App default")
+            }
+        } header: {
+            Text("Startup")
+        } footer: {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("The command runs once when you open the Workgroup. Do not include passwords or tokens; commands are saved with the Workgroup.")
+                #if !os(macOS)
+                if draft.kind == .local {
+                    Text("Local terminals open on Mac. These settings are preserved when you save on Vision Pro or iPad.")
+                }
+                #endif
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        if let message = draft.validationMessage(servers: servers) {
+            Section {
+                Label(message, systemImage: "exclamationmark.circle")
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        if !isNew {
+            Section {
+                Button("Delete Tab", systemImage: "trash", role: .destructive) {
+                    showingDeleteConfirmation = true
+                }
+                .disabled(!canDelete)
+            } footer: {
+                if !canDelete {
+                    Text("This terminal belongs to a saved split layout. Open the Workgroup on Mac to remove it, then save the updated workspace.")
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func fieldLabel(_ title: String, required: Bool = false) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+            Text(required ? "Required" : "Optional")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private func textField(
+        _ title: String,
+        text: Binding<String>,
+        prompt: String = "",
+        monospaced: Bool = false
+    ) -> some View {
+        LabeledContent {
+            TextField(title, text: text, prompt: Text(prompt))
+                .terminalTextInputDefaults()
+                .font(monospaced ? .body.monospaced() : .body)
+                .serverFormTextFieldPresentation()
+        } label: {
+            fieldLabel(title)
+        }
     }
 }
 
@@ -2514,7 +3111,7 @@ private struct ServerListRow: View {
                 }
 
                 Text(displayConnection)
-                    .font(.caption.monospaced())
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -2551,7 +3148,7 @@ private struct ServerListRow: View {
                 }
 
                 Text(displayConnection)
-                    .font(.caption.monospaced())
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -2568,7 +3165,7 @@ private struct ServerListRow: View {
 
     private var serverName: some View {
         Text(server.name)
-            .font(.subheadline.weight(.semibold))
+            .font(.headline)
             .lineLimit(1)
             .accessibilityLabel(server.name)
             .accessibilityIdentifier(
@@ -2765,7 +3362,7 @@ private struct ServerInfoView: View {
 
 // MARK: - Connection Password Prompt
 
-private struct ConnectionPasswordPromptSheet: View {
+struct ConnectionPasswordPromptSheet: View {
     let server: ServerConfiguration
     let savesPassword: Bool
     let onSubmit: @MainActor (String) async -> String?

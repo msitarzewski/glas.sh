@@ -15,6 +15,8 @@ nonisolated enum UserDefaultsKeys {
     static let maxScrollbackLines = "maxScrollbackLines"
     static let initialTerminalColumns = "initialTerminalColumns"
     static let initialTerminalRows = "initialTerminalRows"
+    static let localShell = "localShell"
+    static let localWorkingDirectory = "localWorkingDirectory"
     static let bellEnabled = "bellEnabled"
     static let visualBell = "visualBell"
     static let hostKeyVerificationMode = "hostKeyVerificationMode"

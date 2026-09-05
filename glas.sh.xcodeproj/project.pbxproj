@@ -332,7 +332,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				E2A2B3C4E5F6789000AABB03 /* XCLocalSwiftPackageReference "Packages/Citadel" */,
-				C4ED17000000000000000003 /* XCLocalSwiftPackageReference "../GlassEditorKit" */,
+				C4ED17000000000000000003 /* XCRemoteSwiftPackageReference "GlassEditorKit" */,
 				D1A2B3C4E5F6789000AABB03 /* XCRemoteSwiftPackageReference "GlasSecretStore" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -879,13 +879,17 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/Citadel;
 		};
-		C4ED17000000000000000003 /* XCLocalSwiftPackageReference "../GlassEditorKit" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = ../GlassEditorKit;
-		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		C4ED17000000000000000003 /* XCRemoteSwiftPackageReference "GlassEditorKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/msitarzewski/GlassEditorKit.git";
+			requirement = {
+				kind = revision;
+				revision = 5d8f00366b148880ff4f0e6a154c68a0cfc7c137;
+			};
+		};
 		D1A2B3C4E5F6789000AABB03 /* XCRemoteSwiftPackageReference "GlasSecretStore" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/msitarzewski/GlasSecretStore.git";
@@ -913,7 +917,7 @@
 		};
 		C4ED17000000000000000002 /* GlassEditorKit */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = C4ED17000000000000000003 /* XCLocalSwiftPackageReference "../GlassEditorKit" */;
+			package = C4ED17000000000000000003 /* XCRemoteSwiftPackageReference "GlassEditorKit" */;
 			productName = GlassEditorKit;
 		};
 /* End XCSwiftPackageProductDependency section */

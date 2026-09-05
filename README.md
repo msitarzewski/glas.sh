@@ -76,6 +76,26 @@ Server management with favorites, tags, search, and recent connections. Quick co
   <em>Connections: favorites, recents, tags, and one-tap Tailscale discovery in a glass sidebar.</em>
 </p>
 
+### Workspaces and Workgroups
+
+On Mac, terminal windows contain tabs and resizable local/SSH split panes. Use
+**Save Workspace as Workgroup…** in the terminal toolbar to save that window's
+layout, tab and pane selection, labels, local shells, and working directories.
+Open saved groups from **Connections → Workgroups**. The editor also supports
+creating ordered local/SSH tabs with an optional startup command for each terminal.
+
+Explicitly opening a Workgroup creates fresh sessions and runs configured commands
+once. Automatic window restoration does not replay commands or restore running
+processes. Missing passwords can be supplied through the same prompt used by
+Connections. Mac defaults for the shell and directory are in **Settings → General →
+Local Terminal**; each Workgroup can override them.
+
+Vision Pro, iPad, and iPhone open a Workgroup's SSH terminals using their native
+tab/navigation surfaces. Mac split layouts remain saved when editing on those
+devices; local terminals are Mac-only. Workgroups are stored locally, and are not
+yet synchronized between devices. To change a captured split arrangement, open it
+on Mac, rearrange it, and save a new Workgroup.
+
 ### Port Forwarding
 
 - **Local (-L)** — bind a local port, tunnel through SSH to a remote target

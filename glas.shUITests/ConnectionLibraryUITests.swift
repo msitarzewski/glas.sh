@@ -8,6 +8,14 @@ final class ConnectionLibraryUITests: XCTestCase {
     private var testServerTag = ""
 
     @MainActor
+    private func retainScreenshot(named name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    @MainActor
     private func prepareApp() {
         continueAfterFailure = false
         let suffix = String(UUID().uuidString.prefix(8))
@@ -60,6 +68,7 @@ final class ConnectionLibraryUITests: XCTestCase {
             addServerAction.waitForExistence(timeout: 5),
             "Every Connections result surface should expose its shared Add Server action."
         )
+        retainScreenshot(named: "Connection Library")
 
         navigate(to: "Favorites", scopeIdentifier: "connection-library-scope-favorites")
         navigate(to: "Recent", scopeIdentifier: "connection-library-scope-recent")
@@ -68,6 +77,7 @@ final class ConnectionLibraryUITests: XCTestCase {
             resultsWorkgroups.waitForExistence(timeout: 5),
             "Selecting Workgroups should display the shared workgroup projection."
         )
+        retainScreenshot(named: "Workgroup Library")
 
         #if !os(macOS)
         XCTAssertFalse(
@@ -250,20 +260,15 @@ final class ConnectionLibraryUITests: XCTestCase {
         XCTAssertTrue(secureKeyboardAction.waitForExistence(timeout: 3))
         XCTAssertTrue(focusModeAction.waitForExistence(timeout: 3))
         XCTAssertTrue(terminalToolsMenu.waitForExistence(timeout: 3))
-        XCTAssertLessThan(
-            secureKeyboardAction.frame.maxX,
-            connectionsAction.frame.minX,
-            "Window-level controls should remain separated from terminal-level tools."
-        )
-        let windowToTerminalGap =
-            connectionsAction.frame.minX - secureKeyboardAction.frame.maxX
-        let terminalToolGap =
-            terminalToolsMenu.frame.minX - focusModeAction.frame.maxX
-        XCTAssertLessThan(
-            terminalToolGap,
-            windowToTerminalGap,
-            "Settings should remain grouped with terminal tools after the window-level separator."
-        )
+        for action in [secureKeyboardAction, connectionsAction, focusModeAction, terminalToolsMenu] {
+            XCTAssertTrue(action.isHittable, "Native toolbar actions must remain usable.")
+            XCTAssertLessThan(
+                action.frame.midY,
+                terminalWindow.frame.minY + 80,
+                "Workspace and terminal controls should remain in the native title-bar toolbar."
+            )
+        }
+        retainScreenshot(named: "Native Terminal Toolbar")
         let workspaceIdentifier = terminalWindow.identifier
         XCTAssertFalse(
             workspaceIdentifier.isEmpty,
@@ -357,6 +362,7 @@ final class ConnectionLibraryUITests: XCTestCase {
         openAllConnections()
         createTestServer()
         verifyConnectionDrillDown()
+        retainScreenshot(named: "Connection Detail Actions")
         returnToConnectionResultsIfNeeded()
         verifySearchFindsTestServer()
         verifyEditCanFavoriteTestServer()
@@ -876,7 +882,15 @@ final class ConnectionLibraryUITests: XCTestCase {
         activate(edit)
         XCTAssertTrue(app.navigationBars["Edit Connection"].waitForExistence(timeout: 5))
 
-        let favorite = app.switches["Favorite"].firstMatch
+        let favorite = app.switches["edit-server-favorite"].firstMatch
+        // The keyboard leaves the name field under the app-level drag origin.
+        // Scroll the native Form container, not that focused text input.
+        for _ in 0..<8 where !favorite.isHittable {
+            let form = app.collectionViews.allElementsBoundByIndex.first(where: \.isHittable)
+                ?? app.scrollViews.allElementsBoundByIndex.first(where: \.isHittable)
+            guard let form else { break }
+            form.swipeUp()
+        }
         makeHittable(favorite)
         XCTAssertTrue(favorite.waitForExistence(timeout: 5))
         if !switchIsOn(favorite) {
@@ -888,6 +902,7 @@ final class ConnectionLibraryUITests: XCTestCase {
             switchIsOn(favorite),
             "The native Favorite switch should be on before saving the edited connection."
         )
+        retainScreenshot(named: "Edited Connection Favorite")
 
         let save = app.navigationBars["Edit Connection"].buttons["Save Changes"].firstMatch
         XCTAssertTrue(save.waitForExistence(timeout: 3))
@@ -920,10 +935,10 @@ final class ConnectionLibraryUITests: XCTestCase {
             12,
             "Settings should align with the native Connections search field."
         )
-        XCTAssertGreaterThan(
+        XCTAssertLessThan(
             settings.frame.midX,
             searchField.frame.midX,
-            "Settings should appear after the native Connections search field."
+            "Settings should appear before the native Connections search field."
         )
         activate(settings)
 

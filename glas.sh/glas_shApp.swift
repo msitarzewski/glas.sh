@@ -7,6 +7,43 @@
 
 import SwiftUI
 import os
+#if os(macOS)
+import AppKit
+
+@MainActor
+final class MacTerminalAppDelegate: NSObject, NSApplicationDelegate {
+    var sessionManager: SessionManager?
+    var settingsManager: SettingsManager?
+    private var terminationInProgress = false
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !terminationInProgress else { return .terminateLater }
+        let windows = MacTerminalWindowReader.Coordinator.active.allObjects
+        let sessions = sessionManager?.sessions ?? []
+        let needsConfirmation = windows.contains { $0.requiresCloseConfirmation }
+            || (settingsManager?.confirmBeforeClosing == true && !sessions.isEmpty)
+        if needsConfirmation {
+            let alert = NSAlert()
+            alert.messageText = "Quit glas.sh?"
+            alert.informativeText = "Running terminal sessions will be disconnected."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Quit")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
+        }
+        terminationInProgress = true
+        // Keep the windows and their saved layouts intact for restoration while
+        // finalizing recordings and stopping their local and remote processes.
+        for window in windows { window.finishSessions() }
+        sessionManager?.closeAllSessions()
+        Task { @MainActor in
+            for session in sessions { await session.awaitLifecycleCleanup() }
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+}
+#endif
 
 @MainActor
 struct PlatformNewTerminalAction {
@@ -50,6 +87,9 @@ private struct PlatformTerminalCommands: Commands {
 
 @main
 struct glas_shApp: App {
+    #if os(macOS)
+    @NSApplicationDelegateAdaptor(MacTerminalAppDelegate.self) private var appDelegate
+    #endif
     @State private var sessionManager = SessionManager(loadImmediately: false)
     @State private var settingsManager = SettingsManager(loadImmediately: false)
     @State private var windowRecoveryManager = WindowRecoveryManager()
@@ -57,13 +97,16 @@ struct glas_shApp: App {
         #if os(macOS)
         Window("Connections", id: "main") {
             MainBootstrapView()
+                .onAppear {
+                    appDelegate.sessionManager = sessionManager
+                    appDelegate.settingsManager = settingsManager
+                }
                 .environment(sessionManager)
                 .environment(settingsManager)
                 .frame(minWidth: 900, minHeight: 560)
         }
         .defaultSize(width: 1180, height: 720)
         .windowResizability(.contentMinSize)
-        .windowToolbarStyle(.unifiedCompact)
         .defaultLaunchBehavior(.presented)
         .commands { MacWorkspaceCommands() }
 

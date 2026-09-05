@@ -1,4 +1,5 @@
 #if os(macOS)
+import AppKit
 import SwiftUI
 
 @MainActor
@@ -31,6 +32,19 @@ struct MacNewWorkspaceTabAction {
     }
 }
 
+@MainActor
+struct MacCloseWorkspaceTabAction {
+    private let action: () -> Void
+
+    init(_ action: @escaping () -> Void) {
+        self.action = action
+    }
+
+    func callAsFunction() {
+        action()
+    }
+}
+
 private struct MacWorkspaceFocusedActionsKey: FocusedValueKey {
     typealias Value = MacWorkspaceFocusedActions
 }
@@ -39,7 +53,16 @@ private struct MacNewWorkspaceTabActionKey: FocusedValueKey {
     typealias Value = MacNewWorkspaceTabAction
 }
 
+private struct MacCloseWorkspaceTabActionKey: FocusedValueKey {
+    typealias Value = MacCloseWorkspaceTabAction
+}
+
 extension FocusedValues {
+    var macCloseWorkspaceTabAction: MacCloseWorkspaceTabAction? {
+        get { self[MacCloseWorkspaceTabActionKey.self] }
+        set { self[MacCloseWorkspaceTabActionKey.self] = newValue }
+    }
+
     var macWorkspaceActions: MacWorkspaceFocusedActions? {
         get { self[MacWorkspaceFocusedActionsKey.self] }
         set { self[MacWorkspaceFocusedActionsKey.self] = newValue }
@@ -54,6 +77,7 @@ extension FocusedValues {
 struct MacWorkspaceCommands: Commands {
     @FocusedValue(\.macWorkspaceActions) private var actions
     @FocusedValue(\.macNewWorkspaceTabAction) private var newWorkspaceTabAction
+    @FocusedValue(\.macCloseWorkspaceTabAction) private var closeWorkspaceTabAction
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
@@ -81,6 +105,22 @@ struct MacWorkspaceCommands: Commands {
             }
             .keyboardShortcut("t", modifiers: [.command, .option])
             .disabled(actions?.canAddPane != true)
+        }
+
+        // Replace the native Close command instead of registering a second
+        // Cmd-W shortcut that could still close the whole workspace window.
+        CommandGroup(replacing: .saveItem) {
+            Button(closeWorkspaceTabAction == nil ? "Close Window" : "Close Tab") {
+                guard let window = NSApp.keyWindow,
+                      window.attachedSheet == nil,
+                      window.sheetParent == nil else { return }
+                if let closeWorkspaceTabAction {
+                    closeWorkspaceTabAction()
+                } else {
+                    window.performClose(nil)
+                }
+            }
+            .keyboardShortcut("w", modifiers: .command)
         }
 
         CommandMenu("Terminal") {

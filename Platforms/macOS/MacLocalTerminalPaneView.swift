@@ -7,6 +7,8 @@ struct MacLocalTerminalPaneView: View {
     let runtime: SwiftTermLocalProcessRuntime
     let recorder: SessionRecorder
     let workspaceID: UUID
+    var shellOverride: String? = nil
+    var directoryOverride: String? = nil
     let isFocused: Bool
     let showsPaneChrome: Bool
     let findRequestNonce: UInt64
@@ -34,6 +36,7 @@ struct MacLocalTerminalPaneView: View {
     @State private var terminalRows = 40
     @State private var localTerminalWindow: NSWindow?
     @State private var isLocalFullScreen = false
+    @State private var showVisualBell = false
     @FocusState private var searchFieldFocused: Bool
 
     var body: some View {
@@ -56,7 +59,14 @@ struct MacLocalTerminalPaneView: View {
                     recorder.recordResize(width: columns, height: rows)
                 },
                 onBell: {
-                    if settingsManager.bellEnabled { NSSound.beep() }
+                    guard settingsManager.bellEnabled else { return }
+                    NSSound.beep()
+                    if settingsManager.visualBell {
+                        withAnimation(.easeInOut(duration: 0.1)) { showVisualBell = true }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                            withAnimation(.easeInOut(duration: 0.1)) { showVisualBell = false }
+                        }
+                    }
                 },
                 onProcessReady: {
                     guard let ticket = claimStartupCommand() else { return }
@@ -70,6 +80,7 @@ struct MacLocalTerminalPaneView: View {
                     }
                 }
             )
+            .overlay(Color.white.opacity(showVisualBell ? 0.3 : 0).allowsHitTesting(false))
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background {
@@ -115,55 +126,55 @@ struct MacLocalTerminalPaneView: View {
         })
         .toolbar {
             if isFocused {
-                ToolbarItem(id: MacTerminalToolbarItemID.terminalTools) {
-                    HStack(spacing: 8) {
-                        localProcessStatus
+                ToolbarItemGroup(placement: .primaryAction) {
+                    localProcessStatus
 
-                        Button("Connections", systemImage: "server.rack") {
-                            openWindow(id: "main")
-                        }
-                        .labelStyle(.iconOnly)
-                        .help("Connections")
-
-                        if aiAssistant.isAvailable {
-                            Button("AI Assistant", systemImage: "sparkles") {
-                                presentAIAssistant()
-                            }
-                            .labelStyle(.iconOnly)
-                            .disabled(!processState.isRunning)
-                            .help("AI Assistant")
-                        }
-
-                        Button("Reveal Working Directory", systemImage: "folder.fill") {
-                            revealWorkingDirectory()
-                        }
-                        .labelStyle(.iconOnly)
-                        .help("Reveal Working Directory in Finder")
-
-                        Button(
-                            isLocalFullScreen ? "Exit Focus Mode" : "Focus Mode",
-                            systemImage: isLocalFullScreen ? "moon.fill" : "moon"
-                        ) {
-                            processState.toggleFullScreen()
-                        }
-                        .labelStyle(.iconOnly)
-                        .help(isLocalFullScreen ? "Exit Focus Mode" : "Focus Mode")
-
-                        localRecordingIndicator
-                        localToolsMenu
+                    Button("Connections", systemImage: "server.rack") {
+                        openWindow(id: "main")
                     }
-                    .padding(.horizontal, 6)
-                    .accessibilityElement(children: .contain)
-                    .accessibilityIdentifier("mac-local-terminal-tools")
+                    .labelStyle(.iconOnly)
+                    .help("Connections")
+
+                    if aiAssistant.isAvailable {
+                        Button("AI Assistant", systemImage: "sparkles") {
+                            presentAIAssistant()
+                        }
+                        .labelStyle(.iconOnly)
+                        .disabled(!processState.isRunning)
+                        .help("AI Assistant")
+                    }
+
+                    Button("Reveal Working Directory", systemImage: "folder.fill") {
+                        revealWorkingDirectory()
+                    }
+                    .labelStyle(.iconOnly)
+                    .help("Reveal Working Directory in Finder")
+
+                    Button(
+                        isLocalFullScreen ? "Exit Focus Mode" : "Focus Mode",
+                        systemImage: isLocalFullScreen ? "moon.fill" : "moon"
+                    ) {
+                        processState.toggleFullScreen()
+                    }
+                    .labelStyle(.iconOnly)
+                    .help(isLocalFullScreen ? "Exit Focus Mode" : "Focus Mode")
+
+                    localRecordingIndicator
+                    localToolsMenu
                 }
                 .macKeepVisibleWhenCompact()
             }
         }
         .onAppear {
             aiAssistant.checkAvailability()
+            hostModel.setFocusOwnershipAllowed(isFocused)
             if isFocused { processState.focus() }
         }
+        .onDisappear {
+            hostModel.setFocusOwnershipAllowed(false)
+        }
         .onChange(of: isFocused) { _, focused in
+            hostModel.setFocusOwnershipAllowed(focused)
             if focused { processState.focus() }
         }
         .onChange(of: findRequestNonce) { _, nonce in
@@ -509,7 +520,7 @@ struct MacLocalTerminalPaneView: View {
     }
 
     private func revealWorkingDirectory() {
-        let path = processState.currentDirectory
+        let path = runtime.currentWorkingDirectory
             ?? FileManager.default.homeDirectoryForCurrentUser.path
         var isDirectory = ObjCBool(false)
         guard path.hasPrefix("/"),
@@ -549,16 +560,9 @@ struct MacLocalTerminalPaneView: View {
     }
 
     private var localConfiguration: SwiftTermLocalProcessConfiguration {
-        let configuredShell = ProcessInfo.processInfo.environment["SHELL"]
-        let executable = configuredShell.flatMap { shell in
-            shell.hasPrefix("/") && FileManager.default.isExecutableFile(atPath: shell)
-                ? shell
-                : nil
-        } ?? "/bin/zsh"
-        return SwiftTermLocalProcessConfiguration(
-            executable: executable,
-            arguments: ["-l"],
-            currentDirectory: FileManager.default.homeDirectoryForCurrentUser.path
+        MacLocalTerminalConfiguration.resolve(
+            shell: shellOverride ?? settingsManager.localShell,
+            directory: directoryOverride ?? settingsManager.localWorkingDirectory
         )
     }
 
@@ -591,9 +595,36 @@ struct MacLocalTerminalPaneView: View {
     }
 }
 
+enum MacLocalTerminalConfiguration {
+    static func resolve(shell: String?, directory: String?) -> SwiftTermLocalProcessConfiguration {
+        let requestedShell = expandedPath(shell)
+        let loginShell = getpwuid(getuid()).flatMap { entry in
+            entry.pointee.pw_shell.map { String(cString: $0) }
+        }
+        let fallbackShell = expandedPath(loginShell)
+            ?? expandedPath(ProcessInfo.processInfo.environment["SHELL"])
+            ?? "/bin/zsh"
+        return SwiftTermLocalProcessConfiguration(
+            executable: requestedShell ?? fallbackShell,
+            arguments: ["-l"],
+            currentDirectory: expandedPath(directory)
+                ?? FileManager.default.homeDirectoryForCurrentUser.path
+        )
+    }
+
+    private static func expandedPath(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : (trimmed as NSString).expandingTildeInPath
+    }
+}
+
 enum MacLocalTerminalExitPolicy {
     static func shouldClose(exitCode: Int32?) -> Bool {
-        exitCode == 0
+        // `exit` inherits the last command's status (for example a failed SSH
+        // tunnel). A normally exited shell is finished even when it returns 1.
+        guard let exitCode else { return false }
+        return (0..<128).contains(exitCode)
     }
 }
 
